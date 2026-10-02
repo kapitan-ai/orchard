@@ -365,10 +365,14 @@ Hooks.OverviewQuickstart = {
       let action = actionEl.dataset.quickstartAction
       if (action === "dismiss") {
         event.preventDefault()
-        this.pushEvent("quickstart_dismiss", {})
+        this.pushEvent("quickstart_dismiss", {}, () => {
+          this.el.querySelector("#overview-quickstart-recover")?.focus()
+        })
       } else if (action === "recover") {
         event.preventDefault()
-        this.pushEvent("quickstart_recover", {})
+        this.pushEvent("quickstart_recover", {}, () => {
+          this.el.querySelector("#overview-quickstart-dismiss, #overview-quickstart-guide-summary")?.focus()
+        })
       }
     }
 
@@ -588,7 +592,13 @@ const FORMAT_OPTIONS = {
 let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   hooks: Hooks,
-  params: {_csrf_token: csrfToken}
+  params: () => ({
+    _csrf_token: csrfToken,
+    overview_quickstart: {
+      dismissed: readBooleanCookie("orchard_console_quickstart_dismissed"),
+      guide_seen: readBooleanCookie("orchard_console_quickstart_guide_seen")
+    }
+  })
 })
 
 // Show progress bar on live navigation and form submits

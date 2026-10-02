@@ -67,10 +67,23 @@ defmodule OrchardConsole.OverviewLive do
       socket
       |> assign(page_title: "Overview", active_nav: :overview)
       |> assign(build_version: OrchardConsole.display_version())
-      |> assign(quickstart_client_id: "overview-quickstart-client-#{Ecto.UUID.generate()}")
+      |> assign(quickstart_client_id: "overview-quickstart-client")
 
     if connected?(socket) do
-      {:ok, socket |> load_overview() |> schedule_refresh()}
+      preferences = get_connect_params(socket)["overview_quickstart"]
+
+      client_state =
+        if is_map(preferences) do
+          Map.merge(default_quickstart_client_state(), %{
+            hydrated?: true,
+            dismissed?: quickstart_pref_enabled?(preferences["dismissed"]),
+            guide_seen?: quickstart_pref_enabled?(preferences["guide_seen"])
+          })
+        else
+          default_quickstart_client_state()
+        end
+
+      {:ok, socket |> assign(:quickstart, client_state) |> load_overview() |> schedule_refresh()}
     else
       {:ok, assign_loading_state(socket)}
     end
@@ -129,10 +142,10 @@ defmodule OrchardConsole.OverviewLive do
       <section id="overview-status" aria-label="Operational status">
         <.card variant={:primary} padding={:sm}>
           <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
-            <span class="inline-flex items-center gap-2">
+            <span id="overview-status-readiness" class="inline-flex items-center gap-2">
               Controller readiness <.badge tone={readiness_badge_tone(@readiness.status)}>{readiness_badge_label(@readiness.status)}</.badge>
             </span>
-            <span class="inline-flex flex-wrap items-center gap-2">
+            <span id="overview-status-runtime" class="inline-flex flex-wrap items-center gap-2">
               Default Runtime Endpoint <.badge tone={runtime_badge_tone(@runtime)}>{runtime_badge_label(@runtime)}</.badge>
             </span>
             <span class="font-mono">{@build_version}</span>
@@ -145,13 +158,15 @@ defmodule OrchardConsole.OverviewLive do
           >
             {hero_status_copy(@readiness, @runtime)}
           </p>
+          <a :if={@readiness.status == :error} href="#overview-controller" class={quickstart_cta_class(:pending)}>View blocked checks</a>
           <div id="overview-freshness" class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
             <span :if={@last_updated_at == nil}>Waiting for first live update</span>
             <span :if={@last_updated_at != nil}>
-              Last refresh <.local_time value={@last_updated_at} format={:time_second} />
+              Last refresh attempt <.local_time value={@last_updated_at} format={:time_second} />
             </span>
-            <span>Auto-refreshing every {refresh_interval_label()}</span>
-            <.button id="overview-refresh-now" variant={:ghost} size={:sm} phx-click="refresh_now">
+            <span :if={@last_updated_at != nil} id="overview-polling-active">Auto-refreshing every {refresh_interval_label()}</span>
+            <span id="overview-polling-paused" role="status">Paused — reconnecting</span>
+            <.button id="overview-refresh-now" variant={:ghost} size={:sm} phx-click="refresh_now" disabled={@last_updated_at == nil}>
               Refresh now
             </.button>
           </div>
@@ -197,7 +212,7 @@ defmodule OrchardConsole.OverviewLive do
       <section id="overview-requests" aria-label="Current Request states">
         <.card padding={:sm}>
           <:title>Current Request states</:title>
-          <:subtitle>Source: durable Request rows · installation-wide · read at last refresh. Current distribution, not history.</:subtitle>
+          <:subtitle>Source: durable Request rows · installation-wide · {source_freshness(@request_summary.status, "read")}. Current distribution, not history.</:subtitle>
           <%= cond do %>
             <% @request_summary.status == :loading -> %>
               <.state_message id="overview-request-summary-loading" kind={:loading} layout={:compact} title="Loading request summary." />
@@ -222,9 +237,9 @@ defmodule OrchardConsole.OverviewLive do
         <section id="overview-runtime" aria-label="Default Runtime Endpoint snapshot" class="min-w-0">
           <.card padding={:sm}>
             <:title>Default Runtime Endpoint</:title>
-            <:subtitle>Source: one live snapshot · default target only · observed at last refresh. Not fleet-wide schedulability.</:subtitle>
+            <:subtitle>Source: one live snapshot · default target only · {source_freshness(@runtime.status, "observed")}. Not fleet-wide schedulability.</:subtitle>
             <.detail_grid class="grid-cols-1 sm:grid-cols-2">
-              <.detail_field id="overview-runtime-health" label="Runtime health">{runtime_health_label(@runtime)}</.detail_field>
+              <.detail_field id="overview-runtime-health" label="Endpoint-reported health">{runtime_health_label(@runtime)}</.detail_field>
               <.detail_field id="overview-worker-state" label="Worker state">{worker_state_badge_label(@runtime)}</.detail_field>
               <.detail_field id="overview-runtime-node" label="Observed Node" mono break_all>{runtime_node_label(@runtime)}</.detail_field>
               <.detail_field id="overview-runtime-active-requests" label="Active requests" mono>{if @runtime.status == :ok, do: format_count(@runtime.active_request_count), else: "—"}</.detail_field>
@@ -232,6 +247,7 @@ defmodule OrchardConsole.OverviewLive do
                 <.model_identity value={primary_loaded_model(@runtime)} />
               </.detail_field>
             </.detail_grid>
+            <p :if={runtime_health_message(@runtime)} id="overview-runtime-health-message" class="mt-3 text-sm text-slate-600 dark:text-slate-300">{runtime_health_message(@runtime)}</p>
             <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Loaded models do not establish Workspace access or inference readiness.</p>
             <div class="mt-4">
               <%= cond do %>
@@ -258,7 +274,7 @@ defmodule OrchardConsole.OverviewLive do
           <section id="overview-controller" aria-label="Controller readiness">
             <.card padding={:sm}>
               <:title>Controller readiness</:title>
-              <:subtitle>Source: this Controller · checked at last refresh. Internal orchard.readiness.legacy_m0.v1 predicate; public health responses are status-only.</:subtitle>
+              <:subtitle>Source: this Controller · {source_freshness(@readiness.status, "checked")}. Internal orchard.readiness.legacy_m0.v1 predicate; public health responses are status-only.</:subtitle>
               <dl id="overview-readiness" class="space-y-3">
                 <div :for={row <- @readiness.rows} class="flex flex-wrap items-start justify-between gap-2">
                   <dt class="min-w-0 flex-1">
@@ -274,7 +290,7 @@ defmodule OrchardConsole.OverviewLive do
           <section id="overview-catalog" aria-label="Catalog lifecycle">
             <.card padding={:sm}>
               <:title>Catalog lifecycle</:title>
-              <:subtitle>Source: durable Model catalog · installation-wide · read at last refresh. Lifecycle is not loadedness or access.</:subtitle>
+              <:subtitle>Source: durable Model catalog · installation-wide · {source_freshness(@model_catalog.status, "read")}. Lifecycle is not loadedness or access.</:subtitle>
               <%= cond do %>
                 <% @model_catalog.status == :loading -> %>
                   <.state_message id="overview-model-catalog-loading" kind={:loading} layout={:compact} title="Loading model catalog." />
@@ -318,7 +334,7 @@ defmodule OrchardConsole.OverviewLive do
     <div id={@id} class="min-w-0 space-y-1">
       <.metric_tile density={:compact} label={@label} value={@value} />
       <p class="text-center text-xs text-slate-500 dark:text-slate-400">{@source}</p>
-      <p class="text-center text-xs text-slate-500 dark:text-slate-400">{@evidence}</p>
+      <p class={if @evidence == "Recorded", do: "sr-only", else: "text-center text-xs text-slate-500 dark:text-slate-400"}>{@evidence}</p>
     </div>
     """
   end
@@ -329,7 +345,6 @@ defmodule OrchardConsole.OverviewLive do
   defp quickstart_panel(assigns) do
     ~H"""
     <div id="overview-quickstart">
-      <%!-- A new LiveView mount must remount the hook to rehydrate browser preferences. --%>
       <div id={@client_id} phx-hook="OverviewQuickstart">
         <%= case @quickstart.mode do %>
           <% :hydrating -> %>
@@ -379,9 +394,10 @@ defmodule OrchardConsole.OverviewLive do
               <div id="overview-quickstart-completed" class="space-y-3">
                 <div class="flex flex-wrap items-center gap-2">
                   <.icon name="hero-check-circle" class="h-5 w-5 text-forest dark:text-emerald-400" />
-                  <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Quickstart complete</h2>
-                  <span class="text-xs text-slate-500 dark:text-slate-400">Browser preferences + current onboarding evidence</span>
+                  <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Quickstart complete</h3>
+                  <span class="text-xs text-slate-500 dark:text-slate-400">Browser preferences + recorded onboarding evidence</span>
                 </div>
+                <p :if={Enum.any?(@quickstart.steps, &(&1.status == :unavailable))} class="text-xs text-slate-500 dark:text-slate-400">Evidence unavailable for some steps. Previously observed completion retained.</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">Not a check of current inference readiness. The integration guide remains available.</p>
                 <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
               </div>
@@ -431,7 +447,9 @@ defmodule OrchardConsole.OverviewLive do
                     <div class="flex items-center gap-2">
                       <%= cond do %>
                         <% step.status == :completed -> %>
-                          <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Complete</span>
+                          <span class="text-xs text-forest dark:text-emerald-400 font-medium">Complete</span>
+                        <% step.status == :unavailable -> %>
+                          <span class="text-xs text-slate-500 dark:text-slate-400">Evidence unavailable</span>
                         <% step.action == nil -> %>
                           <span
                             id={"overview-quickstart-note-#{step.dom_id}"}
@@ -765,7 +783,7 @@ defmodule OrchardConsole.OverviewLive do
   defp fetch_active_api_keys do
     Governance.has_active_api_keys?()
   rescue
-    _ -> false
+    _ -> :unavailable
   end
 
   defp build_quickstart(
@@ -793,7 +811,9 @@ defmodule OrchardConsole.OverviewLive do
       end)
       |> assign_quickstart_step_statuses()
 
-    completed? = quickstart_completed?(steps)
+    completed? =
+      Enum.all?(steps, &(&1.complete? == true)) or
+        (client_state.completed? and Enum.all?(steps, &(&1.complete? != false)))
 
     Map.merge(client_state, %{
       steps: steps,
@@ -803,13 +823,13 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   defp default_quickstart_client_state do
-    %{dismissed?: false, guide_seen?: false, hydrated?: false}
+    %{dismissed?: false, guide_seen?: false, hydrated?: false, completed?: false}
   end
 
   defp quickstart_client_state(socket) do
     socket.assigns
     |> Map.get(:quickstart, default_quickstart_client_state())
-    |> Map.take([:dismissed?, :guide_seen?, :hydrated?])
+    |> Map.take([:dismissed?, :guide_seen?, :hydrated?, :completed?])
     |> then(&Map.merge(default_quickstart_client_state(), &1))
   end
 
@@ -833,11 +853,10 @@ defmodule OrchardConsole.OverviewLive do
     %{
       dismissed?: Map.get(attrs, :dismissed?, current.dismissed?),
       guide_seen?: current.guide_seen? or Map.get(attrs, :guide_seen?, false),
-      hydrated?: current.hydrated? or Map.get(attrs, :hydrated?, false)
+      hydrated?: current.hydrated? or Map.get(attrs, :hydrated?, false),
+      completed?: current.completed?
     }
   end
-
-  defp quickstart_completed?(steps), do: Enum.all?(steps, & &1.complete?)
 
   defp quickstart_mode(%{hydrated?: false}, _completed?), do: :hydrating
   defp quickstart_mode(%{dismissed?: true}, _completed?), do: :compact_dismissed
@@ -877,7 +896,7 @@ defmodule OrchardConsole.OverviewLive do
          _,
          _client_state
        ),
-       do: readiness.status == :ok
+       do: if(readiness.status in [:ok, :error], do: readiness.status == :ok, else: :unavailable)
 
   defp quickstart_step_complete?(
          :import_first_model,
@@ -887,7 +906,9 @@ defmodule OrchardConsole.OverviewLive do
          _,
          _client_state
        ) do
-    model_catalog.status == :ok and Map.get(model_catalog.by_state, :active, 0) > 0
+    if model_catalog.status == :ok,
+      do: Map.get(model_catalog.by_state, :active, 0) > 0,
+      else: :unavailable
   end
 
   defp quickstart_step_complete?(
@@ -898,7 +919,9 @@ defmodule OrchardConsole.OverviewLive do
          _,
          _client_state
        ) do
-    request_summary.status == :ok and Map.get(request_summary.by_state, :completed, 0) > 0
+    if request_summary.status == :ok,
+      do: Map.get(request_summary.by_state, :completed, 0) > 0,
+      else: :unavailable
   end
 
   defp quickstart_step_complete?(
@@ -925,7 +948,10 @@ defmodule OrchardConsole.OverviewLive do
     {steps, _current_assigned?} =
       Enum.map_reduce(steps, false, fn step, current_assigned? ->
         cond do
-          step.complete? ->
+          step.complete? == :unavailable ->
+            {Map.put(step, :status, :unavailable), current_assigned?}
+
+          step.complete? == true ->
             {Map.put(step, :status, :completed), current_assigned?}
 
           current_assigned? ->
@@ -1009,7 +1035,7 @@ defmodule OrchardConsole.OverviewLive do
   defp readiness_badge_tone(_), do: :neutral
 
   defp readiness_badge_label(:ok), do: "Ready"
-  defp readiness_badge_label(:error), do: "Degraded"
+  defp readiness_badge_label(:error), do: "Not ready"
   defp readiness_badge_label(:loading), do: "Loading"
   defp readiness_badge_label(_), do: "Unavailable"
 
@@ -1020,6 +1046,11 @@ defmodule OrchardConsole.OverviewLive do
   defp source_evidence(:ok), do: "Recorded"
   defp source_evidence(:loading), do: "Loading"
   defp source_evidence(_), do: "Unavailable"
+
+  defp source_freshness(:loading, _verb), do: "waiting for first read"
+  defp source_freshness(:ok, verb), do: "#{verb} at last refresh attempt"
+  defp source_freshness(:error, "checked"), do: "checked at last refresh attempt"
+  defp source_freshness(_, _verb), do: "read failed at last attempt"
 
   defp performance_evidence(%{status: :ok} = performance, field) do
     if is_nil(Map.fetch!(performance, field)), do: "Not recorded", else: "Recorded"
@@ -1054,6 +1085,15 @@ defmodule OrchardConsole.OverviewLive do
   defp runtime_health_level(%{status: :ok, runtime_health: %{}}), do: :healthy
   defp runtime_health_level(%{status: :ok}), do: :unsupported
 
+  defp runtime_health_message(
+         %{status: :ok, runtime_health: %{health_message: message}} = runtime
+       )
+       when is_binary(message) and message != "" do
+    if runtime_health_level(runtime) in [:unhealthy, :degraded], do: message
+  end
+
+  defp runtime_health_message(_), do: nil
+
   defp runtime_badge_tone(%{status: :loading}), do: :neutral
   defp runtime_badge_tone(%{status: status}) when status != :ok, do: :error
 
@@ -1061,6 +1101,7 @@ defmodule OrchardConsole.OverviewLive do
     case runtime_health_level(rt) do
       :unhealthy -> :error
       :degraded -> :warning
+      :unsupported -> :neutral
       _ -> worker_state_badge_tone(rt)
     end
   end
@@ -1111,26 +1152,26 @@ defmodule OrchardConsole.OverviewLive do
     "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-800/40 dark:bg-emerald-950/20"
   end
 
-  defp quickstart_step_row_class(:pending) do
+  defp quickstart_step_row_class(_status) do
     "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
   end
 
   # Quickstart step indicator (ordinal circle) styling by status
   defp quickstart_indicator_class(:completed) do
-    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400"
+    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-forest dark:bg-emerald-900/40 dark:text-emerald-400"
   end
 
   defp quickstart_indicator_class(:current) do
-    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-gold/20 text-xs font-semibold text-gold-700 dark:bg-gold/20 dark:text-gold-300"
+    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-gold/20 text-xs font-semibold text-slate-900 dark:bg-gold/20 dark:text-gold-300"
   end
 
-  defp quickstart_indicator_class(:pending) do
+  defp quickstart_indicator_class(_status) do
     "inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200"
   end
 
   # Quickstart CTA styling: current = prominent, pending = secondary
   defp quickstart_cta_class(:current) do
-    "inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-sm font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-800"
+    "inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-sm font-medium text-slate-900 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-800"
   end
 
   defp quickstart_cta_class(_status) do
@@ -1236,22 +1277,20 @@ defmodule OrchardConsole.OverviewLive do
 
   defp controller_status_copy(%{status: :ok}), do: "Controller checks are passing."
 
-  defp controller_status_copy(%{status: :error}),
-    do: "Controller readiness checks are failing."
+  defp controller_status_copy(%{status: :error, passing: passing, total: total}),
+    do: "Controller readiness checks are failing: #{total - passing} of #{total} blocked."
 
   defp controller_status_copy(_), do: "Controller readiness is unavailable."
 
   defp runtime_status_copy(%{status: :ok} = runtime) do
-    case runtime_health_level(runtime) do
-      :unhealthy ->
-        "The default Runtime Endpoint reports unhealthy status."
+    health_copy =
+      case runtime_health_level(runtime) do
+        :unhealthy -> "The default Runtime Endpoint reports unhealthy status."
+        :degraded -> "The default Runtime Endpoint reports degraded health."
+        _ -> "The default Runtime Endpoint is reachable."
+      end
 
-      :degraded ->
-        "The default Runtime Endpoint reports degraded health."
-
-      _ ->
-        "The default Runtime Endpoint is reachable. " <> runtime_worker_copy(runtime)
-    end
+    health_copy <> " " <> runtime_worker_copy(runtime)
   end
 
   defp runtime_status_copy(_), do: "The default Runtime Endpoint is unavailable."
@@ -1260,51 +1299,35 @@ defmodule OrchardConsole.OverviewLive do
        when state in [:starting, :stopping],
        do: "Worker is transitioning."
 
+  defp runtime_worker_copy(%{worker_state: state} = runtime) when state in [:failed, :stopped],
+    do: "Worker state: #{worker_state_badge_label(runtime)}."
+
   defp runtime_worker_copy(%{loaded_models: []}), do: "No model is currently loaded."
 
   defp runtime_worker_copy(runtime), do: "Worker state: #{worker_state_badge_label(runtime)}."
 
-  # -- Hero copy CSS class --
-  # Precedence mirrors hero_status_copy: loading → health → worker-state.
+  defp hero_status_copy_class(readiness, runtime) do
+    controller_severity = if readiness.status in [:ok, :loading], do: 0, else: 1
 
-  defp hero_status_copy_class(%{status: :loading}, _),
-    do: "text-slate-500 dark:text-slate-400"
-
-  defp hero_status_copy_class(_, %{status: :loading}),
-    do: "text-slate-500 dark:text-slate-400"
-
-  defp hero_status_copy_class(%{status: :ok}, %{status: :ok} = rt) do
-    case runtime_health_level(rt) do
-      :unhealthy -> "text-red-600 dark:text-red-400"
-      :degraded -> "text-amber-700 dark:text-amber-300"
-      _ -> hero_worker_state_class(rt)
+    case max(controller_severity, runtime_severity(runtime)) do
+      2 -> "text-red-600 dark:text-red-400"
+      1 -> "text-amber-700 dark:text-amber-300"
+      0 -> "text-slate-600 dark:text-slate-400"
     end
   end
 
-  defp hero_status_copy_class(_readiness, %{status: :ok} = rt) do
-    case runtime_health_level(rt) do
-      :unhealthy -> "text-red-600 dark:text-red-400"
-      :degraded -> "text-amber-700 dark:text-amber-300"
-      _ -> "text-amber-700 dark:text-amber-300"
+  defp runtime_severity(%{status: :loading}), do: 0
+  defp runtime_severity(%{status: status}) when status != :ok, do: 2
+
+  defp runtime_severity(runtime) do
+    cond do
+      runtime.worker_state == :failed or runtime_health_level(runtime) == :unhealthy -> 2
+      runtime.worker_state in [:stopped, :starting, :stopping] -> 1
+      runtime_health_level(runtime) == :degraded or runtime.loaded_models == [] -> 1
+      runtime.worker_state in [:idle, :busy] -> 0
+      true -> 2
     end
   end
-
-  defp hero_status_copy_class(_, _),
-    do: "text-red-600 dark:text-red-400"
-
-  defp hero_worker_state_class(%{worker_state: state, loaded_models: models})
-       when state in [:idle, :busy] and models != [],
-       do: "text-slate-600 dark:text-slate-400"
-
-  defp hero_worker_state_class(%{worker_state: state})
-       when state in [:starting, :stopping],
-       do: "text-amber-700 dark:text-amber-300"
-
-  defp hero_worker_state_class(%{loaded_models: []}),
-    do: "text-amber-700 dark:text-amber-300"
-
-  defp hero_worker_state_class(_),
-    do: "text-red-600 dark:text-red-400"
 
   # ===========================================================================
   # Format helpers

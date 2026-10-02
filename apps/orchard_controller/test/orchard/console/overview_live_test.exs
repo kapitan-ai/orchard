@@ -256,6 +256,13 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert fragment_text(html, "#overview-runtime-health") =~ "Loading"
       assert fragment_text(html, "#overview-readiness") =~ "Unknown"
       assert fragment_text(html, "#overview-freshness") =~ "Waiting for first live update"
+      refute html =~ "Auto-refreshing every"
+
+      assert html
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#overview-refresh-now[disabled]")
+             |> Enum.any?()
+
       refute html =~ ~s(id="overview-request-counts")
       refute html =~ ~s(id="overview-model-counts")
       assert html =~ ~s(id="overview-quickstart-hydrating")
@@ -813,6 +820,83 @@ defmodule OrchardConsole.OverviewLiveTest do
       :ok
     end
 
+    test "unavailable evidence is not initial completion or an onboarding CTA" do
+      previous_repo = Repo.get_dynamic_repo()
+
+      assigns =
+        try do
+          Repo.put_dynamic_repo(:overview_unavailable_repo)
+          overview_assigns()
+        after
+          Repo.put_dynamic_repo(previous_repo)
+        end
+
+      socket = %Phoenix.LiveView.Socket{assigns: assigns}
+
+      {:noreply, socket} =
+        OrchardConsole.OverviewLive.handle_event(
+          "quickstart_client_state_loaded",
+          %{"guide_seen" => true},
+          socket
+        )
+
+      html = render_component(&OrchardConsole.OverviewLive.render/1, socket.assigns)
+      assert socket.assigns.has_active_api_keys == :unavailable
+      assert socket.assigns.quickstart.mode == :full
+
+      for step <- ~w(import-first-model run-test-request create-api-key) do
+        assert fragment_text(html, "#overview-quickstart-step-#{step}[data-status=unavailable]") =~
+                 "Evidence unavailable"
+
+        refute html =~ ~s(id="overview-quickstart-action-#{step}")
+      end
+    end
+
+    test "recorded completion survives unknown reads but recorded clear reopens setup", %{
+      conn: conn
+    } do
+      {:ok, view, _} = live(conn, "/console")
+      complete_quickstart_server_steps(view)
+      hydrate_quickstart(view, %{"guide_seen" => true})
+      socket = :sys.get_state(view.pid).socket
+      assert socket.assigns.quickstart.mode == :compact_completed
+      previous_repo = Repo.get_dynamic_repo()
+
+      refreshed =
+        try do
+          Repo.put_dynamic_repo(:overview_unavailable_repo)
+
+          {:noreply, refreshed} =
+            OrchardConsole.OverviewLive.handle_event("refresh_now", %{}, socket)
+
+          Process.cancel_timer(refreshed.assigns.refresh_timer)
+          refreshed
+        after
+          Repo.put_dynamic_repo(previous_repo)
+        end
+
+      assert refreshed.assigns.readiness.status == :unavailable
+      assert refreshed.assigns.quickstart.mode == :compact_completed
+      refute Enum.any?(refreshed.assigns.quickstart.steps, &(&1.status == :current))
+      html = render_component(&OrchardConsole.OverviewLive.render/1, refreshed.assigns)
+
+      assert fragment_text(html, "#overview-quickstart-completed") =~
+               "Previously observed completion retained"
+
+      assert fragment_text(html, "#overview-catalog") =~ "read failed at last attempt"
+
+      Repo.update_all(Orchard.Models.Model, set: [state: :retired])
+
+      {:noreply, cleared} =
+        OrchardConsole.OverviewLive.handle_event("refresh_now", %{}, refreshed)
+
+      Process.cancel_timer(cleared.assigns.refresh_timer)
+      assert cleared.assigns.quickstart.mode == :full
+
+      assert Enum.find(cleared.assigns.quickstart.steps, &(&1.id == :import_first_model)).status ==
+               :current
+    end
+
     test "orders incomplete steps deterministically when readiness passes", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
@@ -993,7 +1077,8 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       {:ok, socket} =
         OrchardConsole.OverviewLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{
-          transport_pid: self()
+          transport_pid: self(),
+          private: %{connect_params: %{}}
         })
 
       first_timer = socket.assigns.refresh_timer
@@ -1114,7 +1199,7 @@ defmodule OrchardConsole.OverviewLiveTest do
   # ===========================================================================
 
   describe "connection banner and freshness" do
-    test "Quickstart hook identity changes per mount but survives hydration and refresh", %{
+    test "Quickstart identity survives reconnect and connect preferences skip hydration", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, "/console")
@@ -1126,13 +1211,16 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert :sys.get_state(view.pid).socket.assigns.quickstart_client_id == first_id
       assert_quickstart_dismissed(view)
 
-      # A new LiveView process must remount the browser hook to restore preferences.
+      conn =
+        put_connect_params(conn, %{
+          "overview_quickstart" => %{"dismissed" => true, "guide_seen" => true}
+        })
+
       {:ok, reconnected, _html} = live(conn, "/console")
       next_id = :sys.get_state(reconnected.pid).socket.assigns.quickstart_client_id
-      assert next_id != first_id
+      assert next_id == first_id
       assert has_element?(reconnected, ~s(##{next_id}[phx-hook="OverviewQuickstart"]))
-      assert_quickstart_hydrating(reconnected)
-      hydrate_quickstart(reconnected, %{"dismissed" => true, "guide_seen" => true})
+      refute has_element?(reconnected, "#overview-quickstart-hydrating")
       assert_quickstart_dismissed(reconnected)
     end
 
@@ -1227,6 +1315,52 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "hero status copy" do
+    test "severity never decreases when Controller readiness fails, including empty failed Workers" do
+      assigns = overview_assigns()
+
+      for {worker, health, models, color} <- [
+            {:failed, nil, [], "text-red-600"},
+            {:failed, %{ready: true, health_code: "warning"}, [], "text-red-600"},
+            {:stopped, nil, [], "text-amber-700"},
+            {:idle, %{ready: false}, [], "text-red-600"},
+            {:busy, %{ready: true, health_code: "warning"}, [%{model_id: "m", version: "v1"}],
+             "text-amber-700"}
+          ],
+          readiness_status <- [:ok, :error] do
+        runtime = %{
+          assigns.runtime
+          | worker_state: worker,
+            runtime_health: health,
+            loaded_models: models
+        }
+
+        readiness = %{assigns.readiness | status: readiness_status, passing: 1, total: 4}
+
+        html =
+          render_component(&OrchardConsole.OverviewLive.render/1, %{
+            assigns
+            | readiness: readiness,
+              runtime: runtime
+          })
+
+        assert html
+               |> LazyHTML.from_fragment()
+               |> LazyHTML.query("#overview-hero-status-copy.#{color}")
+               |> Enum.any?()
+
+        if worker == :failed,
+          do: assert(fragment_text(html, "#overview-hero-status-copy") =~ "Failed")
+
+        if readiness_status == :error do
+          assert fragment_text(html, "#overview-status-readiness") =~ "Not ready"
+          assert fragment_text(html, "#overview-hero-status-copy") =~ "3 of 4 blocked"
+          assert html =~ ~s(href="#overview-controller")
+        else
+          refute html =~ ~s(href="#overview-controller")
+        end
+      end
+    end
+
     # NOTE: In test env, readiness.status is :error because public_api_https_enabled
     # check fails (no HTTPS in test). Hero copy reflects this combined state.
 
@@ -1291,9 +1425,16 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "shows Degraded badge when health_code is present", %{conn: conn} do
       put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeDegradedStub)
 
-      {:ok, _view, html} = live(conn, "/console")
+      {:ok, view, _html} = live(conn, "/console")
 
-      assert html =~ "Degraded"
+      assert has_element?(view, "#overview-status-readiness", "Not ready")
+      assert has_element?(view, "#overview-status-runtime", "Degraded")
+
+      assert has_element?(
+               view,
+               "#overview-runtime-health-message",
+               "Worker memory usage above threshold"
+             )
     end
 
     test "unsupported health (nil) falls back to worker-state badge", %{conn: conn} do
@@ -1304,8 +1445,12 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       assert html =~ "Idle"
       refute html =~ "Unhealthy"
-      # NOTE: "Degraded" appears in the readiness badge (test env has :error readiness),
-      # so we only check that "Unhealthy" is absent — the Idle assertion proves fallback.
+      refute fragment_text(html, "#overview-status-runtime") =~ "Degraded"
+
+      refute html
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#overview-status-runtime .bg-forest-50")
+             |> Enum.any?()
     end
   end
 
@@ -1582,7 +1727,10 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   defp overview_assigns do
     {:ok, socket} =
-      OrchardConsole.OverviewLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{transport_pid: self()})
+      OrchardConsole.OverviewLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{
+        transport_pid: self(),
+        private: %{connect_params: %{}}
+      })
 
     Process.cancel_timer(socket.assigns.refresh_timer)
     socket.assigns
