@@ -65,6 +65,8 @@ It SHALL also run the focused portable helper-transport suites so their GNU-firs
 Darwin-only integration cases that transitively invoke macOS host commands such as `lockf` SHALL carry the same tag as their owning modules.
 Test modules that exclusively exercise the staged macOS application payload SHALL carry a module-level `macos` tag and remain covered by the macOS and packaging lanes.
 Files that mix portable and case-level `macos` tests SHALL fan out to both portable and macOS host lanes when changed.
+Every first-party application source, test, and child manifest change SHALL also select the macOS host lane, because retained macOS-tagged tests exercise that code across module and application boundaries.
+That selection is applied before the dependency rules, only adds the macOS host lane, and never clears a lane those rules select.
 The MLX lane SHALL install the accelerator extra and run the real provider package tests on Apple Silicon.
 The packaging lane SHALL retain payload, signing-contract, Swift application, lifecycle, assembled app, DMG, and packaged CLI validation.
 

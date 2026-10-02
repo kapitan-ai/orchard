@@ -36,6 +36,15 @@ while IFS= read -r path; do
 
   saw_path=true
 
+  # Retained macOS-tagged tests exercise first-party application source across
+  # module and application boundaries, so every application source, test, or
+  # child manifest change owes the macOS host lane its proof obligation. This
+  # check runs before the dependency case and only ever adds the macOS lane, so
+  # no lane selected below can be shadowed or cleared by it.
+  if [[ "$path" =~ ^apps/[^/]+/(lib|test)/ || "$path" =~ ^apps/[^/]+/mix\.exs$ ]]; then
+    macos=true
+  fi
+
   case "$path" in
     apps/orchard_shared/test/*)
       portable=true
