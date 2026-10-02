@@ -44,6 +44,7 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       assert html =~ "Requests"
       assert html =~ "requests-tools-row"
+      assert html =~ "max-w-[96rem]"
     end
 
     test "Requests nav is active", %{conn: conn} do
@@ -126,7 +127,7 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       assert html =~ "Input tokens"
       assert html =~ "Output tokens"
-      assert html =~ "Output accuracy"
+      refute html =~ "Output accuracy"
       assert html =~ "TTFT"
       assert html =~ "Total time"
       assert html =~ "first recorded public output"
@@ -140,12 +141,12 @@ defmodule OrchardConsole.RequestsLiveTest do
       conn: conn
     } do
       cases = [
-        {"exact", 13, 7, :exact, ["13", "7", "Exact"]},
-        {"lower", 13, 7, :lower_bound, ["13", "7", "Lower bound"]},
-        {"unknown", 13, 7, nil, ["13", "7", "Accuracy unknown"]},
-        {"zero_exact", 0, 0, :exact, ["0", "0", "Exact"]},
-        {"zero_lower", 0, 0, :lower_bound, ["0", "0", "Lower bound"]},
-        {"zero_unknown", 0, 0, nil, ["0", "0", "Accuracy unknown"]}
+        {"exact", 13, 7, :exact, ["13", "7 Exact"]},
+        {"lower", 13, 7, :lower_bound, ["13", "7 Lower bound"]},
+        {"unknown", 13, 7, nil, ["13", "7 Accuracy unknown"]},
+        {"zero_exact", 0, 0, :exact, ["0", "0 Exact"]},
+        {"zero_lower", 0, 0, :lower_bound, ["0", "0 Lower bound"]},
+        {"zero_unknown", 0, 0, nil, ["0", "0 Accuracy unknown"]}
       ]
 
       for {id, input, output, quality, _expected} <- cases do
@@ -161,7 +162,7 @@ defmodule OrchardConsole.RequestsLiveTest do
       {:ok, view, _html} = live(conn, "/console/requests")
 
       for {id, _input, _output, _quality, expected} <- cases do
-        assert Enum.slice(row_cells(view, "req_usage_#{id}"), 7, 3) == expected
+        assert Enum.slice(row_cells(view, "req_usage_#{id}"), 7, 2) == expected
       end
     end
 
@@ -171,9 +172,9 @@ defmodule OrchardConsole.RequestsLiveTest do
       {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
 
       for {input, output, expected} <- [
-            {nil, 0, ["Not recorded", "0", "Accuracy unknown"]},
-            {0, nil, ["0", "Not recorded", "Accuracy unknown"]},
-            {nil, nil, ["Not recorded", "Not recorded", "Accuracy unknown"]}
+            {nil, 0, ["Not recorded", "0 Accuracy unknown"]},
+            {0, nil, ["0", "Not recorded Accuracy unknown"]},
+            {nil, nil, ["Not recorded", "Not recorded Accuracy unknown"]}
           ] do
         assigns =
           Map.put(socket.assigns, :requests, [
@@ -181,7 +182,7 @@ defmodule OrchardConsole.RequestsLiveTest do
           ])
 
         html = render_component(&RequestsLive.render/1, assigns)
-        assert Enum.slice(row_cells(html, "req_missing"), 7, 3) == expected
+        assert Enum.slice(row_cells(html, "req_missing"), 7, 2) == expected
       end
     end
 
@@ -203,7 +204,7 @@ defmodule OrchardConsole.RequestsLiveTest do
       for state <- [:completed, :failed, :cancelled, :timed_out, :interrupted] do
         cells = row_cells(view, "req_terminal_#{state}")
         assert Enum.at(cells, 2) == to_string(state)
-        assert Enum.drop(cells, 7) == ["13", "7", "Lower bound", "250 ms", "1.75 s"]
+        assert Enum.drop(cells, 7) == ["13", "7 Lower bound", "250 ms", "1.75 s"]
       end
     end
 
@@ -230,10 +231,10 @@ defmodule OrchardConsole.RequestsLiveTest do
       {:ok, view, _html} = live(conn, "/console/requests")
 
       for state <- Request.active_states() do
-        ttft = if state == :streaming, do: "250 ms", else: "Not recorded"
+        ttft = if state == :streaming, do: "250 ms", else: "In progress"
         cells = row_cells(view, "req_active_#{state}")
         assert Enum.at(cells, 2) == to_string(state)
-        assert Enum.drop(cells, 7) == ["13", "0", "Accuracy unknown", ttft, "Not recorded"]
+        assert Enum.drop(cells, 7) == ["13", "0 Accuracy unknown", ttft, "In progress"]
       end
     end
 
@@ -265,8 +266,84 @@ defmodule OrchardConsole.RequestsLiveTest do
       {:ok, view, _html} = live(conn, "/console/requests")
 
       for {id, _first, _completed, expected} <- cases do
-        assert Enum.drop(row_cells(view, "req_timing_#{id}"), 10) == expected
+        assert Enum.drop(row_cells(view, "req_timing_#{id}"), 9) == expected
       end
+    end
+
+    test "active state never masks retained conflicting timing as progress", %{conn: conn} do
+      cases = [
+        {"negative_first", ~U[2026-03-15 11:59:59.000000Z], nil,
+         ["Not recorded", "Not recorded"]},
+        {"negative_end", nil, ~U[2026-03-15 11:59:59.000000Z], ["Not recorded", "Not recorded"]},
+        {"after_end", ~U[2026-03-15 12:00:02.000000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]},
+        {"retained_end", ~U[2026-03-15 12:00:00.250000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["250 ms", "1.75 s"]},
+        {"missing_first_with_end", nil, ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]}
+      ]
+
+      for state <- Request.active_states(), {id, first, completed, _expected} <- cases do
+        create_timed_request!(%{
+          public_id: "req_#{state}_#{id}",
+          state: state,
+          first_token_at: first,
+          completed_at: completed
+        })
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      for state <- Request.active_states(), {id, _first, _completed, expected} <- cases do
+        assert Enum.drop(row_cells(view, "req_#{state}_#{id}"), 9) == expected
+      end
+    end
+
+    test "absence prose stays outside monospace identity and metric values" do
+      request = create_request!(%{public_id: "req_absence", state: :running})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      assigns =
+        Map.put(socket.assigns, :requests, [
+          %{
+            request
+            | requested_model: nil,
+              input_tokens: nil,
+              output_tokens: nil,
+              inserted_at: nil
+          }
+        ])
+
+      html = render_component(&RequestsLive.render/1, assigns)
+      assert Enum.drop(row_cells(html, "req_absence"), 9) == ["Not recorded", "Not recorded"]
+      doc = LazyHTML.from_fragment(html)
+
+      assert doc |> LazyHTML.query("#request-req_absence td:nth-child(5)") |> LazyHTML.text() =~
+               "Not recorded"
+
+      refute doc |> LazyHTML.query("#request-req_absence .font-mono") |> LazyHTML.text() =~
+               "Not recorded"
+
+      assert Enum.empty?(LazyHTML.query(doc, "#request-req_absence td:nth-child(5) wbr"))
+    end
+
+    test "compact Node prefix retains full accessible identity and Created does not wrap" do
+      node_id = "12345678-90ab-cdef-1234-567890abcdef"
+      request = create_request!(%{public_id: "req_compact"})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      assigns = Map.put(socket.assigns, :requests, [%{request | node_id: node_id}])
+      doc = render_component(&RequestsLive.render/1, assigns) |> LazyHTML.from_fragment()
+
+      assert doc |> LazyHTML.query("span[aria-hidden='true']") |> LazyHTML.text() == "12345678"
+
+      assert doc |> LazyHTML.query("span[title='#{node_id}'] .sr-only") |> LazyHTML.text() ==
+               node_id
+
+      assert Enum.count(LazyHTML.query(doc, "#request-req_compact td.whitespace-nowrap")) == 1
+
+      assert Enum.count(
+               LazyHTML.query(doc, "#request-req_compact td:nth-child(9) .block.text-xs")
+             ) == 1
     end
 
     test "keeps exact model identity and public RequestID navigation", %{conn: conn} do
@@ -433,7 +510,7 @@ defmodule OrchardConsole.RequestsLiveTest do
     html
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#request-#{public_id} td")
-    |> Enum.map(&(LazyHTML.text(&1) |> String.trim()))
+    |> Enum.map(&(LazyHTML.text(&1) |> String.replace(~r/\s+/, " ") |> String.trim()))
   end
 
   defp create_timed_request!(overrides) do

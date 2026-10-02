@@ -7,6 +7,7 @@ defmodule OrchardConsole.RequestsLive do
   use OrchardConsole, :live_view
 
   alias Orchard.Requests
+  alias Orchard.Requests.Request
   alias OrchardConsole.RequestEvidence
   alias OrchardConsole.TimeHelpers
 
@@ -20,7 +21,7 @@ defmodule OrchardConsole.RequestsLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Requests", active_nav: :requests)
+      |> assign(page_title: "Requests", active_nav: :requests, page_mode: :wide)
       |> assign_loading_state()
       |> load_requests_page()
 
@@ -95,14 +96,15 @@ defmodule OrchardConsole.RequestsLive do
                 output-usage classification was not recorded; it does not mean exact.</p>
               <p>TTFT starts at Request creation and ends at the first recorded public output,
                 not client receipt. Total time ends at the persisted final outcome.
-                Missing or inconsistent timing is Not recorded, not zero.</p>
+                Pending timing on active requests is In progress. Missing or inconsistent
+                retained timing is Not recorded, not zero.</p>
             </div>
           </details>
 
           <div id="requests-table-region" role="region" aria-label="Recent requests" tabindex="0"
-            class="overflow-x-auto rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800">
+            class="overflow-x-auto rounded [&_th]:px-3 [&_td]:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800">
           <.table id="requests-table" rows={@requests} row_id={&"request-#{&1.public_id}"} class="contents">
-            <:col :let={req} label="Created" mono><.local_time value={req.inserted_at} format={:datetime_minute} /></:col>
+            <:col :let={req} label="Created" mono class="whitespace-nowrap"><.local_time value={req.inserted_at} format={:datetime_minute} /></:col>
             <:col :let={req} label="Public ID" mono>
               <.link
                 navigate={~p"/console/requests/#{req.public_id}"}
@@ -115,14 +117,33 @@ defmodule OrchardConsole.RequestsLive do
               <.badge tone={state_tone(req.state)}>{req.state}</.badge>
             </:col>
             <:col :let={req} label="Endpoint">{format_endpoint(req.endpoint)}</:col>
-            <:col :let={req} label="Model" mono class="min-w-48"><.model_identity value={req.requested_model || "Not recorded"} /></:col>
-            <:col :let={req} label="Node" mono>{req.node_id || "\u2014"}</:col>
+            <:col :let={req} label="Model">
+              <span :if={req.requested_model} class="font-mono text-xs"><.model_identity value={req.requested_model} /></span>
+              <span :if={is_nil(req.requested_model)}>Not recorded</span>
+            </:col>
+            <:col :let={req} label="Node">
+              <span :if={req.node_id} title={req.node_id} class="font-mono text-xs">
+                <span aria-hidden="true">{String.slice(req.node_id, 0, 8)}</span>
+                <span class="sr-only">{req.node_id}</span>
+              </span>
+              <span :if={is_nil(req.node_id)}>—</span>
+            </:col>
             <:col :let={req} label="HTTP" mono>{format_http_status(req.http_status)}</:col>
-            <:col :let={req} label="Input tokens" mono>{format_count(req.input_tokens)}</:col>
-            <:col :let={req} label="Output tokens" mono>{format_count(req.output_tokens)}</:col>
-            <:col :let={req} label="Output accuracy">{format_output_accuracy(req.output_usage_status)}</:col>
-            <:col :let={req} label="TTFT" mono>{RequestEvidence.duration(RequestEvidence.ttft_ms(req))}</:col>
-            <:col :let={req} label="Total time" mono>{RequestEvidence.duration(TimeHelpers.elapsed_ms(req.inserted_at, req.completed_at))}</:col>
+            <:col :let={req} label="Input tokens">
+              <span class={is_integer(req.input_tokens) && "font-mono text-xs"}>{format_count(req.input_tokens)}</span>
+            </:col>
+            <:col :let={req} label="Output tokens">
+              <span class={is_integer(req.output_tokens) && "font-mono text-xs"}>{format_count(req.output_tokens)}</span>
+              <span class="block text-xs text-slate-500 dark:text-slate-400">{" "}{format_output_accuracy(req.output_usage_status)}</span>
+            </:col>
+            <:col :let={req} label="TTFT">
+              <% ms = RequestEvidence.ttft_ms(req) %>
+              <span class={is_integer(ms) && "font-mono text-xs"}>{format_timing(req, :first_token_at, ms)}</span>
+            </:col>
+            <:col :let={req} label="Total time">
+              <% ms = TimeHelpers.elapsed_ms(req.inserted_at, req.completed_at) %>
+              <span class={is_integer(ms) && "font-mono text-xs"}>{format_timing(req, :completed_at, ms)}</span>
+            </:col>
 
             <:empty>
               <.state_message
@@ -260,4 +281,17 @@ defmodule OrchardConsole.RequestsLive do
   defp format_output_accuracy(:exact), do: "Exact"
   defp format_output_accuracy(:lower_bound), do: "Lower bound"
   defp format_output_accuracy(nil), do: "Accuracy unknown"
+
+  defp format_timing(request, field, ms) do
+    pending? =
+      request.state in Request.active_states() and
+        match?(%DateTime{}, request.inserted_at) and is_nil(request.completed_at) and
+        (is_nil(request.first_token_at) or is_integer(RequestEvidence.ttft_ms(request)))
+
+    if is_nil(Map.fetch!(request, field)) and pending? do
+      "In progress"
+    else
+      RequestEvidence.duration(ms)
+    end
+  end
 end
