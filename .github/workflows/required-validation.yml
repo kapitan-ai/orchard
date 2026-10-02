@@ -145,9 +145,10 @@ jobs:
       # `mise current` reports the configured toolchain; the runtime probes
       # report what each installed runtime says. Probes never install tools
       # or create environments: mise auto-install is off for this step only,
-      # and each package's existing .venv interpreter is run directly (absent
-      # means unknown). The PostgreSQL probe is a read-only SHOW, and only its
-      # numeric value is kept.
+      # and uv discovers each package's existing .venv interpreter; only a path
+      # inside that .venv counts, and its version is read from that exact path
+      # (absent, incompatible, or fallback interpreters mean unknown).
+      # The PostgreSQL probe is a read-only SHOW; only its numeric value is kept.
       - name: Record setup identity
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -170,12 +171,15 @@ jobs:
               '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().')"
             printf 'elixir %s\n' "$(probe mise exec -- elixir --short-version)"
             printf 'uv %s\n' "$(probe mise exec -- uv --version | awk '{ print $2 }')"
+            root="$(pwd -P)"
             for package in orchard_tokenizer orchard_worker_mlx; do
-              interpreter="native/$package/.venv/bin/python"
+              found="$(probe mise exec -- uv python find --directory "native/$package")"
               version=""
-              if [[ -x "$interpreter" ]]; then
-                version="$(probe "$interpreter" --version | awk '{ print $2 }')"
-              fi
+              case "$found" in
+                *..*) ;;
+                "$root/native/$package/.venv/bin/"*)
+                  version="$(probe mise exec -- uv python find --no-project --show-version "$found")" ;;
+              esac
               printf 'python_%s %s\n' "${package#orchard_}" "$version"
             done
           } | "$report" runtime "$REPORT_DIR"

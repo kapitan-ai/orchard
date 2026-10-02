@@ -1250,11 +1250,87 @@ grep -Fxq '          MISE_EXEC_AUTO_INSTALL: "false"' <<<"$setup_identity" ||
   fail 'setup identity probes may auto-install mise tools'
 [[ "$(grep -c 'MISE_EXEC_AUTO_INSTALL' "$WORKFLOW")" -eq 1 ]] ||
   fail 'mise auto-install must be disabled only for the diagnostic probe step'
-grep -Fq 'interpreter="native/$package/.venv/bin/python"' <<<"$setup_identity" ||
-  fail 'Python probes must run the existing package interpreter directly'
-if grep -Eq 'uv (run|sync)|pip ' <<<"$setup_identity"; then
-  fail 'setup identity probes must not run or sync package environments'
+for probe_form in 'root="$(pwd -P)"' 'uv python find --directory "native/$package"' \
+  '"$root/native/$package/.venv/bin/"*)' 'uv python find --no-project --show-version "$found"'; do
+  grep -Fq -- "$probe_form" <<<"$setup_identity" || fail "Python probe lost its uv discovery form: $probe_form"
+done
+if grep -Eq 'uv (run|sync|venv)|pip |\.venv/bin/python|(^|[^a-z_])python3?( |"|$)' <<<"${setup_identity//uv python find/}"; then
+  fail 'setup identity probes must not run Python directly or run or sync package environments'
 fi
+
+# Runs the workflow's own probe helper and Python loop against a stub mise
+# that answers `uv python find` the way uv does: the package .venv when it
+# exists and is compatible, otherwise a global fallback interpreter.
+python_probe="$(awk '
+  /^          probe\(\) \{/ { print substr($0, 11) }
+  /^            root="\$\(pwd -P\)"$/ { capture = 1 }
+  capture { print substr($0, 13) }
+  capture && /^            done$/ { exit }
+' <<<"$setup_identity")"
+[[ "$(grep -c 'uv python find' <<<"$python_probe")" -eq 2 ]] || fail 'could not extract the workflow Python probe'
+PROBE_BIN="$TMP_ROOT/probe-bin"
+mkdir -p "$PROBE_BIN"
+printf '#!/bin/sh\nshift\nexec "$@"\n' > "$PROBE_BIN/timeout"
+cat > "$PROBE_BIN/mise" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$PROBE_LOG"
+[ "$1 $2 $3 $4 $5" = "exec -- uv python find" ] || exit 9
+shift 5
+if [ "$1" = --directory ]; then
+  if [ -n "${PROBE_FIND_OVERRIDE:-}" ]; then
+    printf '%s\n' "$PROBE_FIND_OVERRIDE"
+  elif [ -e "$2/.venv/bin/python3" ] && [ ! -e "$2/.venv/INCOMPATIBLE" ]; then
+    printf '%s/%s/.venv/bin/python3\n' "$(pwd -P)" "$2"
+  else
+    printf '/opt/mise/installs/python/3.11.15/bin/python3\n'
+  fi
+  exit 0
+fi
+[ "$1 $2" = "--no-project --show-version" ] || exit 9
+if [ -e "$3" ] && [ -z "${PROBE_VANISH:-}" ]; then
+  printf '3.11.15\n'
+else
+  printf 'error: No interpreter found at path\n' >&2
+  exit 2
+fi
+EOF
+chmod +x "$PROBE_BIN/timeout" "$PROBE_BIN/mise"
+
+# Case: TOKENIZER_STATE|WORKER_STATE|EXTRA_ENV|EXPECTED_TOKENIZER|EXPECTED_WORKER
+probe_index=0
+while IFS='|' read -r tokenizer_state worker_state extra_env expected_tokenizer expected_worker; do
+  [[ -n "$tokenizer_state" ]] || continue
+  probe_index=$((probe_index + 1))
+  fixture="$TMP_ROOT/python-probe-$probe_index"
+  for pair in "orchard_tokenizer:$tokenizer_state" "orchard_worker_mlx:$worker_state"; do
+    mkdir -p "$fixture/native/${pair%%:*}"
+    case "${pair#*:}" in
+      present | incompatible) mkdir -p "$fixture/native/${pair%%:*}/.venv/bin"
+        : > "$fixture/native/${pair%%:*}/.venv/bin/python3" ;;
+    esac
+    [[ "${pair#*:}" != incompatible ]] || : > "$fixture/native/${pair%%:*}/.venv/INCOMPATIBLE"
+  done
+  fixture_root="$(cd "$fixture" && pwd -P)"
+  extra_env="${extra_env//@ROOT@/$fixture_root}"
+  : > "$fixture.log"
+  probe_env=(PATH="$PROBE_BIN:$PATH" PROBE_LOG="$fixture.log")
+  [[ -z "$extra_env" ]] || probe_env+=("$extra_env")
+  probe_output="$(cd "$fixture" && env -i "${probe_env[@]}" "$TEST_BASH" -c "$python_probe")"
+  [[ "$probe_output" == "python_tokenizer $expected_tokenizer"$'\n'"python_worker_mlx $expected_worker" ]] ||
+    fail "Python probe case $probe_index printed: $probe_output"
+  if grep -Ev '^exec -- uv python find (--directory native/orchard_[a-z_]+|--no-project --show-version /.*)$' \
+    "$fixture.log" >/dev/null; then
+    fail "Python probe case $probe_index ran an unexpected command"
+  fi
+done <<'EOF'
+present|absent||3.11.15|
+absent|present|||3.11.15
+incompatible|present|||3.11.15
+present|present|PROBE_FIND_OVERRIDE=/elsewhere/native/orchard_tokenizer/.venv/bin/python3||
+present|present|PROBE_FIND_OVERRIDE=@ROOT@/native/orchard_tokenizer/.venv/bin/../../../../evil/python3||
+present|present|PROBE_VANISH=1||
+EOF
+[[ "$probe_index" -eq 6 ]] || fail "only $probe_index Python probe cases ran"
 
 cache_step="$(step_block "$linux_job" 'Cache Dialyzer PLTs')"
 cache_identity="$(step_block "$linux_job" 'Record cache identity')"
