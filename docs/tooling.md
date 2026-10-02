@@ -145,11 +145,26 @@ scripts/test-linux-portable-core.sh
 scripts/test-provider-neutral-conformance.sh
 scripts/ci/test-classify-required-validation-paths.sh
 scripts/ci/test-required-validation-gate.sh
+scripts/ci/test-linux-portable-validation-report.sh
 ```
 
 `scripts/test-linux-portable-core.sh` runs the Linux portable lane's tests, coverage, tokenizer checks, and non-accelerator Worker Runtime checks; it excludes the `integration`, `macos`, `mlx_smoke`, and `mlx_benchmark` tags and refuses to run on Darwin.
 `scripts/test-provider-neutral-conformance.sh` runs the focused Worker Runtime, Runtime Endpoint, capability, lifecycle-invariant, and scheduler contract tests against the prepared test database.
-The two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+The first two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+
+The Linux portable lane also uploads a bounded validation report, which is diagnostic only.
+Validation is unchanged: the lane runs the same commands with the same arguments, order, exclusions, and fail-fast behavior, and the required gate still reads job results.
+When `ORCHARD_LINUX_PORTABLE_REPORT_DIR` is set, `scripts/test-linux-portable-core.sh` streams each command's output unchanged, parses a private temporary copy, and deletes that copy.
+The script's exit status is always the failing command's own status, and a reporting failure only prints a warning.
+The report file holds only allowlisted `key=value` facts: source, head, and base SHAs, event and run attempt, public runner image, the configured toolchain from `mise current`, the versions that Erlang/OTP, Elixir, uv, and each package environment's Python actually report, the numeric PostgreSQL `server_version_num` from a read-only `SHOW`, committed lockfile SHA-256 before and after setup, the existing Dialyzer PLT cache hit or miss with a SHA-256 of its unchanged key, and each command's label, exit status, and elapsed time.
+For test commands it also records the ExUnit seed and result totals that were already printed, pytest totals, coverage totals, and up to 20 failure identities per command, given as module and file location or pytest node ID with parameters removed.
+It never holds raw output, assertion payloads, passing-test names, environment values, credentials, or absolute paths.
+A changed lockfile is reported but does not fail the lane.
+Facts accumulate in an unpublished staging file; the finalize step validates, bounds, and redacts them, and only then publishes `report.txt` with a single rename, so a failed or interrupted finalize uploads nothing.
+`report.result` is `success` only when every command finished with status 0, every suite summary was recognized, every metadata section is present, and the job had not failed or been cancelled.
+An interrupted run, unrecognized output, or missing metadata gives `unknown`, and a hard cancellation can leave no artifact at all; treat a missing artifact as unknown too.
+`scripts/ci/test-linux-portable-validation-report.sh` drives the lane script with disposable `uname` and `mise` stubs and proves the exact command order, the stop at each failing command, the host guard, interrupt handling, report bounds, and redaction on any host.
+Set `ORCHARD_TEST_BASH=/bin/bash` to repeat it under macOS bash 3.2.
 
 Native validation:
 

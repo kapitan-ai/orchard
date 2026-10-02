@@ -83,6 +83,7 @@ jobs:
           scripts/ci/test-required-validation-gate.sh
           scripts/ci/test-platform-test-routing.sh
           scripts/ci/test-app-distribution-lane.sh
+          scripts/ci/test-linux-portable-validation-report.sh
 
       - name: Test distribution pause guards
         run: scripts/test-distribution-control.sh
@@ -111,6 +112,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # Report steps are diagnostic: they never fail the lane, and a missing
+      # or incomplete report means unknown, never success (docs/tooling.md).
+      - name: Start validation report
+        continue-on-error: true
+        env:
+          ORCHARD_REPORT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ORCHARD_REPORT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: |
+          scripts/ci/linux-portable-validation-report.sh start "$REPORT_DIR"
+          scripts/ci/linux-portable-validation-report.sh source "$REPORT_DIR"
+          scripts/ci/linux-portable-validation-report.sh lockfiles "$REPORT_DIR" before
+
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
@@ -128,6 +142,37 @@ jobs:
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 
+      # `mise current` reports the configured toolchain; the runtime probes
+      # report what each installed runtime says. The PostgreSQL probe is a
+      # read-only SHOW, and only its numeric value is kept.
+      - name: Record setup identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          PGCONNECT_TIMEOUT: "5"
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: |
+          # Collect every fact possible; a missing fact is recorded as unknown.
+          set +e
+          report=scripts/ci/linux-portable-validation-report.sh
+          probe() { timeout 60 "$@" 2>/dev/null | head -n 1; }
+          "$report" lockfiles "$REPORT_DIR" after
+          {
+            printf 'mise %s\n' "$(probe mise --version | awk '{ print $1 }')"
+            timeout 60 mise current 2>/dev/null
+          } | "$report" tools "$REPORT_DIR"
+          {
+            printf 'erlang %s\n' "$(probe mise exec -- erl -noshell -eval \
+              '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().')"
+            printf 'elixir %s\n' "$(probe mise exec -- elixir --short-version)"
+            printf 'uv %s\n' "$(probe mise exec -- uv --version | awk '{ print $2 }')"
+            printf 'python_tokenizer %s\n' "$(probe mise exec -- uv run --frozen --no-sync \
+              --directory native/orchard_tokenizer python --version | awk '{ print $2 }')"
+            printf 'python_worker_mlx %s\n' "$(probe mise exec -- uv run --frozen --no-sync \
+              --directory native/orchard_worker_mlx python --version | awk '{ print $2 }')"
+          } | "$report" runtime "$REPORT_DIR"
+          probe psql -X -A -t -c 'SHOW server_version_num' | "$report" postgres "$REPORT_DIR"
+
       - name: Prove portable compilation excludes Darwin helpers
         run: scripts/test-portable-core-compilation.sh
 
@@ -137,6 +182,7 @@ jobs:
           MIX_ENV=test mise exec -- mix ecto.migrate
 
       - name: Cache Dialyzer PLTs
+        id: dialyzer-plt
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -144,6 +190,20 @@ jobs:
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
           key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+
+      # Re-evaluates the unchanged cache key expression above (actions/cache
+      # exposes only cache-hit) and records its SHA-256 identity.
+      - name: Record cache identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          DIALYZER_PLT_CACHE_HIT: ${{ steps.dialyzer-plt.outputs.cache-hit }}
+          DIALYZER_PLT_KEY: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          DIALYZER_PLT_OUTCOME: ${{ steps.dialyzer-plt.outcome }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: >-
+          scripts/ci/linux-portable-validation-report.sh cache "$REPORT_DIR" dialyzer_plt
+          "$DIALYZER_PLT_OUTCOME" "$DIALYZER_PLT_CACHE_HIT" "$DIALYZER_PLT_KEY"
 
       - name: Run portable static gates
         run: |
@@ -153,7 +213,29 @@ jobs:
           mise exec -- mix dialyzer
 
       - name: Run portable tests and coverage
+        env:
+          ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
+
+      - name: Finalize validation report
+        if: always()
+        continue-on-error: true
+        env:
+          JOB_STATUS: ${{ job.status }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: scripts/ci/linux-portable-validation-report.sh finalize "$REPORT_DIR" "$JOB_STATUS"
+
+      # Uploads only report.txt, which exists only after a successful finalize.
+      # The staging file and raw output are never uploaded.
+      - name: Upload validation report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-portable-validation-report-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/orchard-linux-portable-report/report.txt
+          if-no-files-found: warn
+          retention-days: 14
 
   provider-conformance:
     name: Provider-neutral conformance
