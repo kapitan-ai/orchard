@@ -223,7 +223,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, "#request-total-tokens", "214")
       refute has_element?(view, "#request-more-evidence details[open]")
 
-      view |> element("#request-attempt-1-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
       assert has_element?(view, "#inspector-attempt-result", "retried")
       assert has_element?(view, "#inspector-attempt-result", "internal_error")
@@ -236,7 +236,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, ~s(#inspector-attempt-end time[datetime="2026-09-11T14:32:06Z"]))
       refute has_element?(view, "#inspector-attempt", "No bounded timing interval")
 
-      view |> element("#request-attempt-1-2 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#inspector-attempt-outcome dd", "completed")
       refute has_element?(view, "#inspector-attempt-result", "retry_decision")
       refute has_element?(view, "#inspector-attempt-result", "output_usage_status")
@@ -1594,6 +1594,63 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   describe "selected persisted evidence" do
+    test "selection commands focus the panel and distinguish its action from inline inspection",
+         %{
+           conn: conn
+         } do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert has_element?(view, ~s(#request-evidence-inspector[tabindex="-1"]))
+      assert has_element?(view, "#request-attempt-1-1 summary", "Inspect attempt")
+
+      [mounted_commands] =
+        view
+        |> element("#request-recorded-events")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#request-recorded-events")
+        |> LazyHTML.attribute("phx-mounted")
+
+      assert [["ignore_attrs", %{"attrs" => ["open"]}]] = Jason.decode!(mounted_commands)
+
+      for selector <- ["#request-attempt-1-1", "#request-event-1"] do
+        button = "#{selector} button[aria-controls=request-evidence-inspector]"
+        assert has_element?(view, button, "Show in Selected evidence")
+
+        [commands] =
+          view
+          |> element(button)
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.query("button")
+          |> LazyHTML.attribute("phx-click")
+
+        assert [
+                 ["push", %{"event" => "select_evidence"}],
+                 ["focus", %{"to" => "#request-evidence-inspector"}]
+               ] =
+                 Jason.decode!(commands)
+
+        view |> element(button) |> render_click()
+
+        assert has_element?(
+                 view,
+                 button <> ~s([aria-pressed="true"].border-navy.bg-slate-100),
+                 "Selected"
+               )
+
+        assert has_element?(view, "#inspector-request", request.public_id)
+        refute has_element?(view, "#inspector-request-id")
+      end
+
+      assert has_element?(
+               view,
+               ~s(#request-attempt-1-1 button[aria-pressed="false"].border-slate-200.bg-white)
+             )
+    end
+
     test "SPEC §3.7.1 candidate hints never replace validated source identity" do
       request = create_request!(%{state: :completed, payload_capture_mode: :full})
       append_inspector_step!(request)
@@ -1698,7 +1755,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, "#request-evidence-selection", "Select an attempt")
 
       view |> element("button[phx-click=refresh_request]") |> render_click()
-      view |> element("#request-attempt-1-2 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#request-evidence-selection", "Turn 1 · Attempt 2 selected")
 
       Repo.delete_all(
@@ -1745,9 +1802,9 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, "#request-evidence-selection", "Select an attempt")
       refute render(view) =~ "other-request"
 
-      view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
       assert has_element?(view, "#inspector-request", request.public_id)
-      assert has_element?(view, "#inspector-request-id", request.id)
+      refute has_element?(view, "#inspector-request-id")
       assert has_element?(view, "#inspector-event-1-scope dd", "Request")
       assert has_element?(view, "#inspector-event-1-outcome dd", "failed")
       assert has_element?(view, "#request-summary-card", "completed")
@@ -1791,7 +1848,7 @@ defmodule OrchardConsole.RequestLiveTest do
         })
 
         {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
-        view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+        view |> element("#request-event-1 button[phx-value-event]") |> render_click()
 
         assert has_element?(view, "#inspector-event-1-scope", "tool_call · Turn 1 · Attempt 1")
         assert has_element?(view, "#inspector-event-1-parent dd", "inference_turn:t1:a1")
@@ -1852,7 +1909,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       for seq <- [1, 2, 3] do
         view
-        |> element("#request-event-#{seq} button[phx-click=select_evidence]")
+        |> element("#request-event-#{seq} button[phx-value-event]")
         |> render_click()
 
         assert has_element?(view, "#inspector-event-#{seq}-scope", "Unclassified event")
@@ -1861,10 +1918,10 @@ defmodule OrchardConsole.RequestLiveTest do
         assert has_element?(view, "#inspector-event-payload-#{seq}", "forged-parent")
       end
 
-      view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
       assert has_element?(view, "#inspector-event-1", "Invalid step envelope")
 
-      view |> element("#request-event-3 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-3 button[phx-value-event]") |> render_click()
       assert has_element?(view, "#inspector-event-3-outcome dd", "Not established")
     end
 
@@ -1872,7 +1929,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request = create_request!(%{payload_capture_mode: :none})
       append_event!(request, %{event_type: "state_transition", state: :received})
       {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
-      view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
 
       assert has_element?(
                view,
@@ -1913,7 +1970,7 @@ defmodule OrchardConsole.RequestLiveTest do
         {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
 
         view
-        |> element("#request-attempt-1-1 button[phx-click=select_evidence]")
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
         |> render_click()
 
         assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
@@ -1930,7 +1987,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request = create_request!(%{state: :running})
       append_inspector_step!(request)
       {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
-      view |> element("#request-attempt-1-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#inspector-attempt-outcome", "Terminal outcome not recorded")
       assert has_element?(view, "#inspector-attempt-end", "Not recorded")
       assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
@@ -1955,7 +2012,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(replay, "#request-evidence-selection", "Select an attempt")
 
       replay
-      |> element("#request-attempt-1-1 button[phx-click=select_evidence]")
+      |> element("#request-attempt-1-1 button[phx-value-attempt]")
       |> render_click()
 
       assert has_element?(replay, "#inspector-attempt-outcome dd", "completed")
@@ -1974,7 +2031,7 @@ defmodule OrchardConsole.RequestLiveTest do
         })
 
       {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
-      view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
       append_event!(request, %{event_type: "state_transition", state: :running})
       view |> element("button[phx-click=refresh_request]") |> render_click()
       assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
@@ -1997,7 +2054,7 @@ defmodule OrchardConsole.RequestLiveTest do
       append_inspector_step!(parent)
       append_inspector_step!(child)
       {:ok, view, _} = live(conn, "/console/requests/#{child.public_id}")
-      view |> element("#request-event-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
 
       {:ok, destination, _} =
         view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
@@ -2029,14 +2086,14 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
 
-      view |> element("#request-attempt-1-1 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#inspector-attempt-outcome", "Conflicting terminal evidence")
       assert has_element?(view, "#inspector-attempt-start", "Not recorded")
       assert has_element?(view, "#inspector-attempt-result-empty", "No unambiguous")
       assert has_element?(view, "#inspector-event-1-outcome", "failed")
       assert has_element?(view, "#inspector-event-2-outcome", "completed")
 
-      view |> element("#request-attempt-1-2 button[phx-click=select_evidence]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
       assert has_element?(view, "#inspector-attempt-outcome", "Invalid terminal evidence")
       assert has_element?(view, "#inspector-event-3-outcome", "Invalid terminal evidence")
       refute has_element?(view, "#inspector-event-1")
@@ -2059,7 +2116,7 @@ defmodule OrchardConsole.RequestLiveTest do
         {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
 
         view
-        |> element("#request-attempt-1-1 button[phx-click=select_evidence]")
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
         |> render_click()
 
         assert has_element?(view, "#inspector-attempt-outcome dd", to_string(@terminal_state))

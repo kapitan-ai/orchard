@@ -16,6 +16,7 @@ defmodule OrchardConsole.RequestLive do
   alias Orchard.Requests.{Request, RequestStepEvent}
   alias OrchardConsole.RequestEvidence
   alias OrchardConsole.TimeHelpers
+  alias Phoenix.LiveView.JS
 
   @default_refresh_interval_ms 5_000
   @unsafe_scheduler_diagnostic_key_pattern ~r/(prompt|token|secret|credential|password|dsn|body|payload|request|response)/i
@@ -794,7 +795,7 @@ defmodule OrchardConsole.RequestLive do
         <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Gaps do not identify queue, loading, or cleanup phases.
         </p>
-        <details id="request-recorded-events" class="mt-6">
+        <details id="request-recorded-events" class="mt-6" phx-mounted={JS.ignore_attributes(["open"])}>
           <summary class="request-evidence-summary">View {length(@events)} recorded events</summary>
           <p class="my-3 text-xs text-slate-500 dark:text-slate-400">
             Sequence order · elapsed from Request creation. Expand an event for its timestamp and retained payload.
@@ -820,7 +821,7 @@ defmodule OrchardConsole.RequestLive do
               </details>
               <.evidence_selection_button kind="event" value={event.seq}
                 selected={@selected_evidence == {:event, event.seq}}>
-                Inspect event #{event.seq}
+                Show in Selected evidence<span class="sr-only">: event #{event.seq}</span>
               </.evidence_selection_button>
             </li>
           </ol>
@@ -907,7 +908,7 @@ defmodule OrchardConsole.RequestLive do
             </details>
             <.evidence_selection_button kind="attempt" value={attempt.step_id}
               selected={@selected_evidence == {:attempt, attempt.step_id}}>
-              Inspect Turn {attempt.turn} · Attempt {attempt.number}
+              Show in Selected evidence<span class="sr-only">: Turn {attempt.turn} · Attempt {attempt.number}</span>
             </.evidence_selection_button>
           </li>
         </ol>
@@ -922,9 +923,15 @@ defmodule OrchardConsole.RequestLive do
 
   defp evidence_selection_button(assigns) do
     ~H"""
-    <button type="button" phx-click="select_evidence" { %{"phx-value-#{@kind}" => @value} }
+    <button type="button" phx-click={JS.push("select_evidence") |> JS.focus(to: "#request-evidence-inspector")}
+      { %{"phx-value-#{@kind}" => @value} }
       aria-controls="request-evidence-inspector" aria-pressed={to_string(@selected)}
-      class="mt-3 rounded-md border border-slate-200 px-3 py-1.5 text-sm text-navy dark:border-slate-700 dark:text-sky-400">
+      class={[
+        "mt-3 rounded-md border px-3 py-1.5 text-sm text-navy dark:text-sky-400",
+        if(@selected,
+          do: "border-navy bg-slate-100 hover:bg-slate-200 dark:border-sky-400 dark:bg-slate-900/60 dark:hover:bg-slate-900",
+          else: "border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700/50")
+      ]}>
       {render_slot(@inner_block)}<span :if={@selected}> · Selected</span>
     </button>
     """
@@ -940,7 +947,8 @@ defmodule OrchardConsole.RequestLive do
     assigns = assign(assigns, attempt: attempt, selected_events: events)
 
     ~H"""
-    <section id="request-evidence-inspector" aria-labelledby="request-evidence-heading" class="min-w-0">
+    <section id="request-evidence-inspector" aria-labelledby="request-evidence-heading" tabindex="-1"
+      class="min-w-0 scroll-mt-6 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 dark:focus-visible:ring-sky-400/40">
       <.card>
         <:title><span id="request-evidence-heading">Selected persisted evidence</span></:title>
         <p id="request-evidence-selection" role="status" class="mb-4 text-sm text-slate-500 dark:text-slate-400">
@@ -956,9 +964,8 @@ defmodule OrchardConsole.RequestLive do
           <% end %>
         </p>
         <div :if={@selected_events != []} class="min-w-0 space-y-5">
-          <.detail_grid class="grid-cols-1 sm:grid-cols-2">
+          <.detail_grid class="grid-cols-1">
             <.detail_field id="inspector-request" label="Request" mono break_all>{@request.public_id}</.detail_field>
-            <.detail_field id="inspector-request-id" label="Request ID" mono break_all>{@request.id}</.detail_field>
           </.detail_grid>
           <p class="text-sm text-slate-500 dark:text-slate-400">{capture_description(@request.payload_capture_mode)}</p>
           <div :if={@attempt} id="inspector-attempt" class="min-w-0 space-y-4">
