@@ -145,11 +145,31 @@ scripts/test-linux-portable-core.sh
 scripts/test-provider-neutral-conformance.sh
 scripts/ci/test-classify-required-validation-paths.sh
 scripts/ci/test-required-validation-gate.sh
+scripts/ci/test-linux-portable-validation-report.sh
 ```
 
 `scripts/test-linux-portable-core.sh` runs the Linux portable lane's tests, coverage, tokenizer checks, and non-accelerator Worker Runtime checks; it excludes the `integration`, `macos`, `mlx_smoke`, and `mlx_benchmark` tags and refuses to run on Darwin.
 `scripts/test-provider-neutral-conformance.sh` runs the focused Worker Runtime, Runtime Endpoint, capability, lifecycle-invariant, and scheduler contract tests against the prepared test database.
-The two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+The first two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+
+The Linux portable lane also uploads a bounded validation report, which is diagnostic only.
+Validation is unchanged: the lane runs the same commands with the same arguments, order, exclusions, and fail-fast behavior, and the required gate still reads job results.
+When `ORCHARD_LINUX_PORTABLE_REPORT_DIR` is set, `scripts/test-linux-portable-core.sh` streams each command's output to stdout, parses a private temporary copy, and deletes that copy.
+If the capture `tee` stops early, the rest of the output is still drained to stdout, so the command never sees a broken pipe; only bytes the failed `tee` had already read may be missing from the log, and that step's capture is recorded as failed.
+When a command exits on its own, the script's exit status is that command's status, and a reporting failure only prints a warning.
+When the run is interrupted by SIGINT or SIGTERM in this mode, the script finishes the current command and then exits with 130 or 143, whatever that command returned, and the report records the interruption as `unknown`.
+The report file holds only allowlisted `key=value` facts: source, head, and base SHAs, event and run attempt, public runner image, the configured toolchain from `mise current`, the versions reported by Erlang/OTP, Elixir, and uv, and the version of each package's existing `.venv` Python found through `uv python find` (probes never install tools, run Python directly, or create environments; an absent or incompatible environment, or a fallback interpreter outside the package `.venv`, is `unknown`), the numeric PostgreSQL `server_version_num` from a read-only `SHOW`, committed lockfile SHA-256 before and after setup, the existing Dialyzer PLT cache hit or miss with a SHA-256 of its unchanged key, and each command's label, exit status, and elapsed time.
+For test commands it also records the ExUnit seed and result totals that were already printed, pytest totals, coverage totals, and up to 20 failure identities per command, given as module and file location or pytest node ID with parameters removed.
+It never holds raw output, assertion payloads, passing-test names, environment values, credentials, or absolute paths.
+A changed lockfile is reported but does not fail the lane.
+Facts accumulate in an unpublished staging file.
+The finalize step accepts only the fixed staging vocabulary, then validates, bounds, and redacts the facts and publishes `report.txt` with a single rename.
+The upload runs only when that step succeeded and confirmed `report.txt` is a regular file, so a failed or interrupted finalize uploads nothing.
+`report.result` is `success` only when all ten commands are recorded in order with valid facts and status 0, every suite summary was recognized, every metadata fact is known, and the job had not failed or been cancelled.
+It is `failure` only when a command recorded a known nonzero exit status and the run was neither interrupted nor cancelled; `tests.result` and `tests.first_failed_step` still record that command outcome.
+An interrupted run, unrecognized output, a malformed or missing fact, or an unexpected key gives `unknown`, and a hard cancellation can leave no artifact at all; treat a missing artifact as unknown too.
+`scripts/ci/test-linux-portable-validation-report.sh` drives the lane script with disposable `uname` and `mise` stubs and proves the exact command order, the stop at each failing command, the host guard, a failing capture `tee`, interrupt handling, report completeness, the upload receipt, report bounds, and redaction on any host.
+Run it in the foreground, because its interrupt cases need a trappable SIGINT, and set `ORCHARD_TEST_BASH=/bin/bash` to repeat it under macOS bash 3.2.
 
 Native validation:
 
