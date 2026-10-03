@@ -256,7 +256,7 @@ mise exec -- mix proto.gen.worker
 - `mix proto.check.worker` regenerates every committed output into a temporary root, including the shared Elixir cluster modules that encode the preparation fixture, and fails when any output is missing or byte-different.
   `scripts/test-worker-runtime-binding-drift.sh` proves that deliberate drift is rejected without modifying the checkout.
 - Descriptor and reciprocal Python/Elixir semantic fixtures live under `proto/orchard/worker/v1/` and are exercised by provider-neutral validation.
-  `fixtures/n_minus_1/worker_runtime.descriptor.pb` is a pinned, hand-maintained N-1 golden: the descriptor set from the last pre-reasoning revision of `main`. It is not a generator output; replace it only when the supported N-1 revision changes.
+  `fixtures/n_minus_1/worker_runtime.descriptor.pb` is a pinned, hand-maintained N-1 golden: the descriptor set from pre-reasoning baseline `126eb1bcbf89e1ef9bab913407196128b5b71ca4`. It is not a generator output; replace it only when the supported N-1 revision changes.
 
 ## Node Policy
 
