@@ -84,6 +84,7 @@ jobs:
           scripts/ci/test-platform-test-routing.sh
           scripts/ci/test-app-distribution-lane.sh
           scripts/ci/test-linux-portable-validation-report.sh
+          scripts/ci/test-mise-bootstrap-diagnostics.sh
 
       - name: Test distribution pause guards
         run: scripts/test-distribution-control.sh
@@ -126,10 +127,19 @@ jobs:
           scripts/ci/linux-portable-validation-report.sh lockfiles "$REPORT_DIR" before
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Validate Product Version consistency
         run: make validate-product-version
@@ -296,10 +306,19 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Install conformance dependencies
         run: |
@@ -343,10 +362,19 @@ jobs:
           pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Install Elixir dependencies
         run: make setup-elixir
@@ -391,10 +419,19 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Bootstrap MLX environment from lockfile
         run: |
@@ -436,10 +473,19 @@ jobs:
           pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Install repository dependencies
         run: make setup
@@ -486,10 +532,19 @@ jobs:
       # verify-app-signing.sh runs the payload closure check through
       # `mise exec`, so the pinned toolchain is required here.
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Test Orchard.app assembly, signing, and DMG handoff
         run: |
@@ -510,10 +565,19 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
+        id: mise-bootstrap
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: true
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
 
       - name: Install OpenSpec dependencies
         run: make setup-openspec
