@@ -36,6 +36,15 @@ while IFS= read -r path; do
 
   saw_path=true
 
+  # Retained macOS-tagged tests exercise code across application boundaries.
+  # Changes to apps/<app>/lib/**, apps/<app>/test/**, or apps/<app>/mix.exs
+  # therefore owe the macOS host lane its proof obligation. This
+  # check runs before the dependency case and only ever adds the macOS lane, so
+  # no lane selected below can be shadowed or cleared by it.
+  if [[ "$path" =~ ^apps/[^/]+/(lib|test)/ || "$path" =~ ^apps/[^/]+/mix\.exs$ ]]; then
+    macos=true
+  fi
+
   case "$path" in
     apps/orchard_shared/test/*)
       portable=true
