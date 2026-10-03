@@ -195,6 +195,9 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert controller_content =~ "gRPC compatibility fallback"
 
       assert controller_content =~
+               "ORCHARD_LOCAL_NODE_IDENTITY_ROOT=\"#{support_root}/config/node-identity\""
+
+      assert controller_content =~
                "ORCHARD_RUNTIME_CLIENT_TARGETS=\"10.0.0.21:50061,10.0.0.22:50061\""
 
       assert controller_content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
@@ -295,6 +298,7 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
       assert content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
       refute content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
+      refute content =~ "ORCHARD_LOCAL_NODE_IDENTITY_ROOT="
     after
       File.rm_rf!(tmp_dir)
     end

@@ -25,6 +25,21 @@ defmodule Orchard.Metrics.InferenceAttemptProjectionTest do
               }}
   end
 
+  test "SPEC.md §§3.7.1 and 5.3 projects both historical and next-format terminal evidence" do
+    next_format_terminal =
+      terminal(1, :completed, nil, 2)
+      |> Map.update!(:result, fn result ->
+        Map.merge(result, %{
+          "output_tokens" => 12,
+          "output_usage_status" => "exact",
+          "reasoning_tokens" => 3
+        })
+      end)
+
+    assert {:ok, %{attempts: [%{outcome: "completed"}], retry: nil}} =
+             InferenceAttemptProjection.project([started(1, 1), next_format_terminal])
+  end
+
   test "SPEC.md section 9.1 projects a successful logical retry once" do
     events = [
       started(1, 1),

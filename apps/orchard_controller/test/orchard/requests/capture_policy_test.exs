@@ -554,6 +554,11 @@ defmodule Orchard.Requests.CapturePolicyTest do
            }
   end
 
+  test "SPEC.md §§3.7.1 and 10.10 classify output usage status as non-content evidence" do
+    assert :output_usage_status in CapturePolicy.safe_columns().requests
+    refute :output_usage_status in CapturePolicy.content_columns().requests
+  end
+
   test "content and safe classifications fail when request schemas drift" do
     content = CapturePolicy.content_columns()
     safe = CapturePolicy.safe_columns()

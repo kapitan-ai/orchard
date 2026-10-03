@@ -1,9 +1,11 @@
 """Chunk-boundary marker splitting shared by this package's streaming consumers.
 
 A framing marker can straddle two streamed chunks, so a trailing fragment that is
-a proper prefix of the marker must never be published as visible output. Splitting
-returns ``(publishable_text, retained_suffix)``; the caller carries the retained
-suffix into the next chunk.
+a proper prefix of the marker must never be published as visible output while
+further output can still complete it. Splitting returns
+``(publishable_text, retained_suffix)``; the caller carries the retained suffix
+into the next chunk and owns its disposition at its own terminal, where no
+further output can arrive.
 """
 
 from __future__ import annotations

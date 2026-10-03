@@ -11,6 +11,7 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
 Source development is currently supported on Apple Silicon macOS.
 The accepted Linux Controller profile is a Milestone 8 target, not an operational setup described by this guide.
+The accepted experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target, and this guide does not yet describe a Linux Node setup.
 Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions remain the macOS implementation baseline and migration inputs rather than portable Orchard control-plane core requirements.
 
 ## Prerequisites
@@ -19,6 +20,9 @@ Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions r
 |------------|---------|-------|
 | mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, uv, Node.js, and npm |
 | PostgreSQL | ≥ 15 | Local instance |
+| GNU coreutils | any with GNU `timeout` | Required to run the test suite: Node Agent host-inventory probe tests need GNU `timeout` (Linux `/usr/bin/timeout`; macOS `brew install coreutils`, which provides `gtimeout` and a `gnubin` `timeout`) |
+| POSIX ACL tools (Linux only) | any providing `/usr/bin/getfacl` and `/usr/bin/setfacl` | Required to run the test suite on Linux: CLI output-path ACL inspection and its tests call these tools (Ubuntu `sudo apt-get install acl`) |
+| C compiler | host `cc` (or `CC`) | Required for the explicit native-helper builders; on Linux `make test` builds the Transport publication helper with it (Ubuntu `build-essential`) |
 
 See [Tooling](tooling.md) for the pinned runtime versions and standard
 `mise exec --` command forms.
@@ -194,6 +198,9 @@ Apply writes One-time Secret Output to the chosen output CSV only after the batc
 The output CSV contains `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at`.
 
 ### Orchard.app install
+
+Native `Orchard.app` and DMG distribution is paused (`SPEC.md` §11.0), so the source-development setup in this guide is the current active installation path.
+The notes below describe the approved app lifecycle for existing packaged rehearsal installations and for use after distribution is resumed.
 
 When installed through the macOS app lifecycle:
 
@@ -854,7 +861,7 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
 4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request, after the Model is granted to the calling Tenant (`legacy` for the Console Playground).
-5. Cluster summary should show the configured target count for the selected transport.
+5. Cluster summary should show the Effective targets count for the selected transport.
 6. Playground inference should attribute requests to specific nodes when the scheduler has multiple eligible targets.
 7. Killing the remote node-agent should transition its health to degraded or unreachable.
 
@@ -873,7 +880,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
-| Live Cluster healthy but Registered Nodes inventory is zero while `pending_observed` candidates exist | Configured-target observation creates admission candidates but does not register or admit Nodes automatically | Complete Node enrollment and `orchardctl node join` first, then review and admit the resulting registered Node through the normal admission path. If no candidate appears, verify configured-target reachability and ActivationProbe evidence. |
+| Live Cluster healthy but Node Inventory shows zero entries while `pending_observed` candidates exist | Configured-target observation creates admission candidates but does not register or admit Nodes automatically | Complete Node enrollment and `orchardctl node join` first, then review and admit the resulting registered Node through the normal admission path. If no candidate appears, verify configured-target reachability and ActivationProbe evidence. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
@@ -953,8 +960,15 @@ The application smoke starts the admitted Node with its Runtime Endpoint gRPC li
 ## Testing
 
 On Darwin hosts, `make test` and `make cover` stage the retained macOS native helpers into `_build/test/lib/orchard_cli/priv` before running every test, because ordinary portable `mix compile` no longer emits them.
-On non-Darwin hosts, the same Make targets skip helper staging and exclude tests tagged `macos`.
-Invoke `mix test` directly on Darwin only after `make macos-native-test-helpers`.
+On Linux hosts, the same Make targets stage the Linux Transport publication helpers and exclude tests tagged `macos`.
+Invoke `mix test` directly only after `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux).
+
+`orchardctl transport enable-local-https` publishes the local CA and endpoint metadata through the `orchard-transport-publish` helper (`SPEC.md` §10.7, ADR 0036).
+Source development needs `make macos-native-helpers` or `make linux-native-helpers` before that command; without the helper it refuses before TLS generation.
+The helper qualifies only local APFS/HFS volumes on Darwin and ext4 on Linux, and refuses ACL-bearing, symlinked, group- or world-writable, or foreign-owned support roots and ancestors unchanged.
+It also refuses before TLS generation when `config/` is wider than `0700` (as `orchardctl env init` creates it) or when `controller.env` or a `config/tls/` source is a symlink, foreign-owned, group-writable, or ACL-bearing.
+Tests place support roots under the canonical temporary directory (`/private/tmp` on Darwin) with explicit `0700` fixture roots; the test-only helper additionally accepts tmpfs.
+On Linux, Transport tests that run the production helper place their fixtures under `TMPDIR` (or `/tmp`), so that directory must be on ext4; on a tmpfs `/tmp` those tests refuse with an unqualified-filesystem error. The test-only helper's tmpfs acceptance is a test-fixture convenience, not a claim that tmpfs hosts qualify for production publication.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)

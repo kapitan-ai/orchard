@@ -72,56 +72,75 @@ end
 defmodule Orchard.Dispatch.DispatchParityDriftTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
+  import Orchard.TestSupport.SentryContextHelpers
+
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.Inference
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.Tokenizer.Telemetry
 
   @stub_client Orchard.Dispatch.DispatchParityDriftTest.StubClient
   @event [:orchard, :tokenizer, :parity_drift]
   @node_id "550e8400-e29b-41d4-a716-446655440000"
   @prompt_ids [101, 102]
-  @long_worker_message "prompt_token_ids length 2 does not match input_tokens 3 — " <>
-                         String.duplicate("界", 140)
+  @worker_message "DIAGNOSTIC_BOUNDARY_SENTINEL model output and hidden reasoning"
+
+  setup :setup_sentry_context
 
   setup do
     start_supervised!({Registry, keys: :duplicate, name: @stub_client.registry_name()})
 
     Registry.register(@stub_client.registry_name(), :config, %{
       capture_pid: self(),
-      worker_message: @long_worker_message
+      worker_message: @worker_message
     })
 
     :ok
   end
 
-  test "emits parity_drift telemetry for streamed prompt token length mismatch" do
+  # SPEC.md §§7.5.5, 9.3, and 10.10: parity telemetry carries structured metadata
+  # and the stable failure code, never Worker-supplied message text.
+  test "SPEC.md §§7.5.5, 9.3, and 10.10 exclude Worker failure content from diagnostics" do
     attach_ref = attach_telemetry(@event)
+    enable_controller_sentry()
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
 
-    with_tokenizer_safe_mode(:on, fn ->
-      assert %AttemptOutcome{
-               attempt_outcome: :failed,
-               accepted: true,
-               events: events,
-               failure: %{
-                 "failure_class" => "runtime_failure",
-                 "failure_code" => "internal_error",
-                 "raw_source_code" => "prompt_token_ids_length_mismatch"
-               }
-             } = dispatch("req-parity-drift-stream")
+    log =
+      capture_log([level: :info], fn ->
+        with_tokenizer_safe_mode(:on, fn ->
+          assert %AttemptOutcome{
+                   attempt_outcome: :failed,
+                   accepted: true,
+                   events: events,
+                   failure: %{
+                     "failure_class" => "runtime_failure",
+                     "failure_code" => "internal_error",
+                     "raw_source_code" => "prompt_token_ids_length_mismatch"
+                   }
+                 } = dispatch("req-parity-drift-stream")
 
-      assert Enum.any?(events, fn
-               %InferenceEvent{
-                 event: %InferenceEvent.Failed{code: "prompt_token_ids_length_mismatch"}
-               } ->
-                 true
+          assert Enum.any?(events, fn
+                   %InferenceEvent{
+                     event: %InferenceEvent.Failed{
+                       code: "prompt_token_ids_length_mismatch"
+                     }
+                   } ->
+                     true
 
-               _event ->
-                 false
-             end)
-    end)
+                   _event ->
+                     false
+                 end)
+        end)
+      end)
+
+    assert log =~ ~s(terminal_detail="internal_error")
+    refute log =~ @worker_message
 
     assert_receive {^attach_ref, @event, %{count: 1}, metadata}
 
@@ -132,13 +151,11 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     assert metadata.scheduler_strategy == :single_node
     assert metadata.input_tokens == 3
     assert metadata.code == "prompt_token_ids_length_mismatch"
-    assert metadata.worker_message =~ "prompt_token_ids length"
-    assert String.valid?(metadata.worker_message)
-    assert byte_size(metadata.worker_message) <= 256
-    assert byte_size(metadata.worker_message) < byte_size(@long_worker_message)
+    refute Map.has_key?(metadata, :worker_message)
     refute Map.has_key?(metadata, :worker_id)
     refute Map.has_key?(metadata, :expected_len)
     refute Map.has_key?(metadata, :actual_len)
+    refute inspect(sentry_context()) =~ @worker_message
 
     assert_receive {:captured_ensure_model_loaded_request, %Operation.EnsureModelLoadedRequest{}}
 
@@ -161,6 +178,21 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     RequestDispatcher.__test_update_metrics_for_terminal__(metrics, event, :synthesized)
 
     refute_receive {^attach_ref, @event, _measurements, _metadata}, 200
+  end
+
+  test "SPEC.md §§7.5.5 and 9.3 parity telemetry rejects Worker message content" do
+    attach_ref = attach_telemetry(@event)
+
+    assert :ok =
+             Telemetry.parity_drift(%{
+               code: "prompt_token_ids_length_mismatch",
+               worker_message: @worker_message
+             })
+
+    assert_receive {^attach_ref, @event, %{count: 1}, metadata}
+    assert metadata.code == "prompt_token_ids_length_mismatch"
+    refute Map.has_key?(metadata, :worker_message)
+    refute inspect(metadata) =~ @worker_message
   end
 
   defp dispatch(request_id) do

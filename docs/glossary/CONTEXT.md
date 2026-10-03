@@ -450,6 +450,11 @@ The single Controller-initiated second Inference Attempt allowed before Output C
 Its two-attempt bound, fail-closed gates, hard prior-Node exclusion, and original-deadline rule are normative in `SPEC.md` §§5.8-5.9.
 _Avoid_: queue re-entry, Operator Retry, cohort retry, same-Node redispatch
 
+**Operator Retry**:
+A cluster-operator-initiated new Request built from an eligible terminal Request's retained full-capture canonical source, whose `retry_of_request_id` points at the original Request.
+Its operator-only authorization, source-evidence dependency, default three-descendant bound per original Request, and no-widening capture rule are normative in `SPEC.md` §§7.3.4 and 10.10.
+_Avoid_: Automatic Attempt Retry, Inference Attempt, queue re-entry, client resubmission
+
 **Tool Call**:
 A model-proposed function invocation returned to the client in current base v1 behavior.
 _Avoid_: Tool Execution, server-side tool run

@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from typing import Final, TypeAlias
 
 ContractKey: TypeAlias = tuple[str, str]
-PolicyKey: TypeAlias = tuple[str, str]
+PolicyKey: TypeAlias = tuple[str, str, str | None]
 ContractRegistration: TypeAlias = Mapping[str, object]
+TemplateArgumentValue: TypeAlias = bool | str
 
 _IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -21,6 +22,9 @@ _IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
     }
 )
 _REQUIRED_REGISTRATION_FIELDS: Final[frozenset[str]] = _IDENTITY_FIELDS | {"template_arguments"}
+_REQUIRED_EFFORT_REGISTRATION_FIELDS: Final[frozenset[str]] = _REQUIRED_REGISTRATION_FIELDS | {
+    "reasoning_effort_template_argument"
+}
 
 # Product registrations are intentionally empty until an exact imported artifact,
 # template, render/parser/runtime/event versions, and qualification evidence are
@@ -36,7 +40,7 @@ class ResolvedReasoningContract:
     """Exact render identity and static template arguments for one policy."""
 
     effective_contract: dict[str, str]
-    template_arguments: dict[str, bool]
+    template_arguments: dict[str, TemplateArgumentValue]
 
 
 def resolve(
@@ -44,11 +48,12 @@ def resolve(
     chat_template_digest: str,
     generation_policy: str,
     projection: str,
+    reasoning_effort: str | None,
 ) -> ResolvedReasoningContract | None:
     """Return the registered exact contract, or ``None`` when unsupported."""
     registration = REASONING_RENDER_CONTRACTS.get(
         (model_artifact_digest, chat_template_digest), {}
-    ).get((generation_policy, projection))
+    ).get((generation_policy, projection, reasoning_effort))
 
     if registration is None:
         return None
@@ -56,6 +61,7 @@ def resolve(
     return _resolved_contract(
         model_artifact_digest,
         chat_template_digest,
+        reasoning_effort,
         registration,
     )
 
@@ -63,9 +69,16 @@ def resolve(
 def _resolved_contract(
     model_artifact_digest: str,
     chat_template_digest: str,
+    reasoning_effort: str | None,
     registration: ContractRegistration,
 ) -> ResolvedReasoningContract:
-    if set(registration) != _REQUIRED_REGISTRATION_FIELDS:
+    required_fields = (
+        _REQUIRED_REGISTRATION_FIELDS
+        if reasoning_effort is None
+        else _REQUIRED_EFFORT_REGISTRATION_FIELDS
+    )
+
+    if set(registration) != required_fields:
         raise ValueError("reasoning contract registration has unsupported fields")
 
     identity = {field: registration.get(field) for field in _IDENTITY_FIELDS}
@@ -80,6 +93,23 @@ def _resolved_contract(
     ):
         raise ValueError("reasoning contract registration has invalid template arguments")
 
+    resolved_template_arguments: dict[str, TemplateArgumentValue] = dict(template_arguments)
+
+    if reasoning_effort is not None:
+        effort_argument = registration.get("reasoning_effort_template_argument")
+        if (
+            not isinstance(effort_argument, Mapping)
+            or set(effort_argument) != {"key", "value"}
+            or not isinstance(effort_argument.get("key"), str)
+            or not effort_argument["key"]
+            or not isinstance(effort_argument.get("value"), str)
+            or not effort_argument["value"]
+            or effort_argument["key"] in resolved_template_arguments
+        ):
+            raise ValueError("reasoning contract registration has invalid effort mapping")
+
+        resolved_template_arguments[effort_argument["key"]] = effort_argument["value"]
+
     return ResolvedReasoningContract(
         effective_contract={
             "mode": "negotiated",
@@ -87,5 +117,5 @@ def _resolved_contract(
             "chat_template_digest": chat_template_digest,
             **identity,
         },
-        template_arguments=dict(template_arguments),
+        template_arguments=resolved_template_arguments,
     )

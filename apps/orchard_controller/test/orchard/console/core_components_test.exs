@@ -170,7 +170,7 @@ defmodule OrchardConsole.CoreComponentsTest do
 
     test "renders all registered icons without error" do
       for name <-
-            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-magnifying-glass hero-chevron-double-left hero-bars-3 hero-arrow-left hero-arrow-path hero-inbox hero-exclamation-triangle hero-key) do
+            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-magnifying-glass hero-chevron-double-left hero-bars-3 hero-arrow-left hero-arrow-path hero-inbox hero-exclamation-triangle hero-key hero-clock hero-check-circle hero-chat-bubble-left-right) do
         assigns = %{name: name}
         html = render_heex(~H|<.icon name={@name} />|)
         assert html =~ "<svg", "icon #{name} should render an SVG"

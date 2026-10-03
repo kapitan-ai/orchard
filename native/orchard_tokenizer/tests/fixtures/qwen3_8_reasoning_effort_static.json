@@ -1,0 +1,25 @@
+{
+  "fixture_only": true,
+  "model_id": "mlx-community/Qwen3.8-27B-4bit",
+  "model_artifact_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "chat_template_digest": "8ac45bfb403e1508537c45dd783f6e713a70f9e2af2f64904378ee35ac36642b",
+  "registration_identity": {
+    "render_contract": "qwen3.8-static",
+    "render_contract_version": "1",
+    "parser_family": "tagged_pair",
+    "parser_version": "1",
+    "runtime_contract_version": "1",
+    "event_binding_version": "1"
+  },
+  "template_arguments": {
+    "enable_thinking": true
+  },
+  "reasoning_effort_template_argument": {
+    "key": "thinking_budget",
+    "mappings": {
+      "low": "low",
+      "medium": "medium",
+      "high": "xhigh"
+    }
+  }
+}

@@ -26,6 +26,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
           {:max_cold_start_ms, non_neg_integer()},
           {:queue_wait_ms, non_neg_integer()},
           {:timeout_ms, pos_integer()},
+          {:effective_timeout_ms, pos_integer()},
           {:residency_preference, ResolvedPolicy.residency_preference()},
           {:quota_id, String.t() | nil},
           {:routing_policy_id, String.t() | nil},
@@ -83,6 +84,12 @@ defmodule Orchard.Inference.AdmissionPolicy do
   For a resolved `allow_cold_load` policy, the effective deadline is the
   configured or explicit generation budget plus queue wait and cold-start
   budgets.
+
+  `:effective_timeout_ms` supplies a deadline that already includes whatever
+  budgets apply to it. It is used as given, subject only to the deployment
+  ceiling, so a caller that carries an authoritative deadline can also supply
+  explicit `:queue_wait_ms` and `:max_cold_start_ms` budgets without those
+  budgets being added to that deadline a second time.
   """
   @spec resolve(CanonicalRequest.t(), resolve_opts()) :: CanonicalRequest.t()
   def resolve(%CanonicalRequest{} = request, opts \\ []) when is_list(opts) do
@@ -160,20 +167,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
   end
 
   defp resolve_timeout_ms(current, queue_wait_ms, max_cold_start_ms, residency_preference, opts) do
-    timeout_ms =
-      cond do
-        keyword_integer?(opts, :timeout_ms) ->
-          Keyword.fetch!(opts, :timeout_ms)
-
-        is_integer(current) and current > 0 ->
-          current
-
-        true ->
-          case Inference.request_timeout_ms() do
-            timeout when is_integer(timeout) and timeout > 0 -> timeout
-            _other -> 30_000
-          end
-      end
+    timeout_ms = generation_timeout_ms(current, opts)
 
     effective_timeout_ms =
       if policy_timeout?(opts, residency_preference) do
@@ -183,6 +177,29 @@ defmodule Orchard.Inference.AdmissionPolicy do
       end
 
     cap_timeout_ms(effective_timeout_ms)
+  end
+
+  defp generation_timeout_ms(current, opts) do
+    cond do
+      keyword_positive_integer?(opts, :effective_timeout_ms) ->
+        Keyword.fetch!(opts, :effective_timeout_ms)
+
+      keyword_integer?(opts, :timeout_ms) ->
+        Keyword.fetch!(opts, :timeout_ms)
+
+      is_integer(current) and current > 0 ->
+        current
+
+      true ->
+        configured_timeout_ms()
+    end
+  end
+
+  defp configured_timeout_ms do
+    case Inference.request_timeout_ms() do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _other -> 30_000
+    end
   end
 
   defp cap_timeout_ms(timeout_ms) do
@@ -200,7 +217,9 @@ defmodule Orchard.Inference.AdmissionPolicy do
   end
 
   defp policy_timeout?(opts, :allow_cold_load) do
-    Keyword.has_key?(opts, :max_cold_start_ms) or Keyword.has_key?(opts, :residency_preference)
+    not keyword_positive_integer?(opts, :effective_timeout_ms) and
+      (Keyword.has_key?(opts, :max_cold_start_ms) or
+         Keyword.has_key?(opts, :residency_preference))
   end
 
   defp policy_timeout?(_opts, _residency_preference), do: false
@@ -245,6 +264,13 @@ defmodule Orchard.Inference.AdmissionPolicy do
   defp keyword_integer?(opts, key) do
     case Keyword.fetch(opts, key) do
       {:ok, value} when is_integer(value) and value >= 0 -> true
+      _other -> false
+    end
+  end
+
+  defp keyword_positive_integer?(opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} when is_integer(value) and value > 0 -> true
       _other -> false
     end
   end

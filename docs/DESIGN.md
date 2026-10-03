@@ -405,8 +405,8 @@ that renders as display-ready text (for example, already run through
 
 | Density | Wrapper contract | Label contract | Value contract | Intended use |
 |---------|------------------|----------------|----------------|--------------|
-| `:comfortable` (default) | `rounded-lg px-4 py-3` + tone surface | `text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400` | `mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100` | Dashboard/detail-page metric cards such as Overview and Request Detail. |
-| `:compact` | `rounded-lg border px-3 py-2 text-center` + tone border | `text-xs text-slate-500 dark:text-slate-400` | `text-lg font-semibold font-mono text-slate-900 dark:text-slate-100` | Dense table-summary strips such as Models and Requests. |
+| `:comfortable` (default) | `rounded-lg px-4 py-3` + tone surface | `text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400` | `mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100` | Detail-page metric cards such as Request Detail. |
+| `:compact` | `rounded-lg border px-3 py-2 text-center` + tone border | `text-xs text-slate-500 dark:text-slate-400` | `text-lg font-semibold font-mono text-slate-900 dark:text-slate-100` | Dense summary strips such as Operational Overview, Models, and Requests. |
 
 Comfortable tone contracts:
 
@@ -512,10 +512,18 @@ Consequence acknowledgement controls default to unacknowledged and name the cons
 The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
-Nodes uses Inventory, Admission, Runtime, and Diagnostics as page-local sections.
+Nodes uses Inventory, Admission Review, Runtime, and Diagnostics as page-local sections.
+Inventory begins with a local-machine summary using the installation-selected registered Node identity store.
+The positive headline is **This machine’s Node is connected and healthy.** only when installed identity, trusted inventory target, current observed identity, Node health and existing heartbeat freshness agree.
+Unknown identity, stale heartbeat and current unavailable evidence remain explicit; never infer this machine from its hostname, address or a single Inventory row.
+Keep persisted last-successful observation separate from refresh-attempt time and Node health separate from current model-serving evidence. Label retained health **Last observed Node health**, including when the current probe fails. See SPEC §4.5 and ADR 0034.
 Node detail uses Overview, Evidence, and Actions with shared identity and refresh context.
 Section links update a whitelisted URL parameter and replace the visible section rather than scrolling to another card.
 Inactive sections are hidden from both keyboard navigation and the accessibility tree; the selected navigation link exposes `aria-current`.
+Inventory uses the **Node Inventory** card and **Inventory entries** count; Runtime uses **Effective targets** for its resolved diagnostic target count.
+When Inventory is empty, it states that configured Runtime Endpoint targets may still be reachable or serving, and its Admission Review and Runtime links reuse the existing query-backed section navigation and already-loaded page data without initiating another read or Runtime Endpoint probe.
+Runtime separates zero resolved effective targets from an unreadable Node inventory, reporting the failed inventory read as an error state instead of a confirmed empty target set.
+Runtime uses the target resolver's own inventory-read outcome; a later successful Inventory read in the same refresh does not clear a resolution failure.
 
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
 Node detail provides an explicit read-only refresh action.
@@ -612,6 +620,44 @@ These values describe mint-time provenance only.
 They do not identify API Token ownership, the Public Inference Bearer principal, current Portal User status, effective access, or revocation state.
 Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
 Render both provenance lines in one noninteractive semantic table cell, use existing neutral light and dark theme tokens, allow the secondary line to wrap, and retain the shared table's local horizontal-scroll behavior on narrow viewports.
+
+### 6.9 Operational Overview
+
+Overview leads with separately scoped Controller readiness and the default Runtime
+Endpoint status, followed by six compact summary metrics, browser-local Quickstart,
+current durable Request states, the default Runtime Endpoint snapshot, Controller
+readiness checks, catalog lifecycle, and links to the operational pages.
+Completed Quickstart remains compact. A failed prerequisite read is unknown evidence,
+not evidence that setup is unfinished. Show unavailable evidence without a setup
+call to action; an unknown read alone must not reset a completed checklist.
+Dismiss and Recover preserve keyboard focus on the replacement control.
+
+Keep source, scope, freshness, and missing/error state visible beside each
+projection. A refresh timestamp records the read attempt; it does not certify every
+source succeeded. A confirmed empty result may be zero; unavailable or unrecorded
+evidence may not. Use Loading for pending reads, Unavailable for failed reads, and
+Not recorded for absent retained evidence. An active Request's pending timing is
+In progress, while a completed Request with missing timing remains Not recorded.
+Keep each source label visible; successful Recorded evidence may be visually
+subordinate while missing and failed evidence remains explicit. Keep metric
+definitions behind a keyboard-accessible disclosure.
+Avg TTFT is the existing unwindowed arithmetic mean from Request creation to first
+recorded public output. Avg tok/s is the existing unwindowed arithmetic mean of
+qualifying Request output counts divided by first-output-to-completion seconds; it
+does not establish a provider-native generation rate or throughput trend. Runtime
+facts describe one default target, not fleet health, schedulability, Workspace
+access, or inference readiness. Controller checks that fail are Not ready; reserve
+Degraded for reported runtime health. Unreported endpoint health remains neutral.
+The headline must not become less severe when another source worsens, and blocked
+checks have a count and a direct link to their details.
+
+Preserve independent source failures, pre-connect loading, browser preference
+hydration, disconnect/stale/reconnect treatment, configured polling, and manual
+refresh. Before the first live update, Refresh is disabled and polling is not
+claimed. During disconnect, show that refresh is paused while reconnecting. A
+successful reconnect restores polling and the browser's setup preferences.
+Narrow layouts wrap controls and source labels; completed setup does not
+claim current inference qualification.
 
 ---
 
@@ -1036,3 +1082,42 @@ For a guided Node Enrollment change, verify at least these states in light and d
 - Expired, revoked, and output-failed recovery.
 - Narrow viewport wrapping for filenames, identifiers, commands, and evidence.
 - Keyboard focus, live-region announcements, and reduced motion.
+
+## 16. Request Detail Evidence
+
+Request detail leads with the logical Request outcome, model, time to first
+token (TTFT), and total request time. HTTP status remains available in Request
+details. TTFT measures creation to the first recorded
+public-output timestamp, including waiting and earlier attempts; it is not client
+receipt time. Total time ends at the persisted final outcome, not the current clock.
+Missing or inconsistent timing is Not recorded, never zero.
+
+An execution timeline uses one elapsed-time scale for the Request and its persisted
+Inference Attempts. Bars require valid start and end evidence within the Request
+interval; missing timing keeps a labelled row without a fabricated bar. Gaps do not
+imply queue, loading, or cleanup phases. Recorded events remain in sequence order
+with explicit Request or step scope, elapsed time and inspectable timestamps.
+Native disclosures expose event payloads without truncating the only evidence.
+
+Expandable timeline rows show persisted outcome, Node identity, and retry/failure
+evidence separately from the final Request outcome, without a duplicate attempt
+card list. No attempt is inferred from the Request
+row or an operator retry link. Unavailable legacy evidence remains explicit.
+Input and output usage are primary; their total is secondary. Request counts are
+not the sum of discarded attempts. Show accuracy labels only when persisted
+evidence supports them; absent counts are not zero. Do not derive generation rate
+from total output counts when their timing and token populations may differ.
+
+Scheduler, execution metadata, provenance, and retained payloads use progressive
+disclosure. Capture-mode copy belongs at payload boundaries and must not infer
+expiry or redaction history from an absent payload. Copy controls read rendered
+JSON from the DOM, never duplicate payloads in attributes or events. Heroicons
+reinforce timing, input/output, and attempt status without replacing text labels.
+Use the existing neutral surfaces, mono metric values, focus-visible rings, and
+responsive rail. Keep explanatory prose within 65ch, timing metrics adjacent, and
+model identity visible. Secondary metadata uses aligned label/value rows behind
+a disclosure, stacked on narrow screens. Timing definitions remain keyboard
+accessible without repeating inactive-state explanations in completed metrics.
+Group refresh and freshness together and reduce narrow-page gutters before
+reducing text size. Validate recovered, failed, active, missing-evidence, loading,
+and unavailable states, plus light/dark and narrow layouts.

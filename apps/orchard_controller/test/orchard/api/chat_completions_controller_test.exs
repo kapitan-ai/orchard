@@ -56,6 +56,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Idempotency, Request}
+  alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -706,6 +707,73 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
              ]
     end
 
+    test "SPEC 7.5.2 non-stream preserves ordered worker-produced argument bytes" do
+      fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+      [weather_arguments, time_arguments] =
+        GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 200
+      [choice] = Jason.decode!(conn.resp_body)["choices"]
+
+      assert choice["message"]["tool_calls"] == [
+               %{
+                 "id" => "call_0",
+                 "type" => "function",
+                 "function" => %{
+                   "name" => "lookup_weather",
+                   "arguments" => weather_arguments
+                 }
+               },
+               %{
+                 "id" => "call_1",
+                 "type" => "function",
+                 "function" => %{"name" => "lookup_time", "arguments" => time_arguments}
+               }
+             ]
+    end
+
+    test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
+      fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 500
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "Inference failed: model emitted an unrequested function",
+                 "type" => "server_error",
+                 "param" => nil,
+                 "code" => "internal_error"
+               }
+             }
+    end
+
     test "returns mixed text and tool-call non-stream payload when both are emitted" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(false), %{}},
@@ -898,6 +966,45 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert body["error"]["message"] ==
                "Inference failed: model did not emit any required tool calls"
+    end
+
+    test "SPEC.md §7.5.3a hides reasoning conformance details in sync Chat errors" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        canonical = stub_chat_canonical(false)
+
+        stub_chat_orchestrator(
+          prepare: {:ok, canonical, %{}},
+          execute:
+            {:ok, canonical,
+             [
+               InferenceEvent.accepted(1_710_000_123_000),
+               InferenceEvent.failed(code, worker_message, false)
+             ]}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          })
+
+        assert conn.status == 500
+
+        assert Jason.decode!(conn.resp_body)["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "api_error"
+               }
+
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
     end
 
     test "SPEC 7.5.5 non-stream terminal conformance failure is a generic 500" do
@@ -1138,6 +1245,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, 503, "server_error", "model_busy"},
         {:queue_full, 429, "rate_limit_error", "queue_full"},
         {:queue_timeout, 504, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
         {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
       ]
 
@@ -1324,7 +1432,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :live
-    test "SPEC.md M4 retries one uncommitted attempt across JSON and SSE", %{bundle: bundle} do
+    test "SPEC.md §5.3 (#329) charges only the selected retry attempt across JSON and SSE", %{
+      bundle: bundle
+    } do
       create_queue_model!(bundle, "chat-bounded-retry")
       %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry")
       grant_active_models!(tenant)
@@ -1332,7 +1442,16 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       for stream? <- [false, true] do
         idempotency_key = "chat-bounded-retry-#{stream?}"
 
-        nodes = configure_retry_nodes!(successful_retry_events())
+        [first, second] = successful_retry_events()
+
+        discarded_usage =
+          InferenceEvent.usage_update(%InferenceEvent.Usage{
+            input_tokens: 1,
+            output_tokens: 5,
+            total_tokens: 6
+          })
+
+        nodes = configure_retry_nodes!([[discarded_usage | first], second])
 
         Process.put(:orchard_retry_started_probe, fn request ->
           send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
@@ -1387,6 +1506,13 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert request.reserved_output_tokens == 0
         assert_logical_identity!(request, idempotency_key, :metadata)
         assert_successful_retry!(request, nodes)
+        assert request.output_tokens == 1
+        assert request.output_usage_status == :exact
+        [_, discarded, _, selected] = Requests.list_request_step_events(request)
+        assert discarded.result["output_tokens"] == 5
+        assert discarded.result["output_usage_status"] == "lower_bound"
+        assert selected.result["output_tokens"] == 1
+        assert selected.result["output_usage_status"] == "exact"
       end
     end
 
@@ -1752,6 +1878,91 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert done_events == [{:done, nil}]
     end
 
+    test "SPEC 7.5.2 stream preserves ordered worker-produced argument bytes" do
+      fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+      [weather_arguments, time_arguments] =
+        GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+      data_events = Enum.filter(events, fn {type, _payload} -> type == :data end)
+
+      assert [first_call, second_call] =
+               data_events
+               |> Enum.flat_map(fn {:data, data} ->
+                 data["choices"]
+                 |> Enum.flat_map(fn choice -> choice["delta"]["tool_calls"] || [] end)
+               end)
+
+      assert first_call == %{
+               "index" => 0,
+               "id" => "call_0",
+               "type" => "function",
+               "function" => %{
+                 "name" => "lookup_weather",
+                 "arguments" => weather_arguments
+               }
+             }
+
+      assert second_call == %{
+               "index" => 1,
+               "id" => "call_1",
+               "type" => "function",
+               "function" => %{"name" => "lookup_time", "arguments" => time_arguments}
+             }
+
+      assert List.last(events) == {:done, nil}
+    end
+
+    test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
+      fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+      [weather_arguments] =
+        GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+
+      assert Enum.any?(events, fn
+               {:data, %{"choices" => [%{"delta" => %{"tool_calls" => [call]}}]}} ->
+                 call["function"]["arguments"] == weather_arguments
+
+               _event ->
+                 false
+             end)
+
+      assert [{:error, payload}] = Enum.filter(events, fn {type, _payload} -> type == :error end)
+      assert payload["error"]["code"] == "tool_call_parse_failed"
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+    end
+
     test "malformed tool-call delta after stream start emits SSE error envelope and no [DONE]" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(), %{}},
@@ -1832,6 +2043,52 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert_tool_serializer_failure!(request)
     end
 
+    test "KAP-119 SPEC.md §§7.2.9, 7.5.3a normalize unknown and reasoning Chat SSE failures" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "made_up_retryable",
+            "request_interrupted/private-detail",
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        stub_chat_orchestrator(
+          prepare: {:ok, stub_chat_canonical(), %{}},
+          events: [
+            InferenceEvent.accepted(1_710_000_123_000),
+            InferenceEvent.failed(code, worker_message, false)
+          ],
+          execute: {:ok, stub_chat_canonical(), []}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => true
+          })
+
+        assert conn.status == 200
+        events = parse_sse_body(conn.resp_body)
+
+        assert [{:error, payload}] =
+                 Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert List.last(events) == {:error, payload}
+
+        assert payload["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "server_error"
+               }
+
+        refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
+    end
+
     test "SPEC 7.5.5 streaming terminal conformance failure emits one generic SSE error" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(), %{}},
@@ -1899,6 +2156,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, "server_error", "model_busy"},
         {:queue_full, "rate_limit_error", "queue_full"},
         {:queue_timeout, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"},
         {:request_caller_disconnect, "server_error", "request_cancelled"}
       ]
 

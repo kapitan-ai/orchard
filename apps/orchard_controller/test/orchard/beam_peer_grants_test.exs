@@ -15,6 +15,7 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
   alias Orchard.Node.{BeamPeerGrantBootstrap, BeamPeerGrantStore, RuntimeTLS}
+  alias Orchard.Node.BeamPeerGrantClient.GRPCTransport
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
   alias Orchard.NodeHeartbeats
@@ -33,7 +34,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     Target
   }
 
-  alias Orchard.TransportTLS.CertificateIdentity
+  alias Orchard.TransportTLS.{CertificateIdentity, PeerVerifier}
 
   defmodule AuthenticatedStatusServer do
     alias Orchard.Nodes.Node
@@ -923,6 +924,84 @@ defmodule Orchard.BeamPeerGrantsTest do
              identity.certfile |> File.read!() |> CertificateIdentity.from_pem()
 
     assert Enum.sort(certificate.extended_key_usages) == [:client_auth, :server_auth]
+  end
+
+  test "SPEC.md §7.5.0 grant transport connects with bounded TLS deadlines and exact peer identity",
+       %{root: root, trust_root: trust_root, authorization_root: authorization_root} do
+    {node, grant, _now} = pending_grant!(trust_root, authorization_root)
+    identity_root = Path.join(root, "transport-node-identity")
+    live_node_identity!(identity_root, node.id)
+    assert {:ok, identity} = RuntimeTLS.load_registered_identity(identity_root)
+    assert {:ok, trust} = NodeTrust.public_material()
+
+    assert {:ok, controller_certificate} =
+             CertificateIdentity.from_pem(trust.controller_certificate_pem)
+
+    port = free_loopback_port!()
+    start_supervised!({ControlListener, host: "127.0.0.1", port: port, allow_test_loopback: true})
+    target = "127.0.0.1:#{port}"
+    request = struct!(RetrieveBeamPeerGrantRequest, delivery_request(grant))
+
+    ssl = [
+      certfile: identity.certfile,
+      keyfile: identity.keyfile,
+      cacertfile: identity.cacertfile,
+      verify: :verify_peer,
+      versions: [:"tlsv1.3"],
+      server_name_indication: :disable,
+      verify_fun:
+        PeerVerifier.new(trust.controller_uri_san,
+          serial: controller_certificate.serial,
+          fingerprint: controller_certificate.fingerprint
+        )
+    ]
+
+    assert {:ok, response} =
+             GRPCTransport.retrieve(
+               target,
+               GRPC.Credential.new(ssl: ssl),
+               request,
+               connect_timeout_ms: 1_000,
+               rpc_timeout_ms: 2_000
+             )
+
+    assert response.grant_id == grant.id
+    assert response.node_beam_name == grant.node_beam_name
+    assert response.controller_id == grant.controller_id
+
+    assert {:ok, stalled_listener} =
+             :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+
+    on_exit(fn -> :gen_tcp.close(stalled_listener) end)
+    assert {:ok, {_address, stalled_port}} = :inet.sockname(stalled_listener)
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:error, :beam_peer_grant_control_unavailable} =
+             GRPCTransport.retrieve(
+               "127.0.0.1:#{stalled_port}",
+               GRPC.Credential.new(ssl: ssl),
+               request,
+               connect_timeout_ms: 100,
+               rpc_timeout_ms: 2_000
+             )
+
+    assert System.monotonic_time(:millisecond) - started_at < 2_000
+
+    wrong_peer =
+      Keyword.put(
+        ssl,
+        :verify_fun,
+        PeerVerifier.new("urn:orchard:wrong-controller")
+      )
+
+    assert {:error, :beam_peer_grant_control_unavailable} =
+             GRPCTransport.retrieve(
+               target,
+               GRPC.Credential.new(ssl: wrong_peer),
+               request,
+               connect_timeout_ms: 1_000,
+               rpc_timeout_ms: 2_000
+             )
   end
 
   @tag :macos

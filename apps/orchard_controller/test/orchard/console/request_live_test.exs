@@ -3,6 +3,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
   import Phoenix.LiveViewTest
   import Ecto.Query
+  import ExUnit.CaptureLog
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Governance.ApiKey
@@ -99,7 +100,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "Request Summary"
+      assert html =~ "Logical Request"
       assert html =~ request.public_id
       assert html =~ "running"
 
@@ -126,6 +127,122 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "token usage and performance" do
+    test "SPEC §3.7.1 recovered attempts stay separate from final outcome and logical usage", %{
+      conn: conn
+    } do
+      created = ~U[2026-09-11 14:32:05.000000Z]
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :metadata,
+          input_tokens: 128,
+          output_tokens: 86,
+          first_token_at: DateTime.add(created, 1680, :millisecond),
+          completed_at: DateTime.add(created, 4820, :millisecond),
+          http_status: 200
+        })
+
+      Repo.update_all(from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+        set: [inserted_at: created]
+      )
+
+      for {number, outcome, start, finish} <- [
+            {1, "failed", 80, 1290},
+            {2, "completed", 1400, 4800}
+          ] do
+        result = %{
+          "attempt_outcome" => outcome,
+          "started_at" => DateTime.to_iso8601(DateTime.add(created, start, :millisecond)),
+          "ended_at" => DateTime.to_iso8601(DateTime.add(created, finish, :millisecond)),
+          "accepted" => true,
+          "output_committed" => number == 2,
+          "execution_resolution" => "terminated",
+          "capacity_release_outcome" => "released",
+          "node_id" => "550e8400-e29b-41d4-a716-44665544000#{number}",
+          "excluded_node_ids" =>
+            if(number == 1, do: [], else: ["550e8400-e29b-41d4-a716-446655440001"]),
+          "output_tokens" => if(number == 1, do: 37, else: 86)
+        }
+
+        result =
+          if number == 1,
+            do:
+              Map.merge(result, %{
+                "failure_class" => "worker_or_node_loss",
+                "failure_code" => "internal_error",
+                "retry_decision" => "retried"
+              }),
+            else: Map.put(result, "output_commitment_kind", "text")
+
+        assert {:ok, _} =
+                 Requests.append_request_step_events(request, [
+                   %{
+                     event_type: "request_step.#{outcome}",
+                     step_id: "inference_turn:t1:a#{number}",
+                     step_type: "inference_turn",
+                     turn_index: 1,
+                     attempt: number,
+                     boundary: "post_observation",
+                     result: result
+                   }
+                 ])
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+      assert has_element?(view, "#request-summary-card", "Completed after retry")
+      assert has_element?(view, "#request-attempt-1-1", "failed")
+      assert has_element?(view, "#request-attempt-1-2", "completed")
+
+      assert has_element?(
+               view,
+               "#request-timeline-card #request-attempt-1-1 > details > summary",
+               "1.21 s"
+             )
+
+      assert has_element?(
+               view,
+               "#request-timeline-card #request-attempt-1-2 > details > summary",
+               "3.40 s"
+             )
+
+      refute has_element?(view, "#request-attempt-1-1 > details[open]")
+      assert has_element?(view, "#request-attempt-1-1 > details", "internal_error")
+      assert has_element?(view, "#request-attempt-1-1 > details", "retried")
+      assert has_element?(view, "#request-timing-help", "not client receipt")
+      refute has_element?(view, "#request-timing-help[open]")
+      refute has_element?(view, "#request-metadata[open]")
+      refute has_element?(view, "#request-metadata #request-requested-model")
+      refute has_element?(view, "#request-total-latency", "Active requests")
+      assert has_element?(view, "#request-ttft", "1.68 s")
+      refute has_element?(view, "#request-ttft", "280 ms")
+      assert has_element?(view, "#request-timeline-card", "1.21 s")
+      assert has_element?(view, "#request-timeline-card", "3.40 s")
+      assert has_element?(view, "#request-output-tokens", "86")
+      refute has_element?(view, "#request-output-tokens", "123")
+      assert has_element?(view, "#request-total-tokens", "214")
+      refute has_element?(view, "#request-more-evidence details[open]")
+
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
+      assert has_element?(view, "#inspector-attempt-result", "retried")
+      assert has_element?(view, "#inspector-attempt-result", "internal_error")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-attempt-start time[datetime="2026-09-11T14:32:05Z"])
+             )
+
+      assert has_element?(view, ~s(#inspector-attempt-end time[datetime="2026-09-11T14:32:06Z"]))
+      refute has_element?(view, "#inspector-attempt", "No bounded timing interval")
+
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome dd", "completed")
+      refute has_element?(view, "#inspector-attempt-result", "retry_decision")
+      refute has_element?(view, "#inspector-attempt-result", "output_usage_status")
+      assert has_element?(view, "#request-summary-card", "Completed after retry")
+    end
+
     test "renders token counts including zero", %{conn: conn} do
       request =
         create_request!(%{
@@ -136,7 +253,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "Token Usage &amp; Performance"
+      assert html =~ "Logical Request usage"
       assert html =~ "150"
       assert html =~ "75"
       assert html =~ "225"
@@ -147,6 +264,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
+      assert has_element?(view, "#request-usage-card", "legacy placeholder")
       # Assert each metric tile renders "0" as the value, not "—"
       for tile_id <- ["request-input-tokens", "request-output-tokens", "request-total-tokens"] do
         tile_html = element(view, "##{tile_id}") |> render()
@@ -155,7 +273,7 @@ defmodule OrchardConsole.RequestLiveTest do
       end
     end
 
-    test "renders all 7 metric tile IDs", %{conn: conn} do
+    test "prioritizes usage and Request timing without misleading generation rates", %{conn: conn} do
       request = create_request!(%{state: :completed, input_tokens: 10, output_tokens: 5})
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
@@ -165,31 +283,35 @@ defmodule OrchardConsole.RequestLiveTest do
             "request-output-tokens",
             "request-total-tokens",
             "request-ttft",
-            "request-generation-time",
-            "request-total-latency",
-            "request-tokens-per-second"
+            "request-total-latency"
           ] do
         assert has_element?(view, "##{tile_id}"), "expected tile #{tile_id} to be present"
       end
+
+      refute has_element?(view, "#request-generation-time")
+      refute has_element?(view, "#request-tokens-per-second")
+      assert has_element?(view, "#request-usage-card", "measurement accuracy not recorded")
+      refute has_element?(view, "#request-usage-card", "legacy placeholder")
     end
 
-    test "timing tiles show dash when timestamps are nil", %{conn: conn} do
+    test "timing tiles identify absent timestamps without claiming zero", %{conn: conn} do
       request = create_request!(%{state: :received, input_tokens: 0, output_tokens: 0})
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
       for tile_id <- [
             "request-ttft",
-            "request-generation-time",
-            "request-total-latency",
-            "request-tokens-per-second"
+            "request-total-latency"
           ] do
         tile_html = element(view, "##{tile_id}") |> render()
-        assert tile_html =~ "—", "expected #{tile_id} to show em dash"
+        assert tile_html =~ "Not recorded"
+        refute tile_html =~ "0 ms"
       end
     end
 
-    test "completed request shows formatted durations and tok/s", %{conn: conn} do
+    test "SPEC §5.8 TTFT starts at Request creation, independently of generation duration", %{
+      conn: conn
+    } do
       request =
         create_request!(%{
           state: :completed,
@@ -212,20 +334,13 @@ defmodule OrchardConsole.RequestLiveTest do
       ttft_html = element(view, "#request-ttft") |> render()
       assert ttft_html =~ "250 ms"
 
-      # Generation: 1.5 s
-      gen_html = element(view, "#request-generation-time") |> render()
-      assert gen_html =~ "1.5 s"
-
-      # Total latency: 1.8 s (rounded from 1750 ms)
       latency_html = element(view, "#request-total-latency") |> render()
-      assert latency_html =~ "1.8 s"
-
-      # Tok/s: 75 / 1.5 = 50.0
-      tps_html = element(view, "#request-tokens-per-second") |> render()
-      assert tps_html =~ "50.0"
+      assert latency_html =~ "1.75 s"
     end
 
-    test "zero generation time shows 0 ms and dash for tok/s", %{conn: conn} do
+    test "coincident first output and completion do not produce a fabricated generation rate", %{
+      conn: conn
+    } do
       request =
         create_request!(%{
           state: :completed,
@@ -244,17 +359,9 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
-      # Generation time: 0 ms
-      gen_html = element(view, "#request-generation-time") |> render()
-      assert gen_html =~ "0 ms"
-
-      # Tok/s: em dash (division by zero guarded)
-      tps_html = element(view, "#request-tokens-per-second") |> render()
-      assert tps_html =~ "—"
-
-      # TTFT should still show 1.0 s
       ttft_html = element(view, "#request-ttft") |> render()
-      assert ttft_html =~ "1.0 s"
+      assert ttft_html =~ "1.00 s"
+      refute has_element?(view, "#request-tokens-per-second")
     end
   end
 
@@ -566,7 +673,7 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
       assert html =~ "request-canonical-fallback"
-      assert html =~ "Not captured for this request"
+      assert html =~ "No retained content available for this request"
       refute html =~ "request-canonical-request"
     end
 
@@ -689,6 +796,54 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Metadata capture disclosure
+  # ===========================================================================
+
+  describe "metadata capture disclosure" do
+    test "SPEC.md §10.10 metadata retains a bounded assistant-text preview and omits full payloads",
+         %{conn: conn} do
+      long_response = String.duplicate("x", 513)
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :metadata,
+          response_payload: %{"output_text" => long_response},
+          response_preview: long_response,
+          response_preview_source: :assistant_text
+        })
+
+      # CapturePolicy bounds the persisted preview; capture_policy_test.exs covers
+      # the 512/513 and grapheme boundaries, so this locks the rendered behavior.
+      assert String.length(request.response_preview) == 512
+      assert String.ends_with?(request.response_preview, "…")
+      refute request.response_preview == long_response
+      assert request.response_payload == nil
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # The bounded preview is retained, and the full payload is not.
+      preview_html = element(view, "#request-response-preview") |> render()
+      assert preview_html =~ "…"
+      refute preview_html =~ long_response
+
+      refute has_element?(view, "#request-response-payload")
+      assert has_element?(view, "#request-response-payload-fallback")
+      refute has_element?(view, "#request-canonical-request")
+      assert has_element?(view, "#request-canonical-fallback")
+
+      # Both disclosures state the accurate metadata-preview semantics.
+      for card_id <- ["#request-response-debug-card", "#request-canonical-card"] do
+        card_html = element(view, card_id) |> render()
+        assert card_html =~ "Metadata capture was selected"
+        assert card_html =~ "Full request and response payloads are omitted"
+        assert card_html =~ "a bounded assistant-text preview may remain"
+        refute card_html =~ "Request and response content is not retained"
+      end
+    end
+  end
+
+  # ===========================================================================
   # Provenance
   # ===========================================================================
 
@@ -761,7 +916,7 @@ defmodule OrchardConsole.RequestLiveTest do
         view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
 
       assert html =~ parent.public_id
-      assert html =~ "Request Summary"
+      assert html =~ "Logical Request"
 
       summary_html = element(new_view, "#request-summary-card") |> render()
       assert summary_html =~ parent.public_id
@@ -1061,6 +1216,24 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "unknown public_id" do
+    test "lookup exceptions expose recovery copy, not query details" do
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          public_id: %{private: "must-not-appear-in-error"},
+          refresh_timer: nil
+        }
+      }
+
+      assert {:noreply, socket} =
+               OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+
+      assert socket.assigns.request_status == :error
+      assert socket.assigns.load_error == "Request details could not be loaded. Try Refresh now."
+      refute socket.assigns.load_error =~ "must-not-appear-in-error"
+      assert socket.assigns.refresh_timer == nil
+    end
+
     test "renders not-found card without crashing", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id-999")
 
@@ -1073,10 +1246,99 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Exception diagnostics
+  # ===========================================================================
+
+  describe "exception diagnostics" do
+    test "lookup exceptions log a sanitized diagnostic without leaking request details" do
+      sentinel = "sk-ORCHARD-SECRET-SENTINEL-1234"
+
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          public_id: %{secret: sentinel},
+          refresh_timer: nil
+        }
+      }
+
+      {result, log} =
+        with_log(fn ->
+          OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+        end)
+
+      assert {:noreply, socket} = result
+
+      # Browser-facing copy stays generic.
+      assert socket.assigns.request_status == :error
+      assert socket.assigns.load_error == "Request details could not be loaded. Try Refresh now."
+      refute socket.assigns.load_error =~ sentinel
+
+      # Server diagnostic is safe (no secret or parameter leakage) and useful
+      # (a fixed operation plus the exception class).
+      assert log =~ "operation=load_request"
+      assert log =~ "category=Elixir.Ecto.Query.CastError"
+      refute log =~ sentinel
+      refute log =~ "secret"
+    end
+
+    test "non-exceptional not-found and presenter-invalid paths emit no error diagnostic", %{
+      conn: conn
+    } do
+      not_found_log =
+        capture_log(fn ->
+          {:ok, _view, _html} = live(conn, "/console/requests/nonexistent-id-999")
+        end)
+
+      refute not_found_log =~ "operation=load_request"
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :full,
+          scheduler_decision: %{"scored_candidates" => "not-a-list"}
+        })
+
+      presenter_log =
+        capture_log(fn ->
+          {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+          assert has_element?(view, "#scheduler-explanation-invalid")
+        end)
+
+      refute presenter_log =~ "operation=load_request"
+    end
+  end
+
+  # ===========================================================================
   # Polling refresh
   # ===========================================================================
 
   describe "polling refresh" do
+    test "Refresh now recovers an absent request and stops polling on its final outcome", %{
+      conn: conn
+    } do
+      public_id = "req_refresh_recovery"
+      {:ok, view, _html} = live(conn, "/console/requests/#{public_id}")
+      assert has_element?(view, "#request-not-found-card")
+      request = create_request!(%{public_id: public_id, state: :running})
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-summary-card", "Current state")
+      assert has_element?(view, "#request-freshness", "Auto-refreshing")
+
+      assert {:ok, _} = Requests.mark_terminal(request, %{state: :completed, output_tokens: 17})
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+      assert has_element?(view, "#request-output-tokens", "17")
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="refresh_request"][phx-disable-with="Checking…"]),
+               "Refresh"
+             )
+
+      refute has_element?(view, "button[phx-click=refresh_request] > *")
+    end
+
     test "refresh updates DOM with new data", %{conn: conn} do
       request = create_request!(%{state: :running, input_tokens: 0, output_tokens: 0})
 
@@ -1258,11 +1520,11 @@ defmodule OrchardConsole.RequestLiveTest do
       debug_pos = :binary.match(html, "request-response-debug-card") |> elem(0)
       canonical_pos = :binary.match(html, "request-canonical-card") |> elem(0)
 
-      assert summary_pos < usage_pos
-      assert usage_pos < timeline_pos
+      assert summary_pos < error_pos
+      assert error_pos < timeline_pos
+      assert timeline_pos < usage_pos
       assert timeline_pos < execution_pos
-      assert execution_pos < error_pos
-      assert error_pos < provenance_pos
+      assert execution_pos < provenance_pos
       assert provenance_pos < debug_pos
       assert debug_pos < canonical_pos
     end
@@ -1331,7 +1593,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "request-response-preview-fallback"
       assert html =~ "request-response-payload-fallback"
       assert html =~ "request-scheduler-decision-fallback"
-      assert html =~ "Not captured for this request."
+      assert html =~ "No retained content available for this request."
       assert html =~ "Not recorded for this request."
 
       # Canonical fallback
@@ -1339,9 +1601,577 @@ defmodule OrchardConsole.RequestLiveTest do
     end
   end
 
+  describe "selected persisted evidence" do
+    test "selection commands focus the panel and distinguish its action from inline inspection",
+         %{
+           conn: conn
+         } do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert has_element?(view, ~s(#request-evidence-inspector[tabindex="-1"]))
+      assert has_element?(view, "#request-attempt-1-1 summary", "Inspect attempt")
+
+      [mounted_commands] =
+        view
+        |> element("#request-recorded-events")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#request-recorded-events")
+        |> LazyHTML.attribute("phx-mounted")
+
+      assert [["ignore_attrs", %{"attrs" => ["open"]}]] = Jason.decode!(mounted_commands)
+
+      for selector <- ["#request-attempt-1-1", "#request-event-1"] do
+        button = "#{selector} button[aria-controls=request-evidence-inspector]"
+        assert has_element?(view, button, "Show in Selected evidence")
+
+        [commands] =
+          view
+          |> element(button)
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.query("button")
+          |> LazyHTML.attribute("phx-click")
+
+        assert [
+                 ["push", %{"event" => "select_evidence"}],
+                 ["focus", %{"to" => "#request-evidence-inspector"}]
+               ] =
+                 Jason.decode!(commands)
+
+        view |> element(button) |> render_click()
+
+        assert has_element?(
+                 view,
+                 button <> ~s([aria-pressed="true"].border-navy.bg-slate-100),
+                 "Selected"
+               )
+
+        assert has_element?(view, "#inspector-request", request.public_id)
+        refute has_element?(view, "#inspector-request-id")
+      end
+
+      assert has_element?(
+               view,
+               ~s(#request-attempt-1-1 button[aria-pressed="false"].border-slate-200.bg-white)
+             )
+    end
+
+    test "SPEC §3.7.1 candidate hints never replace validated source identity" do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation",
+        result: %{"output_tokens" => 7}
+      })
+
+      [started, completed] = Requests.list_request_events(request)
+      own_id = "inference_turn:t1:a1"
+      other_id = "inference_turn:t1:a2"
+
+      events = [
+        started,
+        %{
+          completed
+          | payload:
+              Map.new(completed.payload, fn {key, value} ->
+                {String.to_existing_atom(key), value}
+              end)
+        },
+        %{
+          started
+          | seq: 3,
+            payload:
+              Map.merge(started.payload, %{
+                :step_id => own_id,
+                "step_id" => other_id,
+                "attempt" => 2
+              })
+        },
+        %{started | seq: 4, payload: Map.put(started.payload, :step_id, other_id)},
+        %{started | seq: 5, payload: Map.put(started.payload, "attempt", 99)},
+        %{started | seq: 6, event_type: "metadata"},
+        %{started | seq: 7, payload: nil},
+        %{started | seq: 8, payload: []},
+        %{started | seq: 9, payload: %{}},
+        %{started | seq: 10, event_type: "request_step.unknown"}
+      ]
+
+      unrelated =
+        for seq <- 11..138 do
+          %{
+            started
+            | seq: seq,
+              payload:
+                Map.merge(started.payload, %{
+                  "step_id" => "inference_turn:t1:a#{seq}",
+                  "attempt" => seq
+                })
+          }
+        end
+
+      {:ok, socket} =
+        OrchardConsole.RequestLive.mount(
+          %{"public_id" => request.public_id},
+          %{},
+          %Phoenix.LiveView.Socket{}
+        )
+
+      {:noreply, socket} = OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+      events = events ++ unrelated
+
+      socket =
+        Phoenix.Component.assign(socket,
+          events: events,
+          attempts: OrchardConsole.RequestEvidence.attempts(events)
+        )
+
+      {:noreply, socket} =
+        OrchardConsole.RequestLive.handle_event("select_evidence", %{"attempt" => own_id}, socket)
+
+      document =
+        render_component(&OrchardConsole.RequestLive.render/1, socket.assigns)
+        |> LazyHTML.from_fragment()
+
+      assert document
+             |> LazyHTML.query("#request-evidence-inspector article")
+             |> LazyHTML.attribute("id") ==
+               ["inspector-event-1", "inspector-event-2", "inspector-event-4"]
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-outcome dd")
+             |> LazyHTML.text()
+             |> String.trim() == "completed"
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-result code")
+             |> LazyHTML.text()
+             |> Jason.decode!() == %{"output_tokens" => 7}
+    end
+
+    test "attempt selection uses the loaded projection and replaces it on refresh", %{conn: conn} do
+      request = create_request!(%{state: :running})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      append_inspector_step!(request, %{step_id: "inference_turn:t1:a2", attempt: 2})
+      render_click(view, "select_evidence", %{"attempt" => "inference_turn:t1:a2"})
+      assert has_element?(view, "#request-evidence-selection", "Select an attempt")
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "Turn 1 · Attempt 2 selected")
+
+      Repo.delete_all(
+        from(event in RequestEvent, where: event.request_id == ^request.id and event.seq == 2)
+      )
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "no longer available")
+      refute has_element?(view, "#inspector-attempt")
+      refute has_element?(view, "#request-attempt-1-2")
+    end
+
+    test "selection uses only loaded events and preserves Request scope", %{conn: conn} do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      foreign = create_request!(%{payload_capture_mode: :full})
+
+      Repo.insert!(%RequestEvent{
+        request_id: foreign.id,
+        seq: 99,
+        event_type: "foreign",
+        payload: %{"value" => "other-request"}
+      })
+
+      Repo.insert!(%RequestEvent{
+        request_id: request.id,
+        seq: 1,
+        event_type: "state_transition",
+        state: :failed,
+        occurred_at: ~U[2026-09-11 14:32:07.123456Z],
+        payload: %{"parent_step_id" => "unvalidated-parent", "state" => "completed"}
+      })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert has_element?(
+               view,
+               "#request-evidence-selection",
+               "Select an attempt or recorded event"
+             )
+
+      refute has_element?(view, "#request-evidence-inspector [data-copy-json]")
+
+      render_click(view, "select_evidence", %{"event" => "99"})
+      assert has_element?(view, "#request-evidence-selection", "Select an attempt")
+      refute render(view) =~ "other-request"
+
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-request", request.public_id)
+      refute has_element?(view, "#inspector-request-id")
+      assert has_element?(view, "#inspector-event-1-scope dd", "Request")
+      assert has_element?(view, "#inspector-event-1-outcome dd", "failed")
+      assert has_element?(view, "#request-summary-card", "completed")
+      assert has_element?(view, "#inspector-event-1-parent dd", "Not established")
+      refute has_element?(view, "#inspector-event-1-parent", "unvalidated-parent")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-event-1-time time[datetime="2026-09-11T14:32:07Z"][phx-hook="LocalTime"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#request-event-1 button[aria-pressed="true"][aria-controls="request-evidence-inspector"]),
+               "Selected"
+             )
+
+      render_click(view, "select_evidence", %{"event" => "1junk"})
+      render_click(view, "select_evidence", %{"attempt" => "inference_turn:t99:a99"})
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      assert has_element?(view, "#request-back-to-requests[href='/console/requests']")
+    end
+
+    for mode <- [:none, :metadata, :full] do
+      @capture_mode mode
+      test "SPEC §3.7.1 and §10.10 inspector respects #{@capture_mode} retained tool evidence", %{
+        conn: conn
+      } do
+        request = create_request!(%{payload_capture_mode: @capture_mode})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.proposed",
+          step_type: "tool_call",
+          step_id: "tool_call:t1:ccall_inspector",
+          parent_step_id: "inference_turn:t1:a1",
+          boundary: "post_observation",
+          call_id: "call_inspector",
+          tool_name: "calendar.lookup",
+          arguments_json: ~s({"date":"2026-10-01"}),
+          result: %{"finish_reason" => "tool_calls"}
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+        view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+        assert has_element?(view, "#inspector-event-1-scope", "tool_call · Turn 1 · Attempt 1")
+        assert has_element?(view, "#inspector-event-1-parent dd", "inference_turn:t1:a1")
+        assert has_element?(view, "#inspector-event-1-boundary dd", "post_observation")
+        assert has_element?(view, "#inspector-event-1-outcome dd", "Not recorded")
+
+        assert has_element?(
+                 view,
+                 "#request-evidence-inspector",
+                 "#{String.capitalize(to_string(@capture_mode))} capture was selected"
+               )
+
+        assert has_element?(
+                 view,
+                 "#inspector-event-payload-1[phx-hook=RequestPayload] [data-copy-json]"
+               )
+
+        payload =
+          view
+          |> element("#inspector-event-payload-1 code")
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.text()
+          |> Jason.decode!()
+
+        if @capture_mode == :full do
+          assert payload["tool_name"] == "calendar.lookup"
+          assert payload["arguments_json"] == ~s({"date":"2026-10-01"})
+          assert payload["call_id"] == "call_inspector"
+        else
+          refute Map.has_key?(payload, "tool_name")
+          refute Map.has_key?(payload, "arguments_json")
+          refute payload["call_id"] == "call_inspector"
+          assert has_element?(view, "#inspector-event-1-step dd", "tool_call:t1:csha256:")
+        end
+      end
+    end
+
+    test "invalid envelopes and legacy metadata never establish step identities", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      for {seq, type, state} <- [
+            {1, "request_step.started", nil},
+            {2, "legacy_event", nil},
+            {3, "request_step.failed", :completed}
+          ] do
+        Repo.insert!(%RequestEvent{
+          request_id: request.id,
+          seq: seq,
+          event_type: type,
+          state: state,
+          payload: %{"step_id" => "inference_turn:t1:a1", "parent_step_id" => "forged-parent"}
+        })
+      end
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      refute has_element?(view, "#request-attempt-1-1")
+
+      for seq <- [1, 2, 3] do
+        view
+        |> element("#request-event-#{seq} button[phx-value-event]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-event-#{seq}-scope", "Unclassified event")
+        assert has_element?(view, "#inspector-event-#{seq}-step", "Not established")
+        assert has_element?(view, "#inspector-event-#{seq}-parent", "Not established")
+        assert has_element?(view, "#inspector-event-payload-#{seq}", "forged-parent")
+      end
+
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-event-1", "Invalid step envelope")
+
+      view |> element("#request-event-3 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-event-3-outcome dd", "Not established")
+    end
+
+    test "missing payload remains distinct from expiry, redaction and zero", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :none})
+      append_event!(request, %{event_type: "state_transition", state: :received})
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+      assert has_element?(
+               view,
+               "#inspector-event-empty-1",
+               "No retained payload. Absence does not establish expiry or redaction."
+             )
+
+      refute has_element?(view, "#inspector-event-1 [data-copy-json]")
+    end
+
+    for status <- ["exact", "lower_bound"] do
+      @usage_status status
+      test "SPEC §3.7.1 rejected attempt retains #{@usage_status} usage under none capture", %{
+        conn: conn
+      } do
+        request = create_request!(%{state: :failed, payload_capture_mode: :none})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.failed",
+          boundary: "post_observation",
+          result: %{
+            "attempt_outcome" => "failed",
+            "started_at" => "2026-10-01T10:00:00.100000Z",
+            "ended_at" => "2026-10-01T10:00:00.300000Z",
+            "accepted" => false,
+            "output_committed" => false,
+            "execution_resolution" => "not_started",
+            "capacity_release_outcome" => "not_applicable",
+            "failure_class" => "capacity_rejection",
+            "failure_code" => "cluster_busy",
+            "retry_decision" => "not_retryable",
+            "excluded_node_ids" => [],
+            "output_tokens" => 0,
+            "output_usage_status" => @usage_status
+          }
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+        view
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
+        assert has_element?(view, "#inspector-attempt-result", "cluster_busy")
+        assert has_element?(view, "#inspector-attempt-result", @usage_status)
+        assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+        assert has_element?(view, "#request-evidence-inspector", "None capture was selected")
+      end
+    end
+
+    test "selected active attempt refreshes to terminal evidence and replays after remount", %{
+      conn: conn
+    } do
+      request = create_request!(%{state: :running})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Terminal outcome not recorded")
+      assert has_element?(view, "#inspector-attempt-end", "Not recorded")
+      assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+      assert has_element?(view, "#inspector-event-1-parent", "Not recorded")
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation",
+        result: %{"output_tokens" => 7}
+      })
+
+      {:ok, _} = Requests.mark_terminal(request, %{state: :completed})
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#inspector-attempt-outcome dd", "completed")
+      assert has_element?(view, "#inspector-attempt-result", "7")
+      assert has_element?(view, "#inspector-event-1")
+      assert has_element?(view, "#inspector-event-2")
+      assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+
+      {:ok, replay, _} = live(conn, "/console/requests/#{request.public_id}")
+      assert has_element?(replay, "#request-evidence-selection", "Select an attempt")
+
+      replay
+      |> element("#request-attempt-1-1 button[phx-value-attempt]")
+      |> render_click()
+
+      assert has_element?(replay, "#inspector-attempt-outcome dd", "completed")
+      assert has_element?(replay, "#inspector-attempt-result", "7")
+    end
+
+    test "event selection preserves native disclosure commands on replacement and clears removed evidence",
+         %{
+           conn: conn
+         } do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      event =
+        append_event!(request, %{
+          event_type: "metadata",
+          payload: %{"value" => "selected-payload"}
+        })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      append_event!(request, %{event_type: "state_transition", state: :running})
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      refute has_element?(view, "#inspector-event-2")
+      assert has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      event =
+        Repo.update!(Ecto.Changeset.change(event, payload: %{"value" => "replacement-payload"}))
+
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      assert has_element?(view, "#inspector-event-payload-1", "replacement-payload")
+      refute has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-event-1 > details[phx-mounted='[["ignore_attrs",{"attrs":["open"]}]]'])
+             )
+
+      Repo.delete!(event)
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#request-evidence-selection", "no longer available")
+      refute has_element?(view, "#request-evidence-inspector code")
+      refute render(view) =~ "selected-payload"
+    end
+
+    test "navigation clears selection even when destination has the same event sequence", %{
+      conn: conn
+    } do
+      parent = create_request!()
+      child = create_request!(%{retry_of_request_id: parent.id})
+      append_inspector_step!(parent)
+      append_inspector_step!(child)
+      {:ok, view, _} = live(conn, "/console/requests/#{child.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+      {:ok, destination, _} =
+        view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
+
+      assert has_element?(destination, "#request-evidence-selection", "Select an attempt")
+      refute has_element?(destination, "#inspector-event-1")
+    end
+
+    test "SPEC §3.7.1 conflicting and invalid terminal results remain distinct", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.failed",
+        boundary: "post_observation"
+      })
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation"
+      })
+
+      append_inspector_step!(request, %{
+        step_id: "inference_turn:t1:a2",
+        attempt: 2,
+        event_type: "request_step.failed",
+        boundary: "post_observation",
+        result: %{"result_invalid" => true}
+      })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Conflicting terminal evidence")
+      assert has_element?(view, "#inspector-attempt-start", "Not recorded")
+      assert has_element?(view, "#inspector-attempt-result-empty", "No unambiguous")
+      assert has_element?(view, "#inspector-event-1-outcome", "failed")
+      assert has_element?(view, "#inspector-event-2-outcome", "completed")
+
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Invalid terminal evidence")
+      assert has_element?(view, "#inspector-event-3-outcome", "Invalid terminal evidence")
+      refute has_element?(view, "#inspector-event-1")
+      assert has_element?(view, ~s(#request-attempt-1-1 button[aria-pressed="false"]))
+    end
+
+    for state <- [:completed, :failed, :timed_out, :cancelled, :interrupted] do
+      @terminal_state state
+      test "SPEC §3.7.1 selected #{@terminal_state} attempt preserves its recorded outcome", %{
+        conn: conn
+      } do
+        request = create_request!(%{state: @terminal_state, payload_capture_mode: :full})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.#{@terminal_state}",
+          boundary: "post_observation",
+          result: %{"output_tokens" => 0}
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+        view
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-attempt-outcome dd", to_string(@terminal_state))
+        assert has_element?(view, "#inspector-event-1-outcome dd", to_string(@terminal_state))
+        assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+        assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+      end
+    end
+  end
+
   # ===========================================================================
   # Helpers
   # ===========================================================================
+
+  defp append_inspector_step!(request, attrs \\ %{}) do
+    step =
+      Map.merge(
+        %{
+          event_type: "request_step.started",
+          step_id: "inference_turn:t1:a1",
+          step_type: "inference_turn",
+          turn_index: 1,
+          attempt: 1,
+          boundary: "pre_side_effect",
+          result: %{}
+        },
+        attrs
+      )
+
+    {:ok, events} = Requests.append_request_step_events(request, [step])
+    events
+  end
 
   defp append_event!(request, attrs) do
     {:ok, event} = Requests.append_request_event(request, attrs)

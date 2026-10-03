@@ -1,15 +1,17 @@
-# Triage Labels
+# GitHub Triage Labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+These existing labels describe public GitHub triage. They are not Linear states,
+private priorities, or a workflow adapter. Do not automatically mirror them into
+Linear. Follow [Tracking and Publication](../process.md#tracking-and-publication)
+for private prioritization and authorized public updates.
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| GitHub label | Meaning |
+|---|---|
+| `needs-triage` | Maintainer needs to evaluate this issue |
+| `needs-info` | Waiting on reporter for more information |
+| `ready-for-agent` | Specified for agent work, subject to explicit scope and authorization |
+| `ready-for-human` | Requires human implementation |
+| `wontfix` | Will not be actioned |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
-
-Edit the right-hand column to match whatever vocabulary you actually use.
+No label grants implementation, publication, merge, release, or deployment
+authority. This guidance does not relabel or change any existing issue.

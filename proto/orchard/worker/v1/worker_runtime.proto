@@ -4,9 +4,12 @@ package orchard.worker.v1;
 
 import "cluster/v1/common.proto";
 import "cluster/v1/events.proto";
+import "cluster/v1/reasoning.proto";
 import "cluster/v1/runtime.proto";
 
-message WorkerStatusRequest {}
+message WorkerStatusRequest {
+  cluster.v1.ReasoningObservationRequest reasoning_observation = 1;
+}
 
 message WorkerMemoryBudgetStatus {
   string mode = 1;
@@ -89,7 +92,12 @@ message WorkerCapabilityProfile {
 // a zero or empty required value is malformed. protocol_minor may be 0.
 // Non-gating: observe-only in this slice: capability evidence MUST NOT alter
 // readiness, request admission, model admission, placement capacity, scheduler
-// eligibility, retry, or Runtime Endpoint projection.
+// eligibility, retry, or Runtime Endpoint projection. The sole exception is
+// field 9 reasoning evidence under SPEC.md §7.5.3a: for an explicit negotiated
+// Request only, a fresh exact tuple from the opt-in live observation may feed
+// that section's narrow reasoning-specific eligibility predicate over already
+// loaded placements. That exception does not make fields 1-8 or generic
+// capability evidence authoritative for any of the decisions above.
 message WorkerCapabilities {
   // Required, >= 1. Only the major is a compatibility input.
   uint32 protocol_major = 1;
@@ -107,9 +115,12 @@ message WorkerCapabilities {
   string service_incarnation = 6;
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
-  // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
-  // deferred pending issue #327 acceptance
-  reserved 8;
+  // Presence-aware. Omitting fields 8 and 9 means a non-advertising binding.
+  // Field 9 present without field 8 is malformed and classifies as unknown.
+  cluster.v1.WorkerLoadedBinding loaded_binding = 8;
+  // SPEC.md §7.5.3a live-only evidence. Never persisted in heartbeats or
+  // durable observations; forwarding does not refresh it.
+  cluster.v1.ReasoningEvidenceEnvelope reasoning_evidence = 9;
 }
 
 message WorkerStatusResponse {
@@ -142,6 +153,8 @@ service WorkerRuntimeService {
   rpc UnloadModel(cluster.v1.UnloadModelRequest) returns (cluster.v1.Ack);
   rpc Generate(cluster.v1.ExecuteInferenceRequest) returns (stream cluster.v1.InferenceEvent);
   rpc Cancel(cluster.v1.CancelInferenceRequest) returns (cluster.v1.Ack);
+  rpc PrepareInference(cluster.v1.PrepareInferenceRequest)
+      returns (cluster.v1.PrepareInferenceResponse);
   // Phase 4D selected-candidate observe-only score path.
   // Worker accepts only cache_affinity_fingerprint HMAC input in v1; prompt
   // bytes and token IDs are explicitly out of scope for this RPC.

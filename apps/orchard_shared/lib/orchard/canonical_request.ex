@@ -66,11 +66,13 @@ defmodule Orchard.CanonicalRequest do
 
     defstruct generation_policy: :model_default,
               projection: :legacy_blended,
+              reasoning_effort: nil,
               source: :omitted_public,
               effective_contract: %{mode: :legacy}
 
     @type generation_policy :: :model_default | :disabled | :enabled
     @type projection :: :legacy_blended | :final_only | :reasoning_structured
+    @type reasoning_effort :: nil | :low | :medium | :high
     @type source :: :omitted_public | :explicit_public | :console_default | :console_explicit
 
     @type legacy_contract :: %{required(:mode) => :legacy}
@@ -92,6 +94,7 @@ defmodule Orchard.CanonicalRequest do
     @type t :: %__MODULE__{
             generation_policy: generation_policy(),
             projection: projection(),
+            reasoning_effort: reasoning_effort(),
             source: source(),
             effective_contract: effective_contract()
           }
@@ -100,17 +103,26 @@ defmodule Orchard.CanonicalRequest do
     Renders the canonical reasoning policy into the single string-keyed wire shape
     shared by durable persistence and tokenizer helper payloads.
     """
-    @spec to_wire(t()) :: %{required(String.t()) => String.t() | map()}
+    @spec to_wire(t()) :: %{required(String.t()) => String.t() | map() | nil}
     def to_wire(%__MODULE__{} = reasoning) do
       %{
         "generation_policy" => Atom.to_string(reasoning.generation_policy),
         "projection" => Atom.to_string(reasoning.projection),
+        "reasoning_effort" => effort_to_wire(reasoning.reasoning_effort),
         "source" => Atom.to_string(reasoning.source),
         "effective_contract" =>
           Map.new(reasoning.effective_contract, fn {key, value} ->
             {Atom.to_string(key), wire_value(value)}
           end)
       }
+    end
+
+    defp effort_to_wire(nil), do: nil
+    defp effort_to_wire(effort) when effort in [:low, :medium, :high], do: Atom.to_string(effort)
+
+    defp effort_to_wire(effort) do
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} reasoning_effort must be nil, :low, :medium, or :high, got: #{inspect(effort)}"
     end
 
     defp wire_value(value) when is_atom(value), do: Atom.to_string(value)
@@ -482,6 +494,7 @@ defmodule Orchard.CanonicalRequest do
            reasoning: %Reasoning{
              generation_policy: generation_policy,
              projection: projection,
+             reasoning_effort: reasoning_effort,
              source: source,
              effective_contract: effective_contract
            }
@@ -489,19 +502,28 @@ defmodule Orchard.CanonicalRequest do
        )
        when generation_policy in [:model_default, :disabled, :enabled] and
               projection in [:legacy_blended, :final_only, :reasoning_structured] and
+              reasoning_effort in [nil, :low, :medium, :high] and
               source in [:omitted_public, :explicit_public, :console_default, :console_explicit] do
-    validate_reasoning_combination!(generation_policy, projection, source, effective_contract)
+    validate_reasoning_combination!(
+      generation_policy,
+      projection,
+      reasoning_effort,
+      source,
+      effective_contract
+    )
+
     struct
   end
 
   defp validate_reasoning!(%__MODULE__{reasoning: reasoning}) do
     raise ArgumentError,
-          "#{inspect(__MODULE__)} reasoning must include a supported generation_policy, projection, source, and effective_contract, got: #{inspect(reasoning)}"
+          "#{inspect(__MODULE__)} reasoning must include a supported generation_policy, projection, reasoning_effort, source, and effective_contract, got: #{inspect(reasoning)}"
   end
 
   defp validate_reasoning_combination!(
          :model_default,
          :legacy_blended,
+         nil,
          :omitted_public,
          %{mode: :legacy} = effective_contract
        ) do
@@ -518,21 +540,46 @@ defmodule Orchard.CanonicalRequest do
   defp validate_reasoning_combination!(
          :disabled,
          :final_only,
+         nil,
          :console_default,
          effective_contract
        ) do
     validate_negotiated_reasoning_contract!(effective_contract)
   end
 
-  defp validate_reasoning_combination!(generation_policy, :final_only, source, effective_contract)
+  defp validate_reasoning_combination!(
+         generation_policy,
+         :final_only,
+         nil,
+         source,
+         effective_contract
+       )
        when generation_policy in [:model_default, :disabled, :enabled] and
               source in [:console_explicit, :explicit_public] do
     validate_negotiated_reasoning_contract!(effective_contract)
   end
 
-  defp validate_reasoning_combination!(generation_policy, projection, source, effective_contract) do
+  defp validate_reasoning_combination!(
+         :enabled,
+         :final_only,
+         reasoning_effort,
+         source,
+         effective_contract
+       )
+       when reasoning_effort in [:low, :medium, :high] and
+              source in [:console_explicit, :explicit_public] do
+    validate_negotiated_reasoning_contract!(effective_contract)
+  end
+
+  defp validate_reasoning_combination!(
+         generation_policy,
+         projection,
+         reasoning_effort,
+         source,
+         effective_contract
+       ) do
     invalid_reasoning_contract!(
-      "unsupported reasoning combination #{inspect({generation_policy, projection, source})}",
+      "unsupported reasoning combination #{inspect({generation_policy, projection, reasoning_effort, source})}",
       effective_contract
     )
   end

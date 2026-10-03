@@ -14,7 +14,7 @@ defmodule OrchardConsole.Runtime do
 
   alias Orchard.Inference
   alias Orchard.Runtime.PrefixCacheStatus
-  alias Orchard.RuntimeEndpoint.{Observation, Placement, Target}
+  alias Orchard.RuntimeEndpoint.{Diagnostics, Observation, Placement, Target}
 
   @cluster_snapshot_timeout_buffer_ms 500
 
@@ -58,6 +58,7 @@ defmodule OrchardConsole.Runtime do
           worker_state: worker_state(),
           loaded_models: [loaded_model()],
           active_request_count: non_neg_integer(),
+          diagnostics: map(),
           node_metadata: node_metadata() | nil,
           runtime_health: runtime_health() | nil,
           supports_prompt_token_ids: boolean(),
@@ -70,6 +71,7 @@ defmodule OrchardConsole.Runtime do
           status: :unavailable | :timeout | :error,
           code: String.t(),
           message: String.t(),
+          diagnostics: nil,
           worker_state: :unknown,
           loaded_models: [],
           active_request_count: 0,
@@ -101,6 +103,7 @@ defmodule OrchardConsole.Runtime do
           target: Target.t() | keyword(),
           status: :ok | :unavailable | :timeout | :error,
           message: String.t() | nil,
+          diagnostics: map() | nil,
           worker_state: worker_state(),
           loaded_models: [loaded_model()],
           active_request_count: non_neg_integer(),
@@ -122,7 +125,8 @@ defmodule OrchardConsole.Runtime do
   Successful probes trigger best-effort `observe_status/3` via the existing
   `snapshot/1` path, including queue capacity refresh.
   Per-target failures are isolated - one failed target never aborts the cluster
-  result.
+  result. Inventory-read failures return `{:error, :node_inventory_unavailable}`
+  rather than an empty snapshot list.
 
   Options:
   - `:targets` - explicit ordered target list (default: `Inference.runtime_endpoint_targets/0`)
@@ -130,12 +134,25 @@ defmodule OrchardConsole.Runtime do
   - `:timeout` - per-target `snapshot/1` timeout; also bounds the concurrent probe
     wait. When absent, probes wait for the client default with no extra bound.
   """
-  @spec cluster_snapshot() :: [cluster_target_snapshot()]
+  @spec cluster_snapshot() ::
+          [cluster_target_snapshot()] | {:error, :node_inventory_unavailable}
   def cluster_snapshot, do: cluster_snapshot([])
 
-  @spec cluster_snapshot(keyword()) :: [cluster_target_snapshot()]
+  @spec cluster_snapshot(keyword()) ::
+          [cluster_target_snapshot()] | {:error, :node_inventory_unavailable}
   def cluster_snapshot(opts) do
-    targets = Keyword.get_lazy(opts, :targets, &Inference.runtime_endpoint_targets/0)
+    resolution =
+      case Keyword.fetch(opts, :targets) do
+        {:ok, targets} -> {:ok, targets}
+        :error -> Inference.resolve_runtime_endpoint_targets()
+      end
+
+    with {:ok, targets} <- resolution do
+      probe_cluster(targets, opts)
+    end
+  end
+
+  defp probe_cluster(targets, opts) do
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     timeout = opts[:timeout]
 
@@ -191,6 +208,7 @@ defmodule OrchardConsole.Runtime do
       status: :error,
       code: "snapshot_exception",
       message: "unexpected error probing target",
+      diagnostics: nil,
       worker_state: :unknown,
       loaded_models: [],
       active_request_count: 0,
@@ -247,7 +265,16 @@ defmodule OrchardConsole.Runtime do
     case safe_status(client, channel, status_opts, target) do
       {:ok, response} ->
         observe_status_best_effort(target, response, observed_at)
-        {:ok, normalize_response(response)}
+
+        snapshot =
+          response
+          |> normalize_response()
+          |> Map.put(
+            :diagnostics,
+            Diagnostics.project(response, System.system_time(:millisecond))
+          )
+
+        {:ok, snapshot}
 
       {:error, reason} ->
         {:error, error_snapshot_for(reason)}
@@ -640,6 +667,7 @@ defmodule OrchardConsole.Runtime do
       status: status,
       code: code,
       message: message,
+      diagnostics: nil,
       worker_state: :unknown,
       loaded_models: [],
       active_request_count: 0,

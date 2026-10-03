@@ -273,9 +273,25 @@ defmodule Orchard.Inference do
   @spec runtime_endpoint_targets({:ok, [Target.t()]} | {:error, :node_inventory_unavailable}) :: [
           Target.t()
         ]
-  def runtime_endpoint_targets({:ok, []}), do: runtime_target_fallback_without_admitted_nodes()
-  def runtime_endpoint_targets({:ok, targets}), do: targets
-  def runtime_endpoint_targets({:error, :node_inventory_unavailable}), do: []
+  def runtime_endpoint_targets(inventory_result) do
+    case resolve_runtime_endpoint_targets(inventory_result) do
+      {:ok, targets} -> targets
+      {:error, :node_inventory_unavailable} -> []
+    end
+  end
+
+  @doc "Returns effective Runtime Endpoint targets without discarding inventory-read failures."
+  @spec resolve_runtime_endpoint_targets() ::
+          {:ok, [Target.t()]} | {:error, :node_inventory_unavailable}
+  def resolve_runtime_endpoint_targets do
+    Nodes.active_runtime_endpoint_targets()
+    |> resolve_runtime_endpoint_targets()
+  end
+
+  defp resolve_runtime_endpoint_targets({:ok, []}),
+    do: runtime_target_fallback_without_admitted_nodes()
+
+  defp resolve_runtime_endpoint_targets(result), do: result
 
   @spec static_runtime_target_fallback_enabled?() :: boolean()
   def static_runtime_target_fallback_enabled? do
@@ -405,12 +421,12 @@ defmodule Orchard.Inference do
   defp runtime_target_fallback_without_admitted_nodes do
     if static_runtime_target_fallback_enabled?() do
       case Nodes.activation_probe_runtime_endpoint_targets() do
-        {:ok, []} -> configured_runtime_endpoint_targets()
-        {:ok, [_target | _rest]} -> []
-        {:error, :node_inventory_unavailable} -> []
+        {:ok, []} -> {:ok, configured_runtime_endpoint_targets()}
+        {:ok, [_target | _rest]} -> {:ok, []}
+        {:error, :node_inventory_unavailable} = error -> error
       end
     else
-      []
+      {:ok, []}
     end
   end
 

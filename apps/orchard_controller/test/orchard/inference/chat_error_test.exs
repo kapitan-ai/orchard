@@ -4,6 +4,62 @@ defmodule Orchard.Inference.ChatErrorTest do
   alias Orchard.API.InferenceControllerSupport
   alias Orchard.Inference.{ChatError, ModelLoadFailure}
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.CapturePolicy
+
+  test "KAP-119 SPEC.md §7.2.9 every SSE passthrough kind sanitizes unknown codes" do
+    for {kind, code, message} <- [
+          {:request_failed, "internal_error", "Internal error"},
+          {:request_interrupted, "internal_error", "Internal error"},
+          {:request_timed_out, "request_timeout", "Request timed out"},
+          {:request_cancelled, "request_cancelled", "Request was cancelled"}
+        ] do
+      error = %ChatError{
+        kind: kind,
+        source_code: "unknown_runtime_code",
+        source_message: "private runtime detail"
+      }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: code,
+               message: message,
+               param: nil
+             }
+    end
+  end
+
+  test "KAP-119 SPEC.md §§3.7.1, 7.2.9 SSE failures retain only recognized codes" do
+    for code <- ["made_up_retryable", "worker_down/private-detail"] do
+      mapping =
+        code
+        |> InferenceEvent.failed("untrusted worker detail", true)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+    end
+
+    for code <- [
+          "worker_down",
+          "runtime_unavailable",
+          "tool_call_parse_failed",
+          "tool_choice_not_satisfied"
+        ] do
+      mapping =
+        code
+        |> InferenceEvent.failed("recognized failure", false)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping.code == code
+      assert mapping.message == "recognized failure"
+    end
+  end
 
   test "prepare validation mappings preserve OpenAI envelope fields" do
     error = ChatError.from_prepare_reason({:validation, {:missing_required_field, "model"}})
@@ -70,6 +126,23 @@ defmodule Orchard.Inference.ChatErrorTest do
     assert mapping.code == "tooling_not_supported"
     assert mapping.param == "model"
     assert mapping.message == "Model does not support tool calling: stub-tool-model@v1"
+  end
+
+  test "SPEC.md §7.2.7 maps unprovable render metadata to runtime_incompatible" do
+    error =
+      ChatError.from_prepare_reason(
+        {:tokenization,
+         {:runtime_incompatible,
+          "tokenizer render metadata did not prove the selected negotiated reasoning contract"}}
+      )
+
+    assert ChatError.api_mapping(error) == %{
+             status: :service_unavailable,
+             type: "server_error",
+             code: "runtime_incompatible",
+             message: "Runtime is incompatible",
+             param: nil
+           }
   end
 
   test "tokenization internal mapping preserves controller-owned internal_error response" do
@@ -186,6 +259,54 @@ defmodule Orchard.Inference.ChatErrorTest do
                error_code: code,
                error_message: message
              }
+    end
+  end
+
+  test "SPEC.md §7.5.3a reasoning conformance stays Controller-owned under every capture mode" do
+    worker_message = "<think>marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      error =
+        code
+        |> InferenceEvent.failed(worker_message, false)
+        |> ChatError.from_failed_event()
+
+      assert error.kind == :reasoning_conformance
+
+      assert ChatError.api_mapping(error) == %{
+               status: :internal_server_error,
+               type: "api_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.terminal_attrs(error) == %{
+               state: :failed,
+               http_status: 500,
+               error_code: "internal_error",
+               error_message: "Internal error"
+             }
+
+      for mode <- [:none, :metadata, :full] do
+        attrs =
+          error |> ChatError.terminal_attrs() |> then(&CapturePolicy.terminal_attrs(mode, &1))
+
+        assert attrs.error_code == "internal_error"
+        assert attrs.error_message in [nil, "Internal error"]
+        refute inspect(attrs) =~ code
+        refute inspect(attrs) =~ worker_message
+      end
     end
   end
 

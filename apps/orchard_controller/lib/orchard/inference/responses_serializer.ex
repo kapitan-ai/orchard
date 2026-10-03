@@ -24,7 +24,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
       created_at: created_at(events, created_at_override),
       status: "completed",
       model: format_model_display(canonical),
-      output: output_items(output_text, function_call_items),
+      output: output_items(canonical.public_id, output_text, function_call_items, "completed"),
       output_text: output_text,
       usage: usage_map(EventUsage.find(events)),
       error: nil,
@@ -33,7 +33,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
   end
 
   @spec success_persistence_attrs(CanonicalRequest.t(), [InferenceEvent.t()], integer() | nil) ::
-          map()
+          map() | {:error, :invalid_tool_call}
   def success_persistence_attrs(
         %CanonicalRequest{} = canonical,
         events,
@@ -45,11 +45,18 @@ defmodule Orchard.Inference.ResponsesSerializer do
     {response_preview, response_preview_source} =
       persistence_preview(output_text, tool_call_preview(events))
 
-    %{
-      response_payload: response_payload(canonical, events, created_at_override),
-      response_preview: response_preview,
-      response_preview_source: response_preview_source
-    }
+    payload = response_payload(canonical, events, created_at_override)
+    calls = Enum.filter(payload.output, &(&1.type == "function_call"))
+
+    if valid_function_calls?(calls, canonical) do
+      %{
+        response_payload: payload,
+        response_preview: response_preview,
+        response_preview_source: response_preview_source
+      }
+    else
+      {:error, :invalid_tool_call}
+    end
   end
 
   @spec usage_map(InferenceEvent.Usage.t() | nil) :: map()
@@ -72,6 +79,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
   def created_event(%CanonicalRequest{} = canonical, created_at) do
     %{
       type: "response.created",
+      sequence_number: 0,
       response: base_response(canonical, "in_progress", "", nil, nil, created_at, [])
     }
   end
@@ -84,6 +92,8 @@ defmodule Orchard.Inference.ResponsesSerializer do
     %{
       type: "response.output_text.delta",
       response_id: public_id,
+      item_id: "msg_" <> public_id,
+      logprobs: [],
       output_index: 0,
       content_index: 0,
       delta: delta
@@ -99,10 +109,73 @@ defmodule Orchard.Inference.ResponsesSerializer do
     %{
       type: "response.output_text.done",
       response_id: public_id,
+      item_id: "msg_" <> public_id,
+      logprobs: [],
       output_index: 0,
       content_index: 0,
       text: text
     }
+  end
+
+  @doc "Checks completed calls before publishing executable Responses output."
+  @spec valid_function_calls?([map()], CanonicalRequest.t()) :: boolean()
+  def valid_function_calls?(items, canonical) do
+    names = Enum.map(canonical.tooling.tools, &get_in(&1, ["function", "name"]))
+    choice = canonical.tooling.tool_choice
+
+    Enum.all?(items, fn item ->
+      is_binary(item.id) and item.id != "" and is_binary(item.name) and
+        item.name in names and valid_call_arguments?(item.arguments) and
+        choice_allows_call?(choice, item.name)
+    end) and (not (choice == "required" or is_map(choice)) or items != [])
+  end
+
+  defp valid_call_arguments?(arguments) when is_binary(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, value} when is_map(value) -> true
+      _ -> false
+    end
+  end
+
+  defp valid_call_arguments?(_arguments), do: false
+  defp choice_allows_call?("none", _name), do: false
+  defp choice_allows_call?(%{"function" => %{"name" => selected}}, name), do: selected == name
+  defp choice_allows_call?(_choice, _name), do: true
+
+  @doc "Builds the buffered lifecycle for validated function calls."
+  @spec function_call_events([map()], non_neg_integer()) :: [map()]
+  def function_call_events(items, output_offset) do
+    items
+    |> Enum.with_index(output_offset)
+    |> Enum.flat_map(fn {item, index} ->
+      correlation = %{item_id: item.id, output_index: index}
+
+      [
+        %{
+          type: "response.output_item.added",
+          output_index: index,
+          item: %{item | arguments: "", status: "in_progress"}
+        },
+        Map.merge(correlation, %{
+          type: "response.function_call_arguments.delta",
+          delta: item.arguments
+        }),
+        Map.merge(correlation, %{
+          type: "response.function_call_arguments.done",
+          arguments: item.arguments
+        }),
+        %{type: "response.output_item.done", output_index: index, item: item}
+      ]
+    end)
+  end
+
+  @doc "Builds the message item envelope correlated with text deltas and terminal output."
+  @spec message_event(String.t(), String.t(), :added | :done) :: map()
+  def message_event(public_id, text, phase) do
+    status = if phase == :added, do: "in_progress", else: "completed"
+    item = message_item(public_id, text, status)
+    item = if phase == :added, do: %{item | content: [], status: status}, else: item
+    %{type: "response.output_item.#{phase}", output_index: 0, item: item}
   end
 
   @doc """
@@ -189,7 +262,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
       created_at: created_at,
       status: status,
       model: format_model_display(canonical),
-      output: output_items(output_text, function_call_items),
+      output: output_items(canonical.public_id, output_text, function_call_items, status),
       output_text: output_text,
       usage: usage_map(usage),
       error: error,
@@ -222,23 +295,25 @@ defmodule Orchard.Inference.ResponsesSerializer do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
   end
 
-  defp output_items(output_text, function_call_items) do
+  defp output_items(public_id, output_text, function_call_items, status) do
     text_items =
       if output_text != "" do
-        [
-          %{
-            type: "message",
-            role: "assistant",
-            content: [
-              %{type: "output_text", text: output_text, annotations: []}
-            ]
-          }
-        ]
+        [message_item(public_id, output_text, status)]
       else
         []
       end
 
     text_items ++ function_call_items
+  end
+
+  defp message_item(public_id, text, status) do
+    %{
+      id: "msg_" <> public_id,
+      type: "message",
+      role: "assistant",
+      status: if(status == "completed", do: "completed", else: "incomplete"),
+      content: [%{type: "output_text", text: text, annotations: []}]
+    }
   end
 
   defp response_function_call_items(events, status) do

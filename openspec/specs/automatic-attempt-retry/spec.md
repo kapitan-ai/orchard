@@ -157,7 +157,8 @@ The orchestrator SHALL own exactly one started event for each attempt, and the d
 After the final pre-start caller and deadline gate, attempt 1 terminal evidence with `retried` and the sole attempt 2 started event MUST append atomically before attempt 2 dispatch.
 Every terminal attempt SHALL record the closed evidence required by `SPEC.md` §3.7.1 subject to Payload Capture Mode.
 `attempt_outcome` SHALL be `completed`, `failed`, `cancelled`, `timed_out`, or `interrupted`.
-`output_commitment_kind` SHALL be absent without commitment and otherwise SHALL be `text`, `tool_call`, or `structured_output`.
+`output_commitment_kind` SHALL be absent without commitment and otherwise SHALL be `reasoning`, `text`, `tool_call`, or `structured_output`.
+`reasoning` SHALL be recorded only for a non-empty reasoning delta selected by `projection = reasoning_structured`, matching `SPEC.md` §3.7.1; hidden reasoning under `final_only` and reasoning embedded in the legacy blended text channel SHALL NOT use it.
 `execution_resolution` SHALL be `not_started`, `terminated`, or `unresolved`.
 `capacity_release_outcome` SHALL be `released`, `already_released`, `not_applicable`, or `unresolved`.
 `failure_class` SHALL use the closed §3.7.1 vocabulary, and `failure_code` SHALL use a Controller-normalized stable value from the `SPEC.md` §8.2 `requests.error_code` vocabulary.

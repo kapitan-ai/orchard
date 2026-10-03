@@ -1,6 +1,8 @@
 # Orchard Packaging and Operator Runbook
 
 The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
+That distribution is currently paused (`SPEC.md` §11.0): `packaging/distribution-control` is committed as `state=paused`, the app and DMG entrypoints refuse, and source development in [`../docs/local-dev.md`](../docs/local-dev.md) is the current active installation path.
+This runbook describes the approved packaged behavior for existing rehearsal installations and for use after distribution is resumed; see [`dmg/README.md`](dmg/README.md#distribution-pause) for the pause and its re-enable procedure.
 Source availability does not promise a supported public binary; see [`dmg/README.md`](dmg/README.md) for the release gates a public binary must clear.
 The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
@@ -176,6 +178,7 @@ Optional controller variables:
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | unset | gRPC compatibility fallback only. Comma-separated node-agent `host:port` values. |
 | `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK` | `false` | Compatibility escape hatch. When `true`, the controller schedules `ORCHARD_RUNTIME_CLIENT_TARGETS` while no enrolled Node is admitted; the supported path leaves this `false` and derives targets from trusted Node inventory. |
 | `ORCHARD_NODE_TRUST_ROOT` | `/Library/Application Support/Orchard/config/node-trust` | Controller root for internal Node trust material initialized by `orchardctl nodes trust init` |
+| `ORCHARD_LOCAL_NODE_IDENTITY_ROOT` | unset; generated for `env init --service all` | Display-only association to this host's registered Node Join store. All-in-one generation uses `support_root/config/node-identity`; a custom Node store requires the same explicit Controller path. Never point it to a remote Node copy. No trust, admission or serving authority is granted. Missing or mismatched identity displays unknown. |
 | `POOL_SIZE` | `10` | Ecto connection pool size |
 | `ECTO_IPV6` | - | Set to `true` for IPv6 socket options |
 
@@ -183,6 +186,13 @@ Transport, TLS, and CORS variables are listed in
 [Controller transport environment](#controller-transport-environment).
 
 ### Node identity environment variables
+
+Existing Controller environment files are not rewritten to add local association.
+For an existing all-in-one installation, an operator may explicitly configure
+`ORCHARD_LOCAL_NODE_IDENTITY_ROOT` to the local registered Node store after
+verifying its custody. The Console reads registered metadata only, not private
+keys. It does not use the legacy `data/node-id` compatibility identity, and a
+successful status probe alone does not establish a trusted local Node.
 
 Set these node-agent overrides only when the Orchard support-root layout is intentionally changed.
 Defaults are relative to `ORCHARD_SUPPORT_ROOT`, default `/Library/Application Support/Orchard`.
@@ -620,6 +630,18 @@ Certificates and non-secret metadata may be mode `0644` where documented by the 
 The `admin` group (GID 80) is the standard macOS administrator group and most developer accounts belong to it.
 Admin-group traverse on `config/` and `config/tls/` lets `orchardctl` work for admin users while secrets stay owner-only.
 
+This `0750 root:admin` layout is the legacy installer layout.
+`orchardctl transport enable-local-https` requires an owner-only `config/` (`SPEC.md` §10.7, ADR 0036) and refuses this layout unchanged before any TLS work, because admin-group traverse would expose the TLS writers' temporary file modes to administrator accounts.
+Before running it, review who owns `config/` and `config/tls/` and whether any admin-group tooling still relies on traversing them, then narrow `config/` yourself:
+
+```bash
+sudo ls -ld "/Library/Application Support/Orchard/config" "/Library/Application Support/Orchard/config/tls"
+sudo chmod 0700 "/Library/Application Support/Orchard/config"
+```
+
+The command never changes these modes or grants access for you.
+Narrowing `config/` does not close a directory handle an administrator account already holds on `config/tls/`, so the command generates TLS material inside its own owner-only publication stage and renames only finished files, with keys already `0600`, into `config/tls/`.
+
 TLS files written by `orchardctl tls init`:
 
 | File | Mode |
@@ -713,10 +735,10 @@ Run the focused packaging checks from the repository root:
 ```bash
 scripts/test-build-payload.sh
 scripts/test-payload-signing-contracts.sh
-scripts/test-build-app.sh
-scripts/test-app-signing.sh
-scripts/test-build-dmg.sh
+scripts/test-distribution-control.sh
 swift test --package-path packaging/app
 ```
+
+While distribution is paused, do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`; they assemble an app bundle and a disk image and refuse with exit status `78`.
 
 Developer ID signing, notarization, stapling, draft publication, and system-root lifecycle mutations remain explicit credential or authorization gates.

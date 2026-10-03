@@ -38,6 +38,7 @@ defmodule Orchard.Requests.Request do
   @terminal_states [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @payload_capture_modes [none: "none", metadata: "metadata", full: "full"]
   @principal_types [tenant: "tenant", service_account: "service_account"]
+  @output_usage_statuses [exact: "exact", lower_bound: "lower_bound"]
 
   @type t :: %__MODULE__{}
 
@@ -64,6 +65,7 @@ defmodule Orchard.Requests.Request do
     field(:scheduler_decision, :map)
     field(:input_tokens, :integer, default: 0)
     field(:output_tokens, :integer, default: 0)
+    field(:output_usage_status, Ecto.Enum, values: @output_usage_statuses)
     field(:reserved_output_tokens, :integer, default: 0)
     field(:first_token_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
@@ -137,6 +139,7 @@ defmodule Orchard.Requests.Request do
       :scheduler_decision,
       :input_tokens,
       :output_tokens,
+      :output_usage_status,
       :reserved_output_tokens,
       :first_token_at,
       :completed_at,
@@ -190,6 +193,7 @@ defmodule Orchard.Requests.Request do
       :response_preview,
       :input_tokens,
       :output_tokens,
+      :output_usage_status,
       :reserved_output_tokens,
       :first_token_at,
       :completed_at,

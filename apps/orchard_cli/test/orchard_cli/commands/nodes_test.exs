@@ -298,6 +298,7 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["object"] == "cluster_management.node_status_list"
       assert decoded["contract_version"] == "orchard.cluster_management.status.v1"
       assert decoded["data"] == [expected_status]
+      assert Map.fetch!(hd(decoded["data"]), "diagnostics") == nil
 
       assert get_in(decoded, ["data", Access.at(0), "scheduling", "reason_codes"]) == [
                "node_not_admitted"
@@ -323,6 +324,7 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["status"]["object"] == "cluster_management.node_status"
       assert decoded["status"]["admission"]["category"] == "pending_registered"
       assert decoded["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
+      assert Map.fetch!(decoded["status"], "diagnostics") == nil
       assert decoded["status"]["dispatch_capacity"]["counterfactual"]
       assert decoded["status"]["dispatch_capacity"]["mode"] == "counterfactual"
       refute decoded["status"]["dispatch_capacity"]["consumers_ready"]

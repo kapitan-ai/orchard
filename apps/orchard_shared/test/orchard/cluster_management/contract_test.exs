@@ -31,6 +31,13 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert fixture == json_round_trip(NodeStatus.to_map(status))
   end
 
+  test "SPEC.md §4.6.1 older status readers omit diagnostics without changing authority" do
+    fixture = fixture!("node_status_v1.json")
+    assert {:ok, status} = NodeStatus.new(Map.delete(fixture, "diagnostics"))
+    assert status.diagnostics == nil
+    assert fixture == json_round_trip(NodeStatus.to_map(status))
+  end
+
   test "action preview golden fixture separates blockers, warnings, consequences, and confirmations" do
     fixture = fixture!("action_preview_v1.json")
     assert {:ok, preview} = ActionPreview.new(fixture)

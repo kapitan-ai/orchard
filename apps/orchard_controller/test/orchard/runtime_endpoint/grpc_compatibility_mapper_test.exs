@@ -5,6 +5,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     Ack,
     EnsureModelLoadedResponse,
     GenerationParams,
+    HostCpuObservation,
+    HostInventoryObservation,
     RuntimeHealth,
     RuntimeModelPlacement,
     RuntimeNodeMetadata,
@@ -340,6 +342,53 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
              GrpcCompatibilityMapper.ack_from_response(%Ack{ok: true, message: "done"})
   end
 
+  # SPEC.md §4.1 and §13.4: gRPC compatibility carries the additive inventory
+  # bounded, and an older Node without field 15 is absent evidence.
+  test "carries bounded host inventory, drops an oversized one, and absent stays absent" do
+    target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
+
+    inventory = %HostInventoryObservation{
+      schema_version: 1,
+      observed_at_unix_ms: 1_789_743_600_000,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+      cpu: %HostCpuObservation{architecture: "x86_64", logical_processor_count: 8}
+    }
+
+    oversized = put_in(inventory.cpu.vendor_id, String.duplicate("x", 300))
+
+    assert GrpcCompatibilityMapper.observation_from_status(
+             target,
+             status_response(host_inventory: inventory)
+           ).host_inventory == inventory
+
+    assert GrpcCompatibilityMapper.observation_from_status(
+             target,
+             status_response(host_inventory: oversized)
+           ).host_inventory == nil
+
+    legacy = GrpcCompatibilityMapper.observation_from_status(target, status_response([]))
+    assert legacy.host_inventory == nil
+  end
+
+  test "inventory carrying an additive field from a newer Node survives gRPC decoding" do
+    target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
+
+    inventory = %HostInventoryObservation{
+      schema_version: 1,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+      cpu: %HostCpuObservation{architecture: "x86_64"}
+    }
+
+    # HostInventoryObservation plus field 20 (varint 7), wrapped as StatusResponse field 15.
+    inner = HostInventoryObservation.encode(inventory) <> <<0xA0, 0x01, 0x07>>
+    response = StatusResponse.decode(<<0x7A, byte_size(inner)>> <> inner)
+
+    observation = GrpcCompatibilityMapper.observation_from_status(target, response)
+
+    assert observation.host_inventory.cpu.architecture == "x86_64"
+    assert observation.host_inventory.__unknown_fields__ == [{20, 0, 7}]
+  end
+
   defp status_response(opts) do
     node_id = Keyword.get(opts, :node_id, Ecto.UUID.generate())
 
@@ -359,6 +408,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
       runtime_health: Keyword.get(opts, :runtime_health),
       runtime_model_placements: Keyword.get(opts, :runtime_model_placements, []),
       worker_crash_counters: Keyword.get(opts, :worker_crash_counters, []),
+      host_inventory: Keyword.get(opts, :host_inventory),
       supports_prompt_token_ids: Keyword.get(opts, :supports_prompt_token_ids, false)
     }
   end

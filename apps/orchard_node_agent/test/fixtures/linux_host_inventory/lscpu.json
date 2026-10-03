@@ -1,0 +1,10 @@
+{
+  "lscpu": [
+    {"field": "Architecture:", "data": "x86_64"},
+    {"field": "CPU(s):", "data": "16"},
+    {"field": "Vendor ID:", "data": "FixtureVendor"},
+    {"field": "Model name:", "data": "Fixture CPU"},
+    {"field": "Core(s) per socket:", "data": "8"},
+    {"field": "Socket(s):", "data": "1"}
+  ]
+}

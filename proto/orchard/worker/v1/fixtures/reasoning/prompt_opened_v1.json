@@ -1,0 +1,224 @@
+{
+  "schema_version": "reasoning-corpus/v1",
+  "parser_family": "prompt_opened",
+  "parser_version": "v1",
+  "render_contract": "synthetic.prompt_opened",
+  "render_contract_version": "v1",
+  "synthetic_prompt_opened_render_contracts": [["synthetic.prompt_opened", "v1"]],
+  "cases": [
+    {
+      "id": "prompt-opened-model-default-hides-reasoning",
+      "generation_policy": "model_default",
+      "chunks": ["private chain</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:model_default", "marker_pair", "leakage", "terminal:completed"]
+    },
+    {
+      "id": "prompt-opened-disabled-rejects-implicit-reasoning-frame",
+      "generation_policy": "disabled",
+      "chunks": ["private</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_policy_conformance_failed", "failure_reason": "policy_disabled_reasoning"},
+      "coverage": ["policy:disabled", "leakage"]
+    },
+    {
+      "id": "prompt-opened-enabled-accepts-unicode-split-close-marker",
+      "generation_policy": "enabled",
+      "chunks": ["計", "画</th", "ink>回答🙂"],
+      "terminal": "completed",
+      "expected": {"final_text": "回答🙂", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:enabled", "split_marker", "chunk_boundary", "unicode", "terminal:completed"]
+    },
+    {
+      "id": "prompt-opened-rejects-nested-open-marker",
+      "generation_policy": "model_default",
+      "chunks": ["one<think>two</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_nested_open_marker"},
+      "coverage": ["nested_marker", "leakage"]
+    },
+    {
+      "id": "prompt-opened-nested-open-marker-across-chunks-emits-nothing",
+      "generation_policy": "model_default",
+      "chunks": ["one", "<think>two</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_nested_open_marker"},
+      "coverage": ["nested_marker", "leakage", "chunk_invariance", "chunk_boundary"]
+    },
+    {
+      "id": "prompt-opened-rejects-stray-close-marker",
+      "generation_policy": "model_default",
+      "chunks": ["one</think>answer</think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_stray_close_marker"},
+      "coverage": ["stray_marker"]
+    },
+    {
+      "id": "prompt-opened-stray-close-marker-across-chunks-keeps-classified-final-text",
+      "generation_policy": "model_default",
+      "chunks": ["one</think>answer", "</think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_stray_close_marker"},
+      "coverage": ["stray_marker", "chunk_invariance", "chunk_boundary"]
+    },
+    {
+      "id": "prompt-opened-rejects-unclosed-reasoning-marker",
+      "generation_policy": "model_default",
+      "chunks": ["private"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_unclosed_marker"},
+      "coverage": ["unclosed_marker", "leakage"]
+    },
+    {
+      "id": "prompt-opened-rejects-late-open-marker",
+      "generation_policy": "model_default",
+      "chunks": ["private</think>answer<think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_late_open_marker"},
+      "coverage": ["late_open_marker"]
+    },
+    {
+      "id": "prompt-opened-late-open-marker-across-chunks-keeps-classified-final-text",
+      "generation_policy": "model_default",
+      "chunks": ["private</think>answer", "<think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_late_open_marker"},
+      "coverage": ["late_open_marker", "chunk_invariance", "chunk_boundary"]
+    },
+    {
+      "id": "prompt-opened-length-rejects-incomplete-close-marker",
+      "generation_policy": "model_default",
+      "chunks": ["private</th"],
+      "terminal": "length",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_incomplete_marker"},
+      "coverage": ["incomplete_marker", "terminal:length"]
+    },
+    {
+      "id": "prompt-opened-completed-flushes-residual-partial-marker-as-final-text",
+      "generation_policy": "model_default",
+      "chunks": ["private</think>answer<"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer<", "failure_code": null, "failure_reason": null},
+      "coverage": ["residual_marker_flush", "marker_pair", "terminal:completed"]
+    },
+    {
+      "id": "prompt-opened-completed-residual-partial-marker-stays-unclosed-reasoning",
+      "generation_policy": "model_default",
+      "chunks": ["private</th"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_unclosed_marker"},
+      "coverage": ["residual_marker_flush", "unclosed_marker", "leakage", "terminal:completed"]
+    },
+    {
+      "id": "prompt-opened-enabled-requires-nonempty-reasoning",
+      "generation_policy": "enabled",
+      "chunks": ["</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_policy_conformance_failed", "failure_reason": "policy_enabled_reasoning_missing"},
+      "coverage": ["policy:enabled", "reasoning_content_validity", "leakage"]
+    },
+    {
+      "id": "prompt-opened-enabled-rejects-whitespace-only-reasoning",
+      "generation_policy": "enabled",
+      "chunks": [" \n ", "</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_policy_conformance_failed", "failure_reason": "policy_enabled_reasoning_missing"},
+      "coverage": ["policy:enabled", "reasoning_content_validity", "leakage", "chunk_boundary"]
+    },
+    {
+      "id": "prompt-opened-enabled-accepts-nonwhitespace-reasoning",
+      "generation_policy": "enabled",
+      "chunks": [" x ", "</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:enabled", "reasoning_content_validity", "chunk_boundary", "terminal:completed"]
+    },
+    {
+      "id": "prompt-opened-no-marker-is-unclosed-not-final-output",
+      "generation_policy": "model_default",
+      "chunks": ["private only"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_unclosed_marker"},
+      "coverage": ["no_marker", "unclosed_marker"]
+    },
+    {
+      "id": "prompt-opened-passes-only-final-tool-input",
+      "generation_policy": "model_default",
+      "chunks": ["private <tool_call>ignored</tool_call></think><tool_call>{\"name\":\"weather\"}</tool_call>"],
+      "terminal": "completed",
+      "expected": {"final_text": "<tool_call>{\"name\":\"weather\"}</tool_call>", "failure_code": null, "failure_reason": null},
+      "coverage": ["tool_boundary"],
+      "boundary": {"kind": "tool", "downstream_input": "<tool_call>{\"name\":\"weather\"}</tool_call>"}
+    },
+    {
+      "id": "prompt-opened-passes-only-final-stop-input",
+      "generation_policy": "model_default",
+      "chunks": ["private STOP</think>answerSTOPafter"],
+      "terminal": "completed",
+      "expected": {"final_text": "answerSTOPafter", "failure_code": null, "failure_reason": null},
+      "coverage": ["stop_boundary"],
+      "boundary": {"kind": "stop", "sequence": "STOP", "downstream_input": "answerSTOPafter", "after_stop": "answer"}
+    },
+    {
+      "id": "prompt-opened-cancellation-wins-over-unclosed-marker",
+      "generation_policy": "enabled",
+      "chunks": ["private"],
+      "terminal": "cancelled",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:cancelled", "unclosed_marker"]
+    },
+    {
+      "id": "prompt-opened-timed-out-wins-over-unclosed-marker",
+      "generation_policy": "enabled",
+      "chunks": ["private"],
+      "terminal": "timed_out",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:timed_out", "unclosed_marker", "leakage"]
+    },
+    {
+      "id": "prompt-opened-preempting-terminal-does-not-synthesize-parser-failure",
+      "generation_policy": "model_default",
+      "chunks": ["one<think>two"],
+      "terminal": "deadline",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:deadline", "nested_marker", "leakage"]
+    },
+    {
+      "id": "prompt-opened-deadline-wins-over-policy-failure",
+      "generation_policy": "disabled",
+      "chunks": ["private</think>answer"],
+      "terminal": "deadline",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:deadline", "policy:disabled"]
+    },
+    {
+      "id": "prompt-opened-length-validates-complete-output",
+      "generation_policy": "model_default",
+      "chunks": ["private</think>answer"],
+      "terminal": "length",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:length"]
+    },
+    {
+      "id": "prompt-opened-length-applies-enabled-policy-conformance",
+      "generation_policy": "enabled",
+      "chunks": ["</think>answer"],
+      "terminal": "length",
+      "expected": {
+        "final_text": "",
+        "failure_code": "reasoning_policy_conformance_failed",
+        "failure_reason": "policy_enabled_reasoning_missing"
+      },
+      "coverage": ["terminal:length", "policy:enabled", "leakage"]
+    },
+    {
+      "id": "prompt-opened-stop-applies-parser-conformance",
+      "generation_policy": "enabled",
+      "chunks": ["private</think>answer"],
+      "terminal": "stop",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:stop", "policy:enabled"]
+    }
+  ]
+}

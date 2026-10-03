@@ -30,6 +30,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   )
   @acceptance_proof_failure_class "pre_acceptance_unavailable"
   @acceptance_proof_failure_code "runtime_incompatible"
+  @reasoning_conformance_codes ~w(
+    reasoning_parser_conformance_failed reasoning_policy_conformance_failed
+  )
   @type evidence :: %{required(String.t()) => String.t()}
 
   @spec stable_error_codes() :: [String.t()]
@@ -40,6 +43,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   @spec model_load_codes() :: [String.t()]
   def model_load_codes, do: @model_load_codes
+
+  @spec reasoning_conformance_codes() :: [String.t()]
+  def reasoning_conformance_codes, do: @reasoning_conformance_codes
 
   @spec acceptance_proof_failure?(String.t(), String.t()) :: boolean()
   def acceptance_proof_failure?(
@@ -81,7 +87,7 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
         {"deadline", deadline_code(code)}
 
       category in [:terminal_conformance, "terminal_conformance"] ->
-        {"terminal_conformance", "orchestration_error"}
+        {"terminal_conformance", terminal_conformance_code(code)}
 
       category in [:capacity, "capacity", :capacity_rejection, "capacity_rejection"] ->
         {capacity_failure_class(code), capacity_code(code)}
@@ -156,6 +162,11 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   defp pre_acceptance_code(_code), do: "internal_error"
 
+  defp terminal_conformance_code(code) when code in @reasoning_conformance_codes,
+    do: "internal_error"
+
+  defp terminal_conformance_code(_code), do: "orchestration_error"
+
   defp capacity_failure_class("dispatch_capacity_caller_down"), do: "cancellation"
 
   defp capacity_failure_class("dispatch_capacity_node_identity_mismatch"),
@@ -181,6 +192,10 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   defp controller_code(code) when code in ["orchestration_error", "request_interrupted"], do: code
   defp controller_code(_code), do: "internal_error"
+
+  defp maybe_put_raw_source_code(evidence, code, _stable)
+       when code in @reasoning_conformance_codes,
+       do: evidence
 
   defp maybe_put_raw_source_code(evidence, nil, _stable), do: evidence
   defp maybe_put_raw_source_code(evidence, stable, stable), do: evidence

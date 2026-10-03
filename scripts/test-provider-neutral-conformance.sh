@@ -9,7 +9,7 @@ mise exec -- mix proto.check.worker
 scripts/test-worker-runtime-binding-drift.sh
 
 mise exec -- uv run --locked --directory native/orchard_worker_mlx \
-  pytest tests/test_worker_runtime_proto_contract.py
+  pytest tests/test_worker_runtime_proto_contract.py tests/test_reasoning.py
 
 mise exec -- mix test \
   apps/orchard_shared/test/orchard/runtime_endpoint/domain_test.exs \

@@ -234,6 +234,7 @@ PRIV_CREATED=true
 # Seed only the stale test-only helper: the production helpers must come from
 # the builder invocation under test, never from a previous run's leftovers.
 : > "$PRIV_DIR/orchard-secret-tty-test"
+: > "$PRIV_DIR/orchard-transport-publish-test"
 
 BUILD_OUT="$TMP_ROOT/build.out"
 if ! PATH="$TOOLS:$PATH" "$REPO_ROOT/scripts/build-payload.sh" "$OUT_DIR" \
@@ -295,7 +296,7 @@ for staged_command in orchardctl orchard-controller orchard-node-agent orchard-m
         fail "staged command differs from packaging/payload/bin/$staged_command"
 done
 
-for helper in orchard-secret-tty orchard-lifecycle-helper; do
+for helper in orchard-secret-tty orchard-lifecycle-helper orchard-transport-publish; do
     helper_path="$(find "$PAYLOAD_ROOT/releases/orchard_cli/lib" \
         -path "*/priv/$helper" -type f -print -quit 2>/dev/null || true)"
     test -n "$helper_path" || fail "missing staged macOS native helper: $helper"
@@ -305,10 +306,13 @@ done
 if find "$PAYLOAD_ROOT" -name 'orchard-secret-tty-test' -print -quit | grep -q .; then
     fail 'payload staged the test-only terminal helper'
 fi
+if find "$PAYLOAD_ROOT" -name 'orchard-transport-publish-test' -print -quit | grep -q .; then
+    fail 'payload staged the test-only transport publication helper'
+fi
 
 # Darwin helper sources build into binaries outside the payload; neither the
 # helper sources nor any make recipe may reach the staged tree.
-for helper_source in orchard_secret_tty.c orchard_lifecycle_helper.c; do
+for helper_source in orchard_secret_tty.c orchard_lifecycle_helper.c orchard_transport_publish.c; do
     if find "$PAYLOAD_ROOT" -name "$helper_source" -print -quit | grep -q .; then
         fail "payload staged a Darwin native helper source: $helper_source"
     fi

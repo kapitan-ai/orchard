@@ -84,7 +84,64 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  @doc false
+  @doc """
+  Dispatches an already-persisted Request through the normal lifecycle.
+
+  Callers must provide a validated canonical request that corresponds to the
+  persisted row; this function does not create another Request row.
+  """
+  @spec execute_persisted(Request.t(), CanonicalRequest.t(), map(), keyword()) :: execute_result()
+  def execute_persisted(
+        %Request{} = db_request,
+        %CanonicalRequest{} = canonical,
+        model,
+        opts \\ []
+      ) do
+    previous_started_at = Process.put({__MODULE__, :metrics_started_at}, System.monotonic_time())
+
+    try do
+      with :ok <- validate_resolved_tooling(canonical) do
+        dispatch_persisted_request(db_request, canonical, model, opts)
+      end
+    after
+      restore_metrics_started_at(previous_started_at)
+    end
+  end
+
+  @doc """
+  Builds the persistable Request attrs for a prepared canonical request.
+
+  Admission is resolved again as a fail-safe, so the deployment deadline
+  ceiling, the persistable-deadline check, and canonical serialization stay on
+  one path for every Request persistence caller. `:capture_mode` overrides the
+  tenant-resolved capture mode. `:admission_opts` are forwarded to
+  `Orchard.Inference.AdmissionPolicy.resolve/2` for callers that hold
+  authoritative admission values the zero-means-unset defaults would otherwise
+  replace. The resolved canonical request is returned so callers dispatch the
+  values they persisted.
+  """
+  @spec persistable_request_attrs(CanonicalRequest.t(), map(), keyword()) ::
+          {:ok, map(), CanonicalRequest.t()} | {:error, term()}
+  def persistable_request_attrs(%CanonicalRequest{} = canonical, model, opts \\ []) do
+    # Internal callers may bypass the public normalizers, so resolve admission
+    # again as a fail-safe immediately before serializing and persisting.
+    canonical = AdmissionPolicy.resolve(canonical, Keyword.get(opts, :admission_opts, []))
+
+    with :ok <- validate_persistable_timeout(canonical),
+         {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
+      capture_mode =
+        Keyword.get_lazy(opts, :capture_mode, fn -> effective_capture_mode(canonical) end)
+
+      {:ok, request_attrs(canonical, model, serialized_canonical, capture_mode), canonical}
+    end
+  end
+
+  @doc """
+  Validates a scheduler selection before dispatch.
+
+  A selection cannot use a Node excluded by an earlier failed attempt and must
+  identify its selected target consistently.
+  """
   @spec validate_scheduler_selection(map(), [Ecto.UUID.t()]) ::
           :ok | {:error, {:dispatch_failed, :identity_unresolved}}
   def validate_scheduler_selection(_schedule, []), do: :ok
@@ -102,10 +159,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp do_execute(canonical, model, opts) do
+    idempotency = Keyword.get(opts, :idempotency)
+
+    with :ok <- validate_resolved_tooling(canonical),
+         :ok <- put_request_validated_context(canonical),
+         {:ok, db_request, canonical} <- persist_request(canonical, model, idempotency) do
+      dispatch_persisted_request(db_request, canonical, model, opts)
+    end
+  end
+
+  defp dispatch_persisted_request(db_request, canonical, model, opts) do
     event_handler = Keyword.get(opts, :event_handler)
     caller = Keyword.get(opts, :caller, self())
     success_persistence = Keyword.get(opts, :success_persistence)
-    idempotency = Keyword.get(opts, :idempotency)
 
     step_event_appender =
       Keyword.get(opts, :step_event_appender, &Requests.append_request_step_events/2)
@@ -113,28 +179,24 @@ defmodule Orchard.Inference.RequestOrchestrator do
     terminal_persister =
       Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
 
-    with :ok <- validate_resolved_tooling(canonical),
-         :ok <- put_request_validated_context(canonical),
-         {:ok, db_request, canonical} <- persist_request(canonical, model, idempotency) do
-      put_request_persisted_context(db_request, canonical)
+    put_request_persisted_context(db_request, canonical)
 
-      DomainMetrics.input_accounted(
-        canonical.tenant_id,
-        canonical.model_ref.model_id,
-        canonical.input_token_count
-      )
+    DomainMetrics.input_accounted(
+      canonical.tenant_id,
+      canonical.model_ref.model_id,
+      canonical.input_token_count
+    )
 
-      start_and_dispatch(
-        db_request,
-        canonical,
-        model,
-        caller,
-        event_handler,
-        success_persistence,
-        step_event_appender,
-        terminal_persister
-      )
-    end
+    start_and_dispatch(
+      db_request,
+      canonical,
+      model,
+      caller,
+      event_handler,
+      success_persistence,
+      step_event_appender,
+      terminal_persister
+    )
   end
 
   defp start_and_dispatch(
@@ -1341,12 +1403,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp unsuccessful_attempt_terminal_attrs(%AttemptOutcome{events: events} = outcome) do
     if Enum.any?(events, &InferenceEvent.terminal?/1) do
-      terminal_attrs_from_events(events)
+      terminal_attrs_from_events(events, attempt_usage(outcome))
     else
       outcome
       |> public_dispatch_reason()
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
+      |> Map.merge(attempt_usage(outcome))
     end
   end
 
@@ -1529,16 +1592,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp persist_request(canonical, model, idempotency) do
-    # Internal callers may bypass the public normalizers, so resolve admission
-    # again as a fail-safe immediately before serializing and persisting.
-    canonical = AdmissionPolicy.resolve(canonical)
-
-    with :ok <- validate_persistable_timeout(canonical),
-         {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
-      capture_mode = effective_capture_mode(canonical)
-
-      canonical
-      |> request_attrs(model, serialized_canonical, capture_mode)
+    with {:ok, attrs, canonical} <- persistable_request_attrs(canonical, model) do
+      attrs
       |> put_idempotency_attrs(idempotency)
       |> Requests.create_request()
       |> handle_create_request_result(idempotency, canonical)
@@ -2225,17 +2280,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp finalize(
          db_request,
          canonical,
-         %AttemptOutcome{events: events, first_token_at: first_token_at} = outcome,
+         %AttemptOutcome{events: events} = outcome,
          execution_opts,
          %AttemptContext{} = context,
          retry_decision
        ) do
-    case build_terminal_attrs(
-           canonical,
-           events,
-           first_token_at,
-           execution_opts.success_persistence
-         ) do
+    case build_terminal_attrs(canonical, outcome, execution_opts.success_persistence) do
       {:ok, terminal_attrs} ->
         persist_terminal(
           db_request,
@@ -2253,8 +2303,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
-    terminal_attrs = terminal_attrs_from_events(events)
+  defp build_terminal_attrs(
+         canonical,
+         %AttemptOutcome{events: events, first_token_at: first_token_at} = outcome,
+         success_persistence
+       ) do
+    terminal_attrs = terminal_attrs_from_events(events, attempt_usage(outcome))
 
     result =
       if terminal_attrs.state == :completed and is_function(success_persistence, 2) do
@@ -2330,10 +2384,20 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_context,
          terminal_persister
        ) do
+    usage =
+      case step_context do
+        {_owner, %AttemptContext{}, %AttemptOutcome{} = outcome, _decision} ->
+          attempt_usage(outcome)
+
+        nil ->
+          EventUsage.terminal([])
+      end
+
     terminal_attrs =
       reason
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
+      |> Map.merge(usage)
 
     case terminal_persister.(
            db_request,
@@ -2408,9 +2472,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp terminal_attrs_from_events(events) do
-    usage = extract_usage(events)
-
+  defp terminal_attrs_from_events(events, usage) do
     base_attrs =
       case Enum.find(events, &InferenceEvent.terminal?/1) do
         nil ->
@@ -2430,6 +2492,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     Map.merge(base_attrs, usage)
   end
+
+  defp attempt_usage(%AttemptOutcome{terminal_usage: usage}) when is_map(usage), do: usage
+  defp attempt_usage(%AttemptOutcome{events: events}), do: EventUsage.terminal(events)
 
   defp terminal_conformance_failure_attrs(code, message) do
     code
@@ -2616,6 +2681,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     |> maybe_put_result("finish_reason", terminal_finish_reason(events))
     |> maybe_put_result("input_tokens", Map.get(terminal_attrs, :input_tokens))
     |> maybe_put_result("output_tokens", Map.get(terminal_attrs, :output_tokens))
+    |> maybe_put_result("output_usage_status", Map.get(terminal_attrs, :output_usage_status))
     |> maybe_put_result("error_message", Map.get(terminal_attrs, :error_message))
     |> maybe_put_result("http_status", Map.get(terminal_attrs, :http_status))
   end
@@ -2690,16 +2756,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp maybe_put_first_token_at(attrs, nil), do: attrs
   defp maybe_put_first_token_at(attrs, %DateTime{} = ts), do: Map.put(attrs, :first_token_at, ts)
 
-  defp extract_usage(events) do
-    case EventUsage.find(events) do
-      nil ->
-        %{input_tokens: 0, output_tokens: 0}
-
-      usage ->
-        %{input_tokens: usage.input_tokens, output_tokens: usage.output_tokens}
-    end
-  end
-
   defp build_execute_request(canonical, schedule) do
     deadline_ms =
       schedule
@@ -2773,7 +2829,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp validate_resolved_tooling(%CanonicalRequest{tooling: tooling}) do
+  @doc """
+  Validates that canonical tooling was fully resolved before dispatch.
+  """
+  @spec validate_resolved_tooling(CanonicalRequest.t()) ::
+          :ok | {:error, {:invalid_canonical_tooling, String.t()}}
+  def validate_resolved_tooling(%CanonicalRequest{tooling: tooling}) do
     case unresolved_tooling_reason(tooling) do
       nil -> :ok
       reason -> {:error, {:invalid_canonical_tooling, reason}}

@@ -15,7 +15,13 @@ defmodule Orchard.NodesTest.ExitingQueueManager do
 end
 
 defmodule Orchard.NodesTest.TransactionProbeQueueManager do
-  def refresh_node_capacity_sources(_observation), do: :ok
+  def refresh_node_capacity_sources(observation) do
+    if pid = Process.get(:nodes_test_queue_probe_pid) do
+      send(pid, {:queue_capacity_refresh, observation, Orchard.Repo.in_transaction?()})
+    end
+
+    :ok
+  end
 
   def clear_capacity_sources(sources, opts) do
     send(
@@ -32,6 +38,7 @@ defmodule Orchard.NodesTest do
 
   import ExUnit.CaptureLog
 
+  alias Orchard.ControlPlane
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.DispatchCapacity.Policy
@@ -410,6 +417,19 @@ defmodule Orchard.NodesTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, inference)
+    end)
+  end
+
+  defp put_control_plane(config) do
+    previous = Application.get_env(:orchard_controller, :control_plane)
+    Application.put_env(:orchard_controller, :control_plane, config)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:orchard_controller, :control_plane)
+      else
+        Application.put_env(:orchard_controller, :control_plane, previous)
+      end
     end)
   end
 
@@ -1590,6 +1610,349 @@ defmodule Orchard.NodesTest do
   end
 
   # -- observe_status/3 trusted update --
+
+  describe "generic observation Controller authority" do
+    test "SPEC.md §3.3 and §4.5 deny generic candidate persistence on standby and unproven leader" do
+      target = make_target("10.0.0.210", 9444)
+      observed_at = DateTime.utc_now()
+
+      for control_plane <- [
+            [role: :standby, this_controller_identity: "controller-a"],
+            [role: :leader, this_controller_identity: "controller-a"]
+          ] do
+        put_control_plane(control_plane)
+
+        assert {:error, reason} = ControlPlane.authorize_write_path(:node_lifecycle)
+        assert reason in [:controller_standby, :controller_leadership_unproven]
+        assert :noop = Nodes.observe_status(target, make_status_response(%{}), observed_at)
+        assert Repo.aggregate(AdmissionCandidate, :count) == 0
+        assert Repo.aggregate(Node, :count) == 0
+      end
+    end
+
+    test "SPEC.md §3.3 preserves generic candidate persistence for a proven leader" do
+      put_control_plane(
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          %{leader_identity: "controller-a", advisory_lock_status: :held}
+        end
+      )
+
+      target = make_target("10.0.0.211", 9444)
+      observed_at = DateTime.utc_now()
+
+      assert :ok = ControlPlane.authorize_write_path(:node_lifecycle)
+      assert :noop = Nodes.observe_status(target, make_status_response(%{}), observed_at)
+      assert Repo.aggregate(AdmissionCandidate, :count) == 1
+    end
+
+    test "SPEC.md §4.5 denied matching status leaves unhealthy payload health unchanged" do
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.212", 9444)
+      heartbeat_at = DateTime.add(DateTime.utc_now(), -5, :second)
+
+      status =
+        make_status_response(
+          %{
+            node_id: node_id,
+            display_name: "denied-metadata-after",
+            hostname: "denied-metadata-after.local",
+            listen_host: "10.0.0.212",
+            listen_port: 9444
+          },
+          %{ready: false}
+        )
+
+      node =
+        insert_node_from_status!(target, status, %{
+          display_name: "denied-metadata-before",
+          last_heartbeat_at: heartbeat_at
+        })
+
+      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      reloaded = Repo.get!(Node, node.id)
+      assert reloaded.display_name == "denied-metadata-before"
+      assert reloaded.health == :healthy
+      assert reloaded.last_heartbeat_at == heartbeat_at
+      assert Repo.aggregate(NodeHeartbeat, :count) == 0
+      assert Repo.aggregate(AdmissionCandidate, :count) == 0
+
+      put_control_plane(
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          %{leader_identity: "controller-a", advisory_lock_status: :held}
+        end
+      )
+
+      assert {:ok, updated} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert updated.health == :unhealthy
+      assert Repo.get!(Node, node.id).health == :unhealthy
+    end
+
+    test "SPEC.md §5.4 denial clears only the fresh original target sources without promotion" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      observed_at = DateTime.utc_now()
+      heartbeat_at = DateTime.add(observed_at, -1, :second)
+      target_a = make_target("10.0.0.213", 9444)
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.213",
+          rpc_port: 9444,
+          connect_host: "10.0.0.213",
+          connect_port: 9444,
+          last_heartbeat_at: heartbeat_at
+        })
+
+      node_b =
+        insert_node!(%{
+          advertise_addr: "10.0.0.214",
+          rpc_port: 9444,
+          connect_host: "10.0.0.214",
+          connect_port: 9444
+        })
+
+      status =
+        make_status_response(%{
+          node_id: node_b.id,
+          display_name: node_b.display_name,
+          hostname: node_b.hostname,
+          listen_host: "10.0.0.214",
+          listen_port: 9444
+        })
+
+      assert :noop =
+               Nodes.observe_status(target_a, status, observed_at,
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager,
+                 promote?: true
+               )
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node_a.id},
+                 {:node, node_a.id, :placement},
+                 {:node, node_a.id, :cold}
+               ])
+
+      assert opts[:promote?] == false
+      assert Repo.get!(Node, node_b.id).display_name == node_b.display_name
+      assert Repo.aggregate(AdmissionCandidate, :count) == 0
+    end
+
+    test "SPEC.md §5.4 denial defers real QueueManager promotion until the next tick" do
+      QueueManager.reset()
+      inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.put(
+          inference,
+          :queue_admission,
+          Orchard.Inference.queue_admission_config() |> Keyword.put(:poll_interval_ms, 5_000)
+        )
+      )
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :inference, inference)
+        QueueManager.reset()
+      end)
+
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      observed_at = DateTime.utc_now()
+      target_a = make_target("10.0.0.218", 9444)
+      heartbeat_at = DateTime.add(observed_at, -1, :second)
+      model_id = "denied-status-deferred-promotion"
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.218",
+          rpc_port: 9444,
+          connect_host: "10.0.0.218",
+          connect_port: 9444,
+          last_heartbeat_at: heartbeat_at
+        })
+
+      node_b =
+        insert_node!(%{
+          advertise_addr: "10.0.0.219",
+          rpc_port: 9444,
+          connect_host: "10.0.0.219",
+          connect_port: 9444
+        })
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-denied-status-deferred-promotion", model_id),
+                 config: queue_config(capacity: 0, max_wait_ms: 5_000)
+               )
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1, source: {:node, node_a.id, :cold})
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1, source: {:node, node_b.id, :cold})
+
+      tag = make_ref()
+      put_ticket_awaiter(ticket, tag)
+
+      payload_claiming_b =
+        make_status_response(%{
+          node_id: node_b.id,
+          display_name: node_b.display_name,
+          hostname: node_b.hostname,
+          listen_host: "10.0.0.219",
+          listen_port: 9444
+        })
+
+      assert :noop = observe_status(target_a, payload_claiming_b, observed_at)
+      assert QueueManager.active_capacity_source_lanes({:node, node_a.id, :cold}) == []
+      refute_receive {^tag, {:ok, _grant}}, 100
+
+      tick_ref = :sys.get_state(QueueManager).scheduler_tick_ref
+      send(QueueManager, {:queue_tick, tick_ref})
+      assert_receive {^tag, {:ok, grant}}, 2_000
+      assert grant.queue_result == :queued
+
+      assert QueueManager.active_capacity_source_lanes({:node, node_b.id, :cold}) == [
+               {model_id, "v1"}
+             ]
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.4 denial does not clear sources for equal or invalid observation times" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      heartbeat_at = DateTime.utc_now()
+      target = make_target("10.0.0.215", 9444)
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.215",
+        rpc_port: 9444,
+        connect_host: "10.0.0.215",
+        connect_port: 9444,
+        last_heartbeat_at: heartbeat_at
+      })
+
+      assert :noop =
+               Nodes.observe_status(target, make_status_response(%{}), heartbeat_at,
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      refute_receive {:queue_capacity_clear, _sources, _opts, _in_transaction?}
+
+      assert :noop =
+               Nodes.observe_status(
+                 target,
+                 make_status_response(%{}),
+                 DateTime.add(heartbeat_at, -1, :second),
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      refute_receive {:queue_capacity_clear, _sources, _opts, _in_transaction?}
+
+      assert :noop =
+               Nodes.observe_status(target, make_status_response(%{}), :invalid_time,
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      refute_receive {:queue_capacity_clear, _sources, _opts, _in_transaction?}
+    end
+
+    test "SPEC.md §5.4 denied unresolved target clears and publishes nothing" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      target = make_target("10.0.0.216", 9444)
+
+      status =
+        make_status_response(%{
+          listen_host: "10.0.0.216",
+          listen_port: 9444
+        })
+
+      for control_plane <- [
+            [role: :standby, this_controller_identity: "controller-a"],
+            [role: :leader, this_controller_identity: "controller-a"]
+          ] do
+        put_control_plane(control_plane)
+
+        assert :noop =
+                 Nodes.observe_status(target, status, DateTime.utc_now(),
+                   queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+                 )
+
+        refute_receive {:queue_capacity_clear, _sources, _opts, _in_transaction?}
+        refute_receive {:queue_capacity_refresh, _observation, _in_transaction?}
+        assert Repo.aggregate(Node, :count) == 0
+        assert Repo.aggregate(AdmissionCandidate, :count) == 0
+      end
+    end
+
+    test "SPEC.md §5.4 denial clears a safely resolved target with no heartbeat" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      target = make_target("10.0.0.217", 9444)
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.217",
+          rpc_port: 9444,
+          connect_host: "10.0.0.217",
+          connect_port: 9444,
+          last_heartbeat_at: nil
+        })
+
+      assert :noop =
+               Nodes.observe_status(target, make_status_response(%{}), DateTime.utc_now(),
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?] == false
+    end
+
+    test "SPEC.md §4.5 denied candidate-only observation is queue-inert and does not persist" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_control_plane(role: :standby, this_controller_identity: "controller-a")
+      target = make_target("10.0.0.216", 9444)
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.216",
+          rpc_port: 9444,
+          connect_host: "10.0.0.216",
+          connect_port: 9444
+        })
+
+      status =
+        make_status_response(%{
+          node_id: node.id,
+          display_name: node.display_name,
+          hostname: node.hostname,
+          listen_host: "10.0.0.216",
+          listen_port: 9444
+        })
+
+      assert :noop = Nodes.observe_admission_candidate(target, status, DateTime.utc_now())
+      assert Repo.aggregate(AdmissionCandidate, :count) == 0
+      refute_receive {:queue_capacity_clear, _sources, _opts, _in_transaction?}
+    end
+  end
 
   describe "observe_status/3 trusted update" do
     test "valid metadata updates active node" do

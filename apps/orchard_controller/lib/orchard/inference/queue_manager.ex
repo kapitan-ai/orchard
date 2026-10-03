@@ -691,13 +691,12 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  def handle_info(:queue_tick, state) do
-    state =
-      %{state | scheduler_tick_ref: nil}
-      |> maybe_grant_next_global()
-
-    {:noreply, state}
+  def handle_info({:queue_tick, tick_ref}, %{scheduler_tick_ref: tick_ref} = state)
+      when is_reference(tick_ref) do
+    {:noreply, maybe_grant_next_global(%{state | scheduler_tick_ref: nil})}
   end
+
+  def handle_info({:queue_tick, _stale_tick_ref}, state), do: {:noreply, state}
 
   def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
     case Map.fetch(state.monitors, monitor_ref) do
@@ -3506,13 +3505,14 @@ defmodule Orchard.Inference.QueueManager do
         |> Keyword.get(:poll_interval_ms, 100)
         |> max(1)
 
-      %{state | scheduler_tick_ref: Process.send_after(self(), :queue_tick, poll_interval_ms)}
+      tick_ref = make_ref()
+      Process.send_after(self(), {:queue_tick, tick_ref}, poll_interval_ms)
+      %{state | scheduler_tick_ref: tick_ref}
     end
   end
 
   defp maybe_cancel_queue_tick(state) do
     if queues_empty?(state) do
-      cancel_timer(state.scheduler_tick_ref)
       %{state | scheduler_tick_ref: nil, tenant_rr_index: 0}
     else
       state

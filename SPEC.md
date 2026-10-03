@@ -6,7 +6,9 @@ It is intended for a coding agent that will build the system incrementally.
 “SHOULD” is a strong recommendation.
 
 The Apple Silicon macOS platform profile is the only currently supported platform profile.
-Within that profile, the app-installed all-in-one topology and the validated source-development split-role topology are current, while packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps.
+Within that profile, source development, including the validated source-development split-role topology, is the current active installation path.
+The app-installed all-in-one topology is the approved macOS native distribution topology, but new `Orchard.app` and DMG distribution is paused under §11.0 and produces no artifacts while that pause holds.
+Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps.
 Current Controller-bearing installations require operator-provided external Postgres, Managed Database Mode remains future Milestone 6 work, and Active/Standby operation remains a Milestone 7 target.
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
@@ -29,7 +31,8 @@ Current and accepted deployment modes:
 
 1. **All-in-one single node**
 
-   * current app-installed topology
+   * approved app-installed topology; new `Orchard.app` and DMG distribution is paused under §11.0
+   * source-development single-node operation is the current active installation path
    * 1 Mac runs:
 
      * control plane
@@ -155,6 +158,7 @@ Orchard SHALL use qualified, composable profile kinds so platform support, distr
 * A **distribution profile** binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
 * A **runtime-provider profile** binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
 * An **acceptance profile** defines a named topology and the evidence required to prove its participating profiles operate together.
+* An **agentic execution profile** defines provider- and agent-client-neutral protocol conformance, exact-tuple workload qualification, and production-activation gates for a client-owned agent loop over the Public Inference API.
 
 A host-lifecycle adapter is a platform integration boundary, not a profile.
 A deployment artifact is a produced distribution input or output, not a profile.
@@ -163,6 +167,7 @@ Defining or accepting a profile does not declare it supported; a support claim r
 
 The current Apple Silicon macOS platform profile SHALL preserve the accepted Controller and Node behavior of the all-in-one and split-role topologies at their documented support status.
 The macOS native distribution profile SHALL use `Orchard.app` inside a DMG and SHALL preserve launchd, Keychain, app-owned lifecycle, rollback, retained-state, signing, notarization, and stapling requirements.
+Distribution under that profile is currently paused by the committed control defined in §11.0.
 The macOS MLX Node runtime profile SHALL qualify a Node role that pairs the portable Node Agent with Apple Silicon, Metal, the MLX-LM runtime provider, the tokenizer stack, provider-neutral conformance, and real MLX runtime acceptance.
 The Node Agent SHALL remain part of the portable Orchard control-plane core and MUST NOT become provider-specific through a runtime-provider profile.
 Managed local Postgres mode SHALL remain target behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
@@ -174,8 +179,23 @@ It SHALL use operator-provided external Postgres and SHALL NOT require a local N
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
 
+The `ubuntu_24_04_x86_64_node` profile is an accepted experimental Linux Node platform profile candidate, not a supported profile.
+It SHALL target Ubuntu Server 24.04 LTS on x86_64 with Linux kernel 6.8 or newer within the Ubuntu 24.04 hardware-enablement line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
+Other Ubuntu releases, including Ubuntu 26.04 LTS, other distributions, architectures, libc implementations, init systems, containers-as-hosts, WSL, and rootless installation remain unqualified.
+Its proposed target installation path is source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned toolchain; that path is not yet operable on the candidate host, and no distribution profile or deployment artifact is defined for it.
+Candidate qualification hosts SHALL run no Controller, Console, or database role.
+The candidate SHALL remain separate from the Linux Controller profile and from every CUDA, ROCm, vLLM, model, and runtime-provider qualification.
+It defines a standalone Node only and SHALL NOT define a Linux Controller, local Postgres, or single-host composition on the candidate host.
+Defining, implementing, or source-qualifying the candidate SHALL NOT establish production BEAM eligibility or Linux Node, distribution, or runtime-provider support; those require a future separately accepted release and trust profile, exact provenance and reverification, and the accountable product owner's decision.
+ADR 0035 records the accepted candidate decision.
+
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
+
+An Agentic Execution Profile SHALL preserve request-scoped client tool passthrough: Orchard returns typed tool calls, while the agent client owns loop control, tool authorization, argument validation, execution, result continuation, and loop limits.
+It SHALL be independent of any one runtime provider, model family, or agent client.
+A named client implementation MAY be the first conformance client without becoming the protocol definition or implying support for other clients.
+Protocol conformance, exact model/runtime/client workload qualification, and production activation SHALL remain separate decisions; passing one SHALL NOT imply either later decision.
 
 ### 1.5 First-class runtime
 
@@ -901,6 +921,10 @@ A Node is an explicitly managed resource representing an admitted host that runs
 A Node is not defined solely by operating system or processor vendor.
 The current supported Nodes are Apple Silicon macOS hosts under the supported Apple Silicon macOS platform profile and macOS MLX Node runtime profile.
 Future Node support requires separate platform, distribution, runtime-provider, trust, and real-runtime acceptance evidence as applicable.
+The experimental `ubuntu_24_04_x86_64_node` candidate does not become schedulable from source installation, service-manager state, process identity, heartbeat, PID, cgroup, or inventory evidence.
+Its CPU, memory, disk, OS, kernel, network, and accelerator facts remain bounded observations until the existing Node admission, lifecycle, health, capability, and capacity contracts independently authorize use.
+NVIDIA/CUDA and AMD/ROCm observations SHALL retain distinct evidence provenance, and neither observation family SHALL imply a runtime-provider qualification.
+Missing vendor tooling, permission failures, malformed output, duplicates, or unstable identities SHALL produce absent or invalid candidate evidence.
 
 A node record SHALL include:
 
@@ -1030,6 +1054,26 @@ Re-admission after rejection SHALL require current trusted registration state pl
 ### 4.5 Node health model
 
 Health is orthogonal to lifecycle state.
+
+For Console local-machine display, installation configuration MAY explicitly select
+the existing registered Node identity store through `ORCHARD_LOCAL_NODE_IDENTITY_ROOT`.
+All-in-one environment generation SHALL select the local store; Controller-only
+generation SHALL leave this association unset. Existing environment files SHALL
+not be silently rewritten. The Controller SHALL read only the current registered
+generation's non-secret identity metadata, never create another Node identity or
+read Node private keys for this display. Host administrators own this co-location
+assertion; hostname, loopback addresses, browser location and inventory size SHALL
+NOT establish it. The association SHALL confer no trust, admission or dispatch authority.
+
+The Console local summary SHALL match the installed Node, enrollment and certificate
+identities against trusted inventory targets and match current Runtime metadata to
+that Node. Missing, insecure, unregistered or conflicting identity SHALL fail closed.
+“This machine’s Node is connected and healthy.” SHALL require a successful matching
+current observation, fresh persisted heartbeat and healthy Node/runtime evidence.
+Stale or unavailable evidence SHALL not retain a positive headline. Last successful
+observation and refresh-attempt time SHALL remain distinct; unavailable current model
+state SHALL not be replaced by historical loaded models. Node health SHALL remain
+separate from model-serving readiness and SHALL use the existing rules below.
 
 Valid health values:
 
@@ -1174,6 +1218,7 @@ Compatibility and defaulting rules:
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
 * `supports_prompt_token_ids` indicates that the endpoint's loaded worker can accept controller-supplied prompt token IDs on the runtime execution request. Absence or `false` is treated as legacy capability, not as an observation failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this field from a fresh durable scheduler snapshot MAY inform opt-in scheduler preference only; it is not dispatch authority.
+* absent `host_inventory` on a Runtime Endpoint Observation, including an absent `StatusResponse.host_inventory` from an older Node Agent, SHALL mean no host inventory observation is available; every Runtime Endpoint adapter SHALL treat an inventory outside the observation-only schema and size bounds as absent, and host inventory SHALL remain volatile observation evidence outside the persisted heartbeat allowlist, readiness, admission, capacity, and scheduling (§4.1)
 * absent or empty runtime memory budgets on a Runtime Endpoint Observation SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
@@ -1204,6 +1249,15 @@ Effective readiness rules for future hosted routing:
 * node health SHALL be `healthy` or `degraded`
 * the Runtime Endpoint Observation SHALL be fresh under Orchard's existing freshness thresholds
 * dynamic readiness for that tool SHALL exist and have `ready = true`
+
+Redacted diagnostic projection:
+
+Existing runtime-target status snapshots SHALL expose an additive `diagnostics` block through the shared `orchard.cluster_management.status.v1` NodeStatus contract. Missing blocks SHALL normalize to null, and older readers MAY ignore the additive field. Registered-node CLI list/inspect and admission-candidate status SHALL retain null diagnostics: volatile host inventory is not persisted Node inventory and SHALL NOT be attached through hostname or display-name matching.
+The retained authenticated `GET /ops/v1/health` response SHALL expose this block as nullable `runtime.diagnostics`, re-normalized from its single existing runtime snapshot read under the same allowlist and freshness bounds. Missing/legacy blocks, unknown diagnostic schemas and failed runtime snapshots SHALL yield null; failed snapshots SHALL NOT surface injected positive diagnostic evidence. This additive field SHALL NOT alter the health response status, readiness predicate, cluster-scoped Operator-or-admin authorization or `Cache-Control: no-store`. Public `/health/ready` SHALL remain status-only.
+The block SHALL use schema version `1` and `authority = "observation_only"`, with a closed allowlist of evidence states, source categories, original valid timestamps, derived ages, CPU logical-processor count, network-interface count, distinct NVIDIA/AMD observed-device counts, and runtime readiness/worker-state categories. Counts SHALL NOT represent free resources or capacity. Raw health messages/codes, network addresses and identity, device identifiers, paths, credentials, environment, tenant data, prompts/responses, unknown fields and raw protobuf payloads SHALL be excluded. Existing status fields remain compatible; this redaction contract applies to the new block, not the complete legacy status payload.
+The projection SHALL perform no I/O and SHALL reuse only observations from existing status reads. Inventory SHALL first satisfy the existing schema/size bounds and a diagnostic traversal cap of 4096 values, depth 12 and 131072 aggregate string bytes. Projection and re-normalization SHALL use source timestamps without manufacturing freshness, with diagnostic maximum ages of 195000 ms for inventory and each section and 15000 ms for Controller-timestamped runtime health/lifecycle observations. Missing/disabled inventory SHALL be absent; malformed, unknown-schema, oversized, future or invalid-timestamp evidence SHALL be absent or invalid; stale evidence SHALL NOT expose positive counts or current runtime health/lifecycle categories. Missing counts SHALL be null, never inferred zero capacity.
+NVIDIA/AMD device counts, including zero, SHALL require matching vendor enums and fresh observed evidence from the vendor-specific source on the provider and every contributing device: `nvidia-smi` for NVIDIA and `rocm-smi` for AMD. Re-normalization SHALL admit a vendor count only with its matching source category (`nvidia_probe` or `amd_probe`, respectively). Missing, unknown, opposite-vendor, non-vendor or inconsistent sources SHALL yield null counts. Valid matching empty-device observations SHALL retain zero counts; existing freshness and oldest-contributing-timestamp rules remain unchanged.
+This projection SHALL NOT enter heartbeat/database/queue persistence or change readiness, admission, custody, release, scheduling, capacity, dispatch or qualification. It SHALL retain existing authentication/trust boundaries and status-only public readiness, and SHALL introduce no support command, bundle, archive, export, staging or manifest. Broader logs and metrics diagnostics in Milestone 9 remain later work.
 
 ### 4.6.2 Controller dispatch capacity authority
 
@@ -1439,6 +1493,13 @@ Node agent SHALL:
 * collect diagnostics
 * cancel orphaned requests when controller session disappears
 
+For the experimental Linux Node candidate, each Node Agent SHALL hold a process-lifetime exclusive owner-only lock in its durable Node Identity Root and SHALL reject duplicate ownership before enrollment, Runtime Endpoint activation, or Worker Runtime startup.
+Candidate qualification SHALL place that Node Identity Root on a local POSIX filesystem that enforces ownership, mode, and atomic rename.
+Candidate qualification SHALL run the Agent as a dedicated unprivileged non-login identity without sudo, package-mutation, database-credential, device-reset, or device-reconfiguration authority.
+Candidate lifecycle qualification SHALL use one systemd system service unit that supervises exactly one Node Agent and its Worker Runtime descendants for one Node Identity Root.
+systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT independently prove Orchard custody, native cessation, request-slot release, resource release, or scheduling authority.
+Linux host lifecycle and capability mechanics SHALL remain behind platform adapters and MUST NOT add Linux or provider branches to the portable Node Agent contract.
+
 ### 4.10 Local worker contract
 
 Node agent SHALL own Worker Runtime subprocess lifecycle, model loading, execution, cancellation, capacity observation, diagnostics, and cleanup.
@@ -1587,6 +1648,8 @@ Scheduler wake-up triggers:
 Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources. Node-owned live sources are process-local scheduling hints owned by accepted-observation ingestion after the observation transaction commits; a MultiNode request snapshot SHALL NOT publish, rebuild, or clear them. The ingestion consumer SHALL rerun the shared capacity evaluation before refreshing matching source-scoped loaded/cold contributions, and positive contributions remain bounded by its available slots and by one unreserved cold slot per lane per node observation. Live refreshes MAY wake queued requests without a new admission event.
 
 Identity rejection, transport failure, heartbeat-age demotion, lifecycle, health, or freshness loss, malformed or unavailable capacity facts, failed observation commit, and evaluator or consumer failure SHALL clear affected sources. BEAM observations may refresh them only when the target resolves to the same persisted trusted active Node; address-only or mismatched observations, Runtime Endpoint Admission Candidates, and explicitly unmanaged compatibility probes SHALL NOT publish production Node-owned sources. QueueManager or Controller restart starts with no Node-owned source contributions; no heartbeat-history replay or request snapshot reconstructs them, and only a later accepted eligible observation may repopulate them.
+
+On Controller write-authority refusal, generic Runtime Endpoint status observation SHALL make no durable observation write or positive capacity publication. It MAY invalidate only the aggregate, placement, and cold sources owned by the Node safely resolved from the original target when the Controller observation time is strictly newer than that Node's persisted heartbeat, or when no heartbeat exists; the invalidation SHALL not invoke queue promotion. Older, equal, invalid, or unordered observation times and unavailable target ownership SHALL not invalidate sources. A status payload that claims another Node SHALL NOT determine source ownership or authorize invalidation of that claimed Node; only the safely resolved original target's sources MAY be invalidated under the preceding freshness condition. Candidate-only observation remains queue-inert whether accepted or refused. Invalidation neither releases an Allocation nor grants dispatch authority.
 
 Configured base lane capacity remains separate. Neither it nor a live capacity source authorizes production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
 
@@ -2574,12 +2637,16 @@ Supported request fields:
 * `tools` (function only; conditional on model capability)
 * `tool_choice`
 * `store`
+* `prompt_cache_key` (string or null compatibility hint; accepted but ignored, never cache identity or authorization)
 
 Tool-calling request rules:
 
 * only function tools are supported in v1
 * base v1 Responses tool calling is client-executed passthrough unless a later phased extension explicitly enables server-side execution
-* each request `tools` entry MAY be either an inline function definition or `{"type":"function","ref":"tool://<name>@<version>"}`
+* canonical inline definitions use `{"type":"function","name":"...","description":"...","parameters":{...},"strict":true}`; optional `strict` SHALL be preserved, not silently defaulted
+* nested `{"type":"function","function":{...}}` definitions remain an explicit Responses compatibility extension; ambiguous mixed shapes and unknown fields SHALL fail closed
+* each request `tools` entry MAY also use the Orchard extension `{"type":"function","ref":"tool://<name>@<version>"}`
+* Responses SHALL normalize endpoint-locally before shared validation; Chat Completions SHALL retain its independent nested dialect
 * the controller SHALL resolve registry refs before tokenization and dispatch; the runtime SHALL receive resolved function definitions only, never `tool://...` placeholders
 * inline request tools SHALL remain client-executed; they SHALL NOT be executed server-side unless first resolved from an approved registry entry explicitly marked as server-hostable
 * unresolved, inactive, or malformed registry refs SHALL be rejected as `400 invalid_request_error`
@@ -2589,7 +2656,15 @@ Tool-calling request rules:
   * `"none"` disables tool calling even if `tools` is supplied
   * `"auto"` allows the model to choose text or tool calls
   * `"required"` requires one or more tool calls or the request SHALL fail
-  * `{"type":"function","function":{"name":"..."}}` requires emitted tool calls to use that function name
+  * `{"type":"function","name":"..."}` requires emitted tool calls to use that function name; the nested `function` form remains a compatibility extension
+
+Responses `input` MAY include `function_call` items with `call_id`, `name` and
+JSON-object-string `arguments`, and `function_call_output` items with the same
+`call_id` and string `output`. Canonical history SHALL preserve IDs, argument and
+result bytes, and input order. Duplicate call IDs, orphan or duplicate results,
+malformed arguments and unknown item kinds SHALL fail before dispatch. Assistant
+message content MAY use `output_text` parts. Controller, Node, Worker and provider
+SHALL NOT execute these client tools.
 
 Supported output object subset:
 
@@ -2613,9 +2688,11 @@ Tool-calling response rules:
 
 * sync responses MAY include `function_call` output items in `output`
 * `output_text` SHALL include only text output content and MAY be empty when the response consists only of tool calls
-* the platform SHALL NOT introduce incremental Responses function-call SSE events in v1
-* streaming function-call data SHALL appear only in terminal `response.completed` or `response.failed` payloads
+* successful streaming calls SHALL emit `response.output_item.added`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, and `response.output_item.done` before `response.completed`
+* item IDs, call IDs, arguments and output indices SHALL correlate across lifecycle events and terminal output; public text occupies the first output item when present, followed by calls in first-observed order
+* call lifecycle publication SHALL be buffered until selected-attempt completion so failed or interrupted attempts do not publish executable calls; the argument delta MAY contain the complete buffered arguments
 * terminal payloads that include partial tool calls due to interruption or cancellation SHALL mark the response as incomplete or failed rather than presenting the tool call as complete
+* a stream closing without a terminal inference event SHALL fail rather than synthesize successful completion
 * if a later phased extension enables controller-managed server-side tool execution, `/v1/responses` SHALL be the first target endpoint and Orchard SHALL keep the controller-governs / node-executes split defined in §1.6
 
 Streaming behavior:
@@ -2730,6 +2807,50 @@ It SHALL send only the final-answer channel as assistant history on a later turn
 When an operator explicitly selects public reasoning, the Console MAY render that selected channel as a collapsed secondary disclosure, but it MUST NOT mix the channel into the final answer or silently re-feed it.
 The display-only reasoning heuristic tracked by issue #189 SHALL remain a legacy compatibility fallback for unstructured `legacy_blended` output only.
 That heuristic MUST NOT become generation-policy authority, parser authority, capture authority, replay authority, or assistant-history reconstruction.
+
+#### 7.2.9 Agentic Execution Profile
+
+The Agentic Execution Profile SHALL compose the existing Public Inference, Runtime Endpoint, Worker Runtime, retry, cancellation, capacity, cache-affinity, and model-qualification contracts without replacing them.
+OpenCode is the first named conformance client, not a privileged protocol dialect, broad compatibility claim, or production activation.
+The profile SHALL NOT authorize Orchard to run client tools, add a server-owned agent loop, enable `parallel_tool_calls=true`, or infer support from a provider, model-family, client, or runtime-foundation name.
+
+The profile has three ordered evidence boundaries:
+
+1. **Protocol conformance** SHALL run a deterministic reusable corpus against the public API and a scripted provider-neutral inference fixture. It proves wire shapes, ordering, client-owned continuation, validation ownership, terminal behavior, and error handling without a hardware, model-quality, runtime-provider, or production-support claim.
+2. **Exact-tuple workload qualification** SHALL rerun the applicable corpus and semantic workloads on one immutable qualification identity: model checkpoint and revision, quantization and Artifact Bundle digest, tokenizer and chat-template digests, renderer and parser identities and versions, Worker Runtime provider and dependency versions, Runtime Endpoint contract and transport, Orchard revision, endpoint and stream mode, agent-client name/version/configuration, operating system and hardware, topology, and material generation, context, concurrency, residency, cache, cancellation, retry, and deadline settings. A changed field requires a new qualification identity and review under §6.4 governance.
+3. **Production activation** SHALL require an approved exact-tuple qualification record, an active scoped support claim, every applicable platform/distribution/runtime-provider/acceptance gate, and an explicit operator product decision. Conformance or qualification alone SHALL NOT publish, default, preload, advertise, or activate a model or client profile.
+
+Every executable corpus assertion SHALL record pass or fail against a predeclared expected event trace, terminal outcome, side-effect trace, and usage result. A negative case passes when the contractually expected rejection, failure, cancellation, or quarantine occurs; it SHALL NOT turn the rejected capability into a positive support result. A positive case whose public input contract does not yet exist SHALL remain `dependency_blocked`, SHALL NOT be simulated through an internal canonical field, and SHALL NOT count as a conformance pass.
+
+The corpus SHALL declare the endpoint, streaming mode, and applicable output contract for every case. Its minimum applicability matrix is:
+
+| Behavior | Applicable public mode | Required evidence |
+| --- | --- | --- |
+| typed text and tool-call continuation | Responses sync and stream; Chat sync and stream only when included in the claimed envelope | positive typed lifecycle under each endpoint's existing contract |
+| omitted reasoning control | every tested endpoint/mode | positive preservation of `model_default + legacy_blended`; delimiter-like legacy text is not reclassified |
+| explicit `final_only` reasoning | each endpoint/mode only after its concrete public input contract is accepted | positive negotiated separation; `dependency_blocked` before that contract |
+| public structured reasoning | current Chat and Responses modes | negative rejection until the separately required public contract is accepted |
+| structured JSON object | Chat Completions sync and stream | positive `json_object` behavior under §7.2.4 |
+| structured output on Responses | current Responses modes | negative unsupported-field rejection; no Responses selector is implied |
+
+Within those applicable modes, the corpus SHALL cover at least:
+
+* typed final text, with exact text-item/delta correlation and no tool arguments or reasoning framing reclassified as final text where the applicable endpoint contract defines typed separation; omitted `legacy_blended` behavior remains exempt and byte-preserved;
+* accepted reasoning behavior under the exact negotiated contract, including final-only non-disclosure, required reasoning conformance, and fail-closed unsupported or malformed cases; unavailable public structured reasoning SHALL be tested as rejection rather than represented as support;
+* one and multiple typed function calls, stable call identity, ordered client-supplied results, and a final continuation response, with the side-effect trace proving Orchard executed no client tool;
+* structured output for only the currently accepted output mode, including syntactic JSON validity, exact expected value, and a malformed-output failure; `json_schema` SHALL remain unsupported until a separate public contract accepts it;
+* request validation for both client-generated and directly caller-supplied tool schemas at Orchard's accepted shape boundary, plus client-side semantic validation of generated arguments against the effective caller schema before execution, including rejection that produces no tool side effect;
+* terminal usage per Inference Attempt, requiring exact cumulative totals for Worker-originated terminals and the correct `lower_bound` status and latest validated cumulative count for permitted Controller-synthesized terminals, including known zero versus missing evidence and stream/non-stream agreement where the public endpoint exposes both;
+* exactly one durable terminal outcome per admitted logical Request; at most one deliverable public terminal per public request when the caller connection remains available; and exactly one terminal per conforming Runtime Endpoint execution stream that begins, with no event, usage update, tool call, or text after the relevant terminal. A pre-dispatch rejection has no Runtime Endpoint terminal, a client-owned tool loop applies the rule independently to each public Request, a retry applies it independently to each Inference Attempt stream, a caller disconnect need not receive a public terminal, and a missing runtime terminal is a fault case that SHALL fail rather than synthesize success;
+* caller disconnect cancellation that, as additional Agentic Execution Profile acceptance evidence, proves the runtime provider's native generation operation has stopped and drained before Controller allocation or Node/placement capacity is observed as reusable. The existing §4.6.2 transport-level resolution remains the base product authority, but satisfying it alone SHALL NOT establish this profile gate; a transport close or cancel acknowledgement alone is insufficient profile evidence, and unresolved drain follows the existing quarantine and no-redispatch contracts;
+* cache identity and affinity within the configured fingerprint domain, proving that identical canonical covered prefixes under the same Controller key scope and fingerprint configuration produce the same opaque Controller-derived affinity identity, and that a changed instruction, message, tool definition, call, or tool result changes the identity only when the changed canonical bytes fall within that covered prefix. Changes outside the bounded prefix MAY retain the same identity; `prompt_cache_key` does not control it, and affinity changes ranking only within the existing non-authoritative fail-open rules;
+* retry and error behavior, including pre- versus post-commit failures, the one-automatic-retry bound, pinned negotiated and model identity, no retry after caller disconnect or Output Commitment, no duplicate tool execution, stable public errors, and no alternate-capacity acquisition before execution resolution and capacity release are proved; and
+* explicit rejection of `parallel_tool_calls=true` before dispatch.
+
+The first implementation task SHALL be the deterministic reusable corpus, fixture protocol, assertions, and sanitized result format.
+Real-model, hardware, and named-client qualification SHALL consume that corpus only after its deterministic lane passes.
+An OpenCode result SHALL identify the exact client version and configuration and SHALL remain evidence for that client identity only.
+No result from this profile SHALL activate Qwen3.8, claim general OpenCode or agent-client support, or select TensorFold or any other project as an Orchard runtime foundation.
 
 ---
 
@@ -3263,6 +3384,8 @@ Static target overrides MAY remain for documented source-development and explici
 Distributed Erlang membership is a high-trust code boundary, not a per-function capability sandbox.
 A scoped Peer Grant reduces credential blast radius and cross-Node impersonation, but it does not restrict an authenticated peer to individual Runtime Endpoint functions.
 Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted Macs inside restricted private networks.
+The experimental Linux Node candidate is outside this boundary and SHALL NOT join production BEAM.
+Any production BEAM eligibility for a Linux Node SHALL require a separately accepted amendment of this boundary with an explicit release and trust profile, exact provenance and reverification, and the accountable product owner's decision.
 External providers, third-party adapters, tenant-controlled compute, and partially trusted machines SHALL remain outside the BEAM mesh.
 
 The initial stable operator-facing production BEAM failure vocabulary SHALL include:
@@ -3485,6 +3608,140 @@ message WorkerCrashCounter {
   string counter_version = 3;
 }
 
+enum HostEvidenceState {
+  HOST_EVIDENCE_STATE_UNSPECIFIED = 0;
+  HOST_EVIDENCE_STATE_OBSERVED = 1;
+  HOST_EVIDENCE_STATE_ABSENT = 2;
+  HOST_EVIDENCE_STATE_PARTIAL = 3;
+  HOST_EVIDENCE_STATE_ERROR = 4;
+}
+
+enum HostInventoryAuthority {
+  HOST_INVENTORY_AUTHORITY_UNSPECIFIED = 0;
+  HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY = 1;
+}
+
+enum AcceleratorVendor {
+  ACCELERATOR_VENDOR_UNSPECIFIED = 0;
+  ACCELERATOR_VENDOR_NVIDIA = 1;
+  ACCELERATOR_VENDOR_AMD = 2;
+}
+
+message HostEvidence {
+  HostEvidenceState state = 1;
+  string source = 2;
+  uint64 observed_at_unix_ms = 3;
+  // Stable bounded code only; raw command output is not transported.
+  string error_code = 4;
+}
+
+message HostCpuObservation {
+  HostEvidence evidence = 1;
+  string architecture = 2;
+  uint32 logical_processor_count = 3;
+  uint32 core_count = 4;
+  uint32 socket_count = 5;
+  string vendor_id = 6;
+  string model_name = 7;
+}
+
+message HostMemoryObservation {
+  HostEvidence evidence = 1;
+  uint64 physical_bytes = 2;
+  uint64 available_bytes = 3;
+  uint64 swap_total_bytes = 4;
+  uint64 swap_free_bytes = 5;
+}
+
+message HostDiskObservation {
+  HostEvidence evidence = 1;
+  string mount_point = 2;
+  string filesystem = 3;
+  uint64 total_bytes = 4;
+  uint64 available_bytes = 5;
+}
+
+message HostPlatformObservation {
+  HostEvidence evidence = 1;
+  string os_id = 2;
+  string os_name = 3;
+  string os_version = 4;
+  string kernel_release = 5;
+  string architecture = 6;
+  string libc_name = 7;
+  string libc_version = 8;
+  string systemd_version = 9;
+  string cgroup_mode = 10;
+}
+
+message HostNetworkAddressObservation {
+  string family = 1;
+  string address = 2;
+  uint32 prefix_length = 3;
+  string scope = 4;
+}
+
+message HostNetworkInterfaceObservation {
+  string name = 1;
+  uint32 index = 2;
+  string oper_state = 3;
+  uint32 mtu = 4;
+  string link_type = 5;
+  string hardware_address = 6;
+  repeated HostNetworkAddressObservation addresses = 7;
+}
+
+message HostNetworkObservation {
+  HostEvidence evidence = 1;
+  repeated HostNetworkInterfaceObservation interfaces = 2;
+}
+
+message AcceleratorObservation {
+  HostEvidence evidence = 1;
+  AcceleratorVendor vendor = 2;
+  // Vendor-documented stable identity. Records without one are omitted.
+  string stable_id = 3;
+  string identity_kind = 4;
+  // Topology observations only; none is an Orchard device binding.
+  uint32 device_ordinal = 5;
+  string pci_address = 6;
+  string numa_node = 7;
+  string model_name = 8;
+  uint64 memory_total_bytes = 9;
+  string driver_version = 10;
+}
+
+message AcceleratorRuntimeObservation {
+  HostEvidence evidence = 1;
+  // Installed host tool or runtime evidence only, never provider qualification
+  // or proof that a particular accelerator can execute it.
+  string name = 2;
+  string version = 3;
+}
+
+message AcceleratorProviderObservation {
+  HostEvidence evidence = 1;
+  AcceleratorVendor vendor = 2;
+  repeated AcceleratorObservation devices = 3;
+  // Observed process environment only; never an Orchard allocation or binding.
+  string visibility_filter = 4;
+  AcceleratorRuntimeObservation runtime = 5;
+}
+
+// Bounded observation-only host inventory. It creates no capacity, worker
+// unit, resource allocation, device binding, readiness, or custody fact.
+message HostInventoryObservation {
+  uint32 schema_version = 1;
+  uint64 observed_at_unix_ms = 2;
+  HostInventoryAuthority authority = 3;
+  HostCpuObservation cpu = 4;
+  HostMemoryObservation memory = 5;
+  HostDiskObservation disk = 6;
+  HostPlatformObservation platform = 7;
+  HostNetworkObservation network = 8;
+  repeated AcceleratorProviderObservation accelerator_providers = 9;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -3502,6 +3759,9 @@ message StatusResponse {
   // Only explicit unmanaged compatibility may normalize absent or zero to 1.
   uint32 max_concurrency = 12;
   repeated WorkerCrashCounter worker_crash_counters = 13;
+  // Additive observation-only host evidence. Absence means not observed and
+  // creates no readiness, scheduling, allocation, provider, or custody fact.
+  HostInventoryObservation host_inventory = 15;
 }
 
 message EnsureModelLoadedRequest {
@@ -3779,7 +4039,7 @@ Automatic Attempt Retry SHALL run its second wave fresh rather than reusing atte
 
 The proof is carried by unary `PrepareInference` before negotiated execution. It SHALL return the authoritative complete-tuple and worker-incarnation proof plus an opaque single-use authorization bound to the Request, tuple, loaded binding, and current loaded worker instance. The Controller SHALL redeem the authorization only through the matching execution Request. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates the authorization. A failed preparation leaves invocation, content, and usage at zero. Node Agent ownership of `Accepted` remains unchanged; negotiated `Accepted` follows successful preparation redemption.
 
-The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #328 work. Reasoning-token subsets remain Worker-internal.
+The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #329 work. Reasoning-token subsets remain Worker-internal.
 
 Automatic retry SHALL pin all eleven tuple fields but not worker incarnation, selected profile, preparation identity, or authorization. Operator retry SHALL reuse `requests.canonical_request["reasoning"]` only when full capture retained a valid value; otherwise it SHALL fail closed with `retry_source_unavailable` and SHALL NOT rerender historical messages, renegotiate, downgrade, or add a persistence column. Production tuple registries SHALL remain empty and no production tuple may be advertised or selected until parser, accounting, and capture guarantees plus model-qualification governance accept the exact tuple. For a selected-effort tuple, the model-qualification-governance prerequisite means that the governance contract can classify the exact tuple; it MUST NOT be read as requiring an approved semantic qualification record or support claim for technical advertisement, selection, preparation, or dispatch.
 
@@ -3794,10 +4054,15 @@ Tool argument byte preservation applies after provider normalization under §7.5
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
+At the non-truncating `completed` and `stop` terminals only, and only when parser state is otherwise definitively final because no reasoning frame is open, such a retained prefix SHALL resolve as ordinary final-answer text rather than as a framing fragment.
+Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reasoning state SHALL still fail closed, including an opened and unclosed reasoning frame, a prefix still retained at the truncating `length` terminal, and any state that cannot satisfy the pinned contract or the negotiated generation policy.
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Whitespace-only decoded reasoning is framing rather than valid reasoning content and SHALL NOT satisfy that rule.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+That no-selected-output guarantee binds the parser terminal itself rather than only a later projection or API boundary, so a negotiated `enabled` stream SHALL withhold final-answer output until valid reasoning content is observed and SHALL emit no final-answer delta when the stream never observes it.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
 Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
 Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
@@ -3851,7 +4116,7 @@ Admin creates bootstrap token or provisions node
 * stop emitting additional events after the terminal event
 * preserve normalized tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
-* a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and a bounded worker message; the controller SHALL NOT parse length values from the message text
+* a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and the stable failure code; it SHALL NOT include Worker-supplied message text because the controller cannot verify that the text is free of hidden reasoning (§§9.3, 10.10); the controller SHALL NOT parse length values from the message text
 * a controller that observes catalog drift SHALL emit `[:orchard, :tokenizer, :catalog_drift]` with `%{count: 1}`, request/model metadata, `endpoint`, `bundle_id`, trusted `bundle_sha256` when available, `catalog_sha256`, bounded `added` token metadata, full `added_count`, and explicit `partial_detection: true`; the event SHALL NOT include `removed` entries until runtime helper re-extraction or source-tagged manifests exist
 * be cancelled by request id
 
@@ -4406,6 +4671,7 @@ create table requests (
   scheduler_decision jsonb,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
+  output_usage_status text check (output_usage_status is null or output_usage_status in ('exact', 'lower_bound')),
   reserved_output_tokens integer not null default 0,
   first_token_at timestamptz,
   completed_at timestamptz,
@@ -4536,6 +4802,10 @@ create table node_admission_decisions (
   inserted_at timestamptz not null default now()
 );
 ```
+
+`requests.output_usage_status` SHALL be a nullable expand-migration column with no default and no backfill.
+A null status SHALL mean output-usage classification is not recorded (unclassified), not that the row predates persistence or a deployment cutover.
+Orchard MUST NOT infer row age or cutover from a null status, or infer, backfill, or present `exact` or `lower_bound` for such a row from its counts, lifecycle state, timestamps, or deployment version.
 
 `node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
 Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.
@@ -5092,6 +5362,14 @@ Production first-party BEAM Distribution SHALL additionally enforce the BEAM Pee
 Certificate identity alone SHALL NOT authorize a production OTP distribution connection.
 Current source-development and packaged first-cut shared-cookie behavior SHALL remain visibly transitional until the enrolled Production BEAM Operating Model passes its required packaged acceptance.
 
+The experimental Linux Node candidate SHALL use only this private-network certificate and Peer Grant model.
+Its source qualification SHALL use certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics, plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership.
+Every participant in that test mesh, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data, so the mesh never bridges a source-revision Node into production trust.
+That source-qualification evidence SHALL remain distinct from production BEAM eligibility and support, and executing it SHALL NOT require building a package, `Orchard.app`, or a DMG.
+The candidate SHALL NOT substitute shared-cookie Distribution, make gRPC compatibility its default Runtime Endpoint transport, or add a new Runtime Endpoint transport, an outbound-only Runtime Endpoint session, an Internet-exposed Node listener, NAT traversal, a tunnel or relay that substitutes for private-network reachability, automatic transport fallback, or replay of an ambiguously accepted inference operation.
+Reconnect SHALL revalidate current certificate, Node, admission, target, Peer Grant, and generation authority before accepting new work.
+Shared-cookie runs SHALL NOT count as candidate trust or qualification evidence.
+
 The internal node-trust initialization operation SHALL remain separate from `orchardctl cluster init`, which is credential-only per §11.9.
 
 Node cert lifetime default:
@@ -5132,6 +5410,16 @@ The mapping from operator deployment patterns to runtime state SHALL be:
 `ORCHARD_TRANSPORT_MODE` is authoritative when set. Legacy `ORCHARD_TLS_DISABLED`, `ORCHARD_TLS_CERTFILE`, `ORCHARD_TLS_KEYFILE`, and `ORCHARD_TLS_CACERTFILE` environment variables SHALL remain compatibility shims for one release. When `ORCHARD_TRANSPORT_MODE` is set, legacy variables SHALL be accepted only when consistent with the selected mode; conflicting legacy values SHALL emit a deprecation warning and the new mode SHALL win unless the combination is structurally invalid. When `ORCHARD_TRANSPORT_MODE` is unset, runtime SHALL derive the mode from legacy variables: `ORCHARD_TLS_DISABLED=true` maps to `plain_http_localhost`, cert/key overrides map to `direct_https`, and a fresh install with no TLS envs maps to `plain_http_localhost`. Invalid mode values, partial cert/key overrides, malformed CIDRs, and other structurally invalid combinations SHALL fail closed at wrapper preflight or boot.
 
 `/ca.crt` SHALL publish a CA certificate only when `cert_source` is `generated_local_ca`. It SHALL return not found for `operator_provided` and `unknown`. Orchard SHALL NOT publish an operator CA, internal PKI root, proprietary CA, or public CA bundle unless a future explicit operator-CA publication feature is designed and specified.
+
+`orchardctl transport enable-local-https` SHALL publish the generated local-CA certificate and the endpoint metadata sidecar into the support-root `public/` directory through private staging.
+Before TLS initialization it SHALL validate, without following symlinks, that every support-root ancestor is owned by root or the effective UID and is not writable by other UIDs unless it is a root-owned sticky directory, and that the support root, `public/`, and existing public artifacts are caller-owned, not group- or other-writable, not setgid, free of extended or default ACLs, and on a qualified local filesystem; any unsafe or uninspectable path SHALL refuse unchanged.
+Before TLS initialization it SHALL also validate, without following symlinks, that an existing `config/` directory is caller-owned with no group or other access, and that `config/controller.env`, an existing `config/tls/` directory, and its existing TLS source files are caller-owned, not group- or other-writable, ACL-free, and not symlinks; unsafe private configuration SHALL refuse unchanged rather than being repaired.
+The legacy macOS installer layout, which creates `config/` and `config/tls/` as `0750` owned by `root:admin`, does not meet this requirement: the command SHALL refuse it unchanged, and an operator SHALL review the ownership and group custody of `config/` and narrow it to owner-only before running the command; the command SHALL NOT change modes or grant access to make it pass.
+TLS generation invoked by the command SHALL create its temporary files inside the private stage rather than inside `config/tls/`, because narrowing `config/` does not revoke a directory descriptor another UID already holds on `config/tls/`.
+The stage SHALL be created with an explicit owner-only creation mode rather than repaired afterward and SHALL stay owner-only until it is published as `public/`, public artifacts SHALL become world-readable only after their contents are complete, cooperative publishers SHALL serialize with a bounded wait, and rollback or cleanup SHALL act only on entries the publisher created.
+A failure after any public name has changed SHALL be reported as a visible partial publication, and a lost or timed-out helper reply during publication or rollback SHALL be reported as an unknown publication state that the operator must inspect.
+Publication of the CA certificate and endpoint metadata is not an atomic multi-file transaction.
+ADR 0036 records the threat model, qualified filesystems, and limits.
 
 Forwarded headers SHALL be trusted only in `reverse_proxy` mode and only from configured trusted proxies. The default trusted proxy set SHALL be loopback only: `127.0.0.1/32` and `::1/128`. Operators MAY configure non-loopback trusted proxy CIDRs with `ORCHARD_TRUSTED_PROXIES`. If reverse-proxy mode binds the backend listener to a non-loopback address without explicit trusted proxies, Orchard SHALL fail closed at preflight or boot. Spoofed `x-forwarded-*` headers from untrusted clients SHALL be ignored or rejected and MUST NOT affect public URL, scheme, host, port, or client IP derivation.
 
@@ -5390,6 +5678,12 @@ The accepted Linux Controller profile uses operator-provided external Postgres a
 Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
 No Linux distribution is supported by this contract-only amendment.
 
+The experimental `ubuntu_24_04_x86_64_node` candidate defines no distribution profile, package, container image, or other deployment artifact.
+Its proposed target installation path is source development of the Node-only role from an exact source revision with the pinned toolchain, consistent with §11.0, and that path is not yet operable on the candidate host.
+Executing candidate source qualification SHALL NOT require building a Linux Node package, `Orchard.app`, or a DMG and SHALL NOT add a distribution goal.
+A future Linux Node package, including any fixed filesystem layout, package-created service identity, package-owned service unit, closed dependency manifest, or air-gapped media, SHALL require a fresh accepted OpenSpec proposal, a separate implementing pull request, and the accountable product owner's approval before any artifact is built.
+Candidate source installation or qualification evidence SHALL NOT authorize publication, a release, or a Linux support claim.
+
 The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
 The initial source-availability transition SHALL be source-only under the Apache License, Version 2.0, for covered Orchard-authored software and technical documentation, with Copyright 2026 AI Singapore.
 Third-party software, models, tokenizers, assets, and other separately licensed material SHALL be excluded from that grant and remain subject to their own terms and notices.
@@ -5402,6 +5696,27 @@ Legacy PKG receipt detection SHALL be retained solely to prevent silent app owne
 Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
 
 Apple recommends notarization for directly distributed macOS software, and a signed DMG is a preferred direct-distribution format outside the App Store. ([Apple Developer][8])
+
+### 11.0 Distribution Pause
+
+Native `Orchard.app` and DMG distribution is paused until the accountable product owner explicitly lifts the pause.
+The committed Distribution Pause Control `packaging/distribution-control` is the only switch.
+Distribution SHALL be treated as active only when that control is a regular, readable, non-symlink file that declares exactly one `state=active` line; any other content or state SHALL be treated as paused.
+
+While paused:
+
+* source development, as documented in `docs/local-dev.md`, SHALL be the current active Orchard installation path
+* every repository entrypoint that assembles or signs `Orchard.app`, or assembles, notarizes, staples, or publishes a DMG, SHALL refuse before any build, signing, image, credential, or network step with exit status `78`, and MAY still print help
+* no Orchard-defined or Orchard-consumed environment variable or command-line flag SHALL resume distribution, and during normal direct execution of those entrypoints the guard SHALL NOT depend on PATH-resolved commands, shell startup files such as `BASH_ENV`, or shell functions imported from the environment
+* required validation SHALL skip the Orchard.app and DMG assembly lane and SHALL treat it as inapplicable, while payload, payload signing-contract, Swift package, relocated-root service-lifecycle, packaged `orchardctl`, macOS native-helper, portable, conformance, MLX, and OpenSpec validation continue unchanged
+* §11.1 through §11.4, §11.7, and §11.8 remain the approved design for any resumed distribution, but no artifact under them is produced, and documentation SHALL NOT present native app or DMG distribution as currently available
+
+The Swift app package, shared payload, signing and verification tooling, and dormant assembly tests SHALL remain in the repository rather than being removed.
+Payload staging and credential-free payload signing contract tests remain available because they produce no installable `Orchard.app` or DMG.
+Credentialed Developer ID payload signing is a release-only operation and SHALL NOT be performed while distribution is paused.
+The pause is a process control that prevents accidental distribution through the supported entrypoints; it is not a security boundary against deliberately editing the checkout or invoking an entrypoint through a custom interpreter.
+Resuming distribution SHALL require a reviewed pull request that sets `state=active` with the accountable product owner's explicit approval; that change also re-enables the assembly lane.
+Resuming SHALL NOT by itself satisfy the public binary release decision or any release gate in this section.
 
 ### 11.1 Installed components
 
@@ -5852,6 +6167,12 @@ The Controller `N` support window for Node Agent versions `N` and `N-1` provides
 It does not authorize concurrent Node Agent processes to share one Node Identity Root and does not define a zero-overlap replacement protocol.
 Any future managed handover guarantee requires a fresh accepted OpenSpec proposal and a separate implementing pull request.
 
+The experimental Linux Node candidate SHALL apply the same sequential cordon, accepted drain, stop, replace, start, reconcile, verify, and uncordon ordering through its Linux host lifecycle adapter.
+For the candidate, replacement SHALL switch the Node-only source installation to another exact clean source revision with its matching dependency locks and pinned toolchain while preserving the Node Identity Root.
+Upgrade or rollback SHALL keep the Node unschedulable when exact Agent or Worker Runtime exit, Node Identity Root exclusion, installed source identity, restart, current transport authority, or reconciliation cannot be proved.
+Controller `N` compatibility with Node Agent `N` and `N-1` SHALL remain a reader and behavior compatibility window only.
+An operation whose safe meaning depends on a worker-unit, resource-allocation, runtime-incarnation, residency, or control-generation target SHALL fail closed when either participant cannot preserve the complete target and SHALL NOT downgrade to ambiguous Node or model targeting.
+
 ### 13.5 Worker upgrade
 
 Workers are bundled with node agent.
@@ -5895,8 +6216,8 @@ Acceptance:
 
 * controller starts on macOS
 * node agent starts on macOS
-* `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests
-* the verified app assembles into a mountable DMG without nested signature or entitlement drift
+* `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests; bundle assembly evidence is suspended while §11.0 pauses distribution, and the relocated-root lifecycle rollback and retention tests continue
+* the verified app assembles into a mountable DMG without nested signature or entitlement drift; this evidence is suspended while §11.0 pauses distribution
 * the app-owned lifecycle installs launchd services correctly
 
 ### Milestone 1 - Single-node inference MVP
@@ -6052,15 +6373,49 @@ Deliver:
 Acceptance:
 
 * portable Orchard control-plane core applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
-* macOS host-lifecycle, Orchard.app/DMG, and MLX validation run as separate applicable macOS lanes
+* macOS host-lifecycle, Orchard.app/DMG, and MLX validation run as separate applicable macOS lanes, with the Orchard.app and DMG assembly lane inapplicable while §11.0 pauses distribution
 * credential-free signing-contract validation remains distinct from release-only Developer ID signing, notarization, stapling, and publication
-* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, air-gap, and MLX acceptance remain green
+* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, air-gap, and MLX acceptance remain green, except that Orchard.app and DMG assembly acceptance is suspended rather than regressed while §11.0 pauses distribution
 * the Controller release does not load CLI implementation to obtain Controller authority
 * the portable CLI does not require direct Repo authority or Darwin native compilation for normal Controller-state operations
 * Worker Runtime contracts have provider-neutral ownership, generated bindings, version negotiation, drift checks, and conformance coverage
 * the mixed-platform acceptance profile proves a Linux Controller with external Postgres operating an admitted macOS Node under the macOS MLX Node runtime profile across trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure behavior
 * production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
+
+### Milestone 9 - Experimental Linux Node qualification
+
+This milestone defines qualification work for the experimental `ubuntu_24_04_x86_64_node` candidate.
+It does not declare general Linux, Linux Node, CUDA, ROCm, vLLM, model, or runtime-provider support, and it defines no distribution artifact.
+It does not change the Milestone 8 Linux Controller profile.
+
+Deliver:
+
+* the proposed Node-only source-development path for the portable Node Agent on the candidate host from an exact source revision with the pinned toolchain, which is not yet operable
+* closed-matrix preflight, exclusive Node Identity Root ownership, a least-privilege Agent identity, and one systemd-supervised Agent behind a Linux host lifecycle adapter with relocated-root tests
+* provider-neutral bounded host inventory with distinct NVIDIA and AMD observation provenance
+* private-network enrollment, credential lifecycle, Peer Grant rotation, reconnect, and stale-connection failure behavior using certificate-authenticated control and the controlled source-development Peer Grant TLS Distribution test mesh outside production BEAM membership
+* redacted health, logs, metrics, inventory, and lifecycle diagnostics through retained generic diagnostic surfaces
+* model-free Linux process-group custody and mixed-version compatibility only after separately accepted contracts define request-slot release, native cessation, and worker-unit and resource-allocation targeting
+* a distinct `macos_controller_linux_node_model_free` acceptance profile using a qualified macOS Controller `N` and the Linux Node candidate at `N` and `N-1`, with independently captured evidence from every participating host, where every participant, including the macOS Controller, is a source or test instance with no production BEAM membership, production credentials, or production data
+* a separately gated one-H100 runtime-provider pilot only after every provider-neutral prerequisite passes
+
+Acceptance:
+
+* every qualification record binds to the exact source commit and tree, clean-checkout proof, dependency locks, pinned toolchain identity, and passing generated-output drift checks, and dirty or drifted checkouts produce implementation evidence only
+* the candidate qualification host runs exactly one supervised Agent for one persistent Node Identity Root, a foreground developer session produces implementation evidence only, and unqualified hosts fail before mutation
+* start, stop, restart, crash, reboot, source upgrade, and source rollback preserve identity ownership and fail closed on uncertain survivors
+* inventory accurately reports bounded host and stable accelerator observations without creating scheduling or allocation authority
+* credential renewal, revocation, Peer Grant rotation, reconnect, local secret permissions, and stale-connection behavior pass failure-path tests, and shared-cookie runs are excluded from evidence
+* diagnostics are redacted, add no support-bundle or archive format, and are incapable of reconstructing or erasing commitments
+* compatible readers accept additive old observations as missing evidence, while incompatible old writers fail closed for targeted work
+* model-free custody distinguishes public terminal, native cessation, request-slot release, and resource release under accepted contracts
+* the `macos_controller_linux_node_model_free` profile proves enrollment, admission, authenticated observation, exact worker-unit and resource-allocation targeting under separately accepted contracts, cancellation, drain, Agent restart, orphan handling, and peer isolation for both the `N`/`N` and `N`/`N-1` pairings, and it remains unmet until those targeting contracts are defined and their implementation is accepted
+* the `N-1` side uses an exact predecessor Node Agent revision, identified by commit and tree, whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1` of §13.1; an older commit, a revision sharing `N`'s Product Version, or an arbitrary earlier version does not qualify
+* until accepted release-line governance defines that designation, and whenever predecessor or macOS host evidence is missing, the profile remains unmet, with no floor waiver or synthetic predecessor
+* real-provider qualification, if separately authorized, remains one immutable H100, vLLM, model, and serving-configuration tuple at concurrency one with no sibling or broader support claim
+* Milestone 9 acceptance yields source-qualification evidence only; production BEAM eligibility and any Linux Node support claim require a future separately accepted release and trust profile, exact provenance and reverification, and the accountable product owner's decision
+* `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before any Linux Node support claim
 
 ---
 

@@ -25,8 +25,12 @@ tests for the validated surface.
 Contract v4 adds the `render_and_count_reasoning` command for the negotiated
 reasoning contract in `../../SPEC.md` §3.5. Template arguments come only from
 the closed registry in `src/orchard_tokenizer/reasoning_contracts.py`, keyed by
-the exact model artifact digest, chat-template digest, generation policy, and
-projection; callers cannot pass template keyword arguments. That product
+the exact model artifact digest, chat-template digest, generation policy,
+projection, and canonical reasoning effort (`null`, `low`, `medium`, or
+`high`); callers cannot pass template keyword arguments or provider effort
+values. A non-`null` effort is accepted only with
+`generation_policy = enabled` and only when that exact registration declares a
+static provider template-argument mapping for the requested tier. That product
 registry is intentionally empty until an exact qualified artifact, template,
 and version tuple is accepted, so every negotiated request currently fails
 closed with `unsupported_reasoning_control`; package tests cover the contract

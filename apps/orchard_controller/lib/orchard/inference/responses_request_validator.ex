@@ -3,7 +3,12 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
   Validates the bounded sync `/v1/responses` request subset for M2a.
   """
 
-  alias Orchard.Inference.{MessageValidation, SamplingValidation, ToolingValidation}
+  alias Orchard.Inference.{
+    MessageValidation,
+    ResponsesRequestNormalizer,
+    SamplingValidation,
+    ToolingValidation
+  }
 
   @supported_fields MapSet.new([
                       "model",
@@ -16,7 +21,8 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
                       "store",
                       "stream",
                       "tools",
-                      "tool_choice"
+                      "tool_choice",
+                      "prompt_cache_key"
                     ])
 
   @type validation_error ::
@@ -34,9 +40,10 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
          :ok <- check_temperature(params),
          :ok <- check_top_p(params),
          :ok <- check_max_output_tokens(params),
-         :ok <- ToolingValidation.validate(params),
+         :ok <- check_tooling(params),
          :ok <- check_metadata(params),
          :ok <- check_store(params),
+         :ok <- check_prompt_cache_key(params),
          :ok <- check_stream(params) do
       {:ok, params}
     end
@@ -72,12 +79,157 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
   defp check_input(%{"input" => input}) when is_binary(input), do: :ok
 
   defp check_input(%{"input" => input}) when is_list(input) do
-    MessageValidation.validate_responses_input_items(input)
+    input
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {item, index}, {:ok, calls} ->
+      case check_input_item(item, "input[#{index}]", calls) do
+        {:ok, updated} -> {:cont, {:ok, updated}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, _calls} -> :ok
+      error -> error
+    end
   end
 
   defp check_input(%{"input" => _input}) do
     {:error, :invalid_value, "input", "must be a string or array of message objects"}
   end
+
+  defp check_input_item(%{"type" => "function_call"} = item, field, calls) do
+    with :ok <- only_keys(item, ~w(type id call_id name arguments status), field),
+         true <- is_nil(item["id"]) or nonempty_string?(item["id"]),
+         true <- nonempty_string?(item["call_id"]) and nonempty_string?(item["name"]),
+         true <- valid_arguments?(item["arguments"]),
+         true <- item["status"] in [nil, "completed"],
+         false <- Map.has_key?(calls, item["call_id"]) do
+      {:ok, Map.put(calls, item["call_id"], :pending)}
+    else
+      {:error, _, _, _} = error -> error
+      _ -> invalid(field, "requires a unique call_id, name and JSON object arguments")
+    end
+  end
+
+  defp check_input_item(%{"type" => "function_call_output"} = item, field, calls) do
+    with :ok <- only_keys(item, ~w(type id call_id output status), field),
+         true <- is_nil(item["id"]) or nonempty_string?(item["id"]),
+         true <- is_binary(item["output"]),
+         true <- item["status"] in [nil, "completed"],
+         :pending <- Map.get(calls, item["call_id"]) do
+      {:ok, Map.put(calls, item["call_id"], :returned)}
+    else
+      {:error, _, _, _} = error -> error
+      _ -> invalid(field, "requires string output and a preceding call without a result")
+    end
+  end
+
+  defp check_input_item(item, field, calls) when is_map(item) do
+    with true <- Map.get(item, "type", "message") == "message",
+         :ok <- only_keys(item, ~w(type id role content status), field),
+         true <- is_nil(item["id"]) or nonempty_string?(item["id"]),
+         true <- item["status"] in [nil, "completed"],
+         :ok <- MessageValidation.validate_responses_input_items([validation_message(item)]) do
+      {:ok, calls}
+    else
+      false -> invalid(field, "unsupported input item type")
+      error -> error
+    end
+  end
+
+  defp check_input_item(_item, field, _calls), do: invalid(field, "must be an object")
+
+  defp validation_message(%{"role" => "assistant", "content" => content} = item)
+       when is_list(content) do
+    Map.put(
+      item,
+      "content",
+      Enum.map(content, fn
+        %{"type" => "output_text"} = part -> Map.put(part, "type", "input_text")
+        part -> part
+      end)
+    )
+  end
+
+  defp validation_message(item), do: item
+
+  defp valid_arguments?(arguments) when is_binary(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, value} when is_map(value) -> true
+      _ -> false
+    end
+  end
+
+  defp valid_arguments?(_arguments), do: false
+  defp nonempty_string?(value), do: is_binary(value) and value != ""
+
+  defp check_tooling(params) do
+    with :ok <- check_tool_shapes(Map.get(params, "tools")),
+         :ok <- check_choice_shape(Map.get(params, "tool_choice")) do
+      params |> ResponsesRequestNormalizer.normalize_tooling() |> ToolingValidation.validate()
+    end
+  end
+
+  defp check_tool_shapes(tools) when is_list(tools) do
+    Enum.reduce_while(tools, :ok, fn tool, :ok ->
+      case check_tool_shape(tool) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp check_tool_shapes(_tools), do: :ok
+
+  defp check_tool_shape(%{"type" => "function", "function" => function} = tool)
+       when is_map(function) do
+    with :ok <- only_keys(tool, ~w(type function), "tools") do
+      check_function(function)
+    end
+  end
+
+  defp check_tool_shape(%{"type" => "function", "ref" => _} = tool),
+    do: only_keys(tool, ~w(type ref), "tools")
+
+  defp check_tool_shape(%{"type" => "function"} = tool) do
+    with :ok <- only_keys(tool, ~w(type name description parameters strict), "tools") do
+      check_function(Map.delete(tool, "type"))
+    end
+  end
+
+  defp check_tool_shape(_tool), do: :ok
+
+  defp check_function(function) do
+    with :ok <- only_keys(function, ~w(name description parameters strict), "tools"),
+         true <- nonempty_string?(function["name"]),
+         true <- is_nil(function["description"]) or is_binary(function["description"]),
+         true <- is_nil(function["strict"]) or is_boolean(function["strict"]) do
+      :ok
+    else
+      {:error, _, _, _} = error -> error
+      _ -> invalid("tools", "requires name, optional string description and boolean strict")
+    end
+  end
+
+  defp check_choice_shape(%{"type" => "function", "function" => function} = choice)
+       when is_map(function) do
+    with :ok <- only_keys(choice, ~w(type function), "tool_choice") do
+      only_keys(function, ~w(name), "tool_choice")
+    end
+  end
+
+  defp check_choice_shape(choice) when is_map(choice),
+    do: only_keys(choice, ~w(type name), "tool_choice")
+
+  defp check_choice_shape(_choice), do: :ok
+
+  defp only_keys(value, keys, field) do
+    if Enum.all?(Map.keys(value), &(&1 in keys)),
+      do: :ok,
+      else: invalid(field, "contains unsupported or mixed fields")
+  end
+
+  defp invalid(field, reason), do: {:error, :invalid_value, field, reason}
 
   defp check_instructions(%{"instructions" => instructions})
        when is_binary(instructions) or is_nil(instructions), do: :ok
@@ -111,6 +263,13 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
     do: {:error, :invalid_value, "store", "must be a boolean or null"}
 
   defp check_store(_), do: :ok
+
+  defp check_prompt_cache_key(params) do
+    case Map.get(params, "prompt_cache_key") do
+      value when is_binary(value) or is_nil(value) -> :ok
+      _ -> invalid("prompt_cache_key", "must be a string or null")
+    end
+  end
 
   defp check_stream(%{"stream" => stream}) when is_boolean(stream), do: :ok
 

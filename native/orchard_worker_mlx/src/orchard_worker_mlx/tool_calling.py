@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from orchard_worker_mlx.backends import BackendError
 from orchard_worker_mlx.partial_markers import split_partial_marker
@@ -238,7 +239,7 @@ def _finalize_active_tool_call(ctx: ToolCallingContext) -> None:
         ctx.pending_events.append(
             {
                 "kind": "tool_call_delta",
-                "tool_call_id": f"call_{index}",
+                "tool_call_id": f"call_{uuid4().hex}",
                 "delta": {
                     "index": index,
                     "type": "function",

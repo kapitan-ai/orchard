@@ -10,9 +10,9 @@
 
 ## 2. Implement canonical normalization and rendering
 
-- [ ] 2.1 In issue #326, add canonical effort normalization without changing omitted-request bytes, hashes, serialization, or generation-policy semantics.
-- [ ] 2.2 In issue #326, implement closed artifact/template renderer mappings and reject arbitrary provider-value or template-keyword input.
-- [ ] 2.3 Add static fixtures for the exact Qwen3.8 template mapping `low`, `medium`, and `xhigh` from canonical `low`, `medium`, and `high`, plus missing, unknown, contradictory, and incompatible mapping evidence.
+- [x] 2.1 In issue #326, add canonical effort normalization without changing omitted-request bytes, hashes, serialization, or generation-policy semantics.
+- [x] 2.2 In issue #326, implement closed artifact/template renderer mappings and reject arbitrary provider-value or template-keyword input. The renderer resolves only exact static registrations keyed by artifact digest, template digest, policy, projection, and effort; the production registry stays empty until an exact qualified tuple is accepted.
+- [x] 2.3 Add static fixtures for the exact Qwen3.8 template mapping `low`, `medium`, and `xhigh` from canonical `low`, `medium`, and `high`, plus missing, unknown, contradictory, and incompatible mapping evidence. The Qwen3.8 mapping is test-fixture-only evidence; it is not a registration and asserts no support claim. The delivered renderer-side evidence is a missing tier registration, an effort value outside the canonical vocabulary, effort supplied without `enabled`, a malformed or colliding `reasoning_effort_template_argument` registration that returns the established generic `internal_error` contract, and render metadata that cannot prove the applied tier; the incompatible loaded-worker proof and the stale and mixed-version binding evidence belong to task 3.2.
 
 ## 3. Implement negotiation and projection
 
@@ -21,7 +21,7 @@
 - [ ] 3.3 In issue #328, prove provider-neutral parser and final-only conformance for each qualified tier without changing the omitted legacy pipeline.
 - [ ] 3.4 In issues #327 and #328, gate a provider's tier advertisement on the exact renderer mapping plus provider-neutral protocol conformance only, adding no provider-owned semantic record, no manifest semantic assertion, and no read of a repository-owned qualification record.
 - [ ] 3.5 In issue #328, keep the fail-closed `500 api_error` and `internal_error` terminal conformance outcome when an advertised tier completes without valid non-empty reasoning content.
-- [ ] 3.6 In issue #326, fail an unprovable render-metadata result before dispatch through the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error.
+- [x] 3.6 In issue #326, fail an unprovable render-metadata result before dispatch through the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error.
 
 ## 4. Implement retention, retry, and public controls
 

@@ -14,10 +14,12 @@ conflict. `SPEC.md` wins until explicitly updated.
 
 ## Single-Repo Source Of Truth
 
-This repository is the active source of truth for Orchard product code, docs,
-plans, decisions, tests, and agent workflow. The deprecated/frozen
-`orchard-workbench` may be useful historical context, but active Orchard work
-must not require it. If old planning material becomes durable product guidance,
+This repository is the active source of truth for Orchard product code, normative
+contracts, accepted technical decisions, tests, and agent workflow. Linear holds
+private product planning, prioritization, ownership, and acceptance tracking;
+private decisions do not override `SPEC.md` or accepted repository contracts.
+The deprecated/frozen `orchard-workbench` may be useful historical context, but
+active Orchard work must not require it. If old planning material becomes durable product guidance,
 rewrite it as standalone Orchard documentation before committing it here.
 Transient RP exports may live in ignored local paths such as `/prompt-exports/`,
 but must not be committed.
@@ -30,7 +32,8 @@ or machine-specific paths.
 Investigation notes, smoke evidence documents, and slice plans are transient:
 do not commit them as standalone repo documents. Promote their durable
 conclusions into `SPEC.md`, docs, decisions, tests, or code, and record
-execution evidence in the relevant pull request or issue.
+approved sanitized execution summaries in the relevant public pull request or
+issue. Keep raw private evidence in private execution records.
 
 Durable conclusions belong in this repo: `SPEC.md`, `docs/**`,
 `docs/decisions/**`, tests, code, or approved OpenSpec materials.
@@ -94,7 +97,7 @@ Rules:
 - **Database**: Postgres (sole persistence + coordination layer)
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
 - **Internal comms**: BEAM-first Runtime Endpoints for admitted first-party services; certificate-authenticated gRPC control and compatibility paths
-- **Packaging**: approved macOS native distribution profile using a signed `Orchard.app` inside a DMG plus launchd; native PKG is not a supported current distribution channel
+- **Packaging**: approved macOS native distribution profile using a signed `Orchard.app` inside a DMG plus launchd, currently paused under `SPEC.md` §11.0 so source development is the active installation path; native PKG is not a supported current distribution channel
 - **Clustering**: Postgres advisory locks + authenticated Runtime Endpoint observations (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
@@ -111,6 +114,7 @@ Rules:
 | M6 | Security hardening and air-gap |
 | M7 | Upgrade safety and Active/Standby controller |
 | M8 | Portable Orchard control-plane core and Linux Controller profile |
+| M9 | Experimental Linux Node qualification (accepted experimental candidate; not a support claim) |
 
 ## Conventions
 
@@ -159,6 +163,7 @@ Recommended targets:
 - `make test` — run the default test suite.
 - `make cover` — run the default test suite with coverage.
 - `make macos-native-test-helpers` — stage macOS test helpers for direct `mix test` runs (Darwin hosts only).
+- `make linux-native-test-helpers` — stage the Linux Transport publication helpers for direct `mix test` runs (Linux hosts only).
 - `make check-elixir` — run the full Elixir quality workflow.
 
 `make dev` must remain a foreground/blocking command equivalent to
@@ -211,13 +216,14 @@ Run these in order for Elixir/OTP changes from the umbrella root:
 2. `mise exec -- mix compile --warnings-as-errors`
 3. `mise exec -- mix credo --strict`
 4. `mise exec -- mix dialyzer`
-5. `make macos-native-test-helpers`
+5. `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux)
 6. `mise exec -- mix test`
 7. `mise exec -- mix test --cover`
 
 `make check-elixir` runs the same workflow.
-On Darwin hosts, `make test` and `make cover` stage the macOS test helpers and run every test; on non-Darwin hosts they skip helper staging and exclude tests tagged `macos`.
-Step 5 is required only before a bare `mix test` invocation on Darwin: retained macOS terminal-custody and launchd lifecycle tests resolve their helpers from the `orchard_cli` application `priv` directory, and ordinary portable `mix compile` no longer emits them.
+On Darwin hosts, `make test` and `make cover` stage the macOS test helpers and run every test; on Linux hosts they stage the Linux Transport publication helpers and exclude tests tagged `macos`.
+Step 5 is required before a bare `mix test` invocation: retained macOS terminal-custody, launchd lifecycle, and Transport publication tests resolve their helpers from the `orchard_cli` application `priv` directory, and ordinary portable `mix compile` never emits them.
+`make macos-native-test-helpers` refuses on non-Darwin hosts, so Linux contributors use the Linux target for step 5.
 
 Rules:
 
@@ -282,11 +288,12 @@ Run these from the umbrella root:
 4. `swift test --package-path packaging/app`
 5. `swift test --package-path packaging/app --enable-code-coverage`
 6. `scripts/test-app-service-lifecycle.sh`
-7. `scripts/test-build-app.sh`
-8. `scripts/test-app-signing.sh`
-9. `scripts/test-build-dmg.sh`
+7. `scripts/test-distribution-control.sh`
 
-Run `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` only for the credential-free local Amore assembly smoke.
+While `packaging/distribution-control` is paused (`SPEC.md` §11.0), do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`: they assemble an app bundle and a disk image, and the guarded entrypoints they call refuse with exit status `78`.
+CI skips that assembly lane while paused.
+Do not edit the control, remove a guard, or add an override to get around the pause; resuming needs a reviewed control change approved by the accountable product owner.
+When distribution is resumed, run those three scripts after step 7, and run `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` only for the credential-free local Amore assembly smoke.
 Developer ID signing, notarization, stapling, publication, and system-root lifecycle mutations remain explicit credential or authorization gates.
 
 ### Coverage expectations
@@ -339,13 +346,18 @@ the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; skips helper staging and excludes the `macos` tag on non-Darwin hosts; uses its own DB and defaults to port 15071 via `test.exs`, deliberately below the Linux ephemeral range so the kernel cannot hand the listener port to an unrelated socket; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly on Darwin.
+- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; stages the Linux Transport publication helpers and excludes the `macos` tag on Linux hosts; uses its own DB and defaults to port 15071 via `test.exs`, deliberately below the Linux ephemeral range so the kernel cannot hand the listener port to an unrelated socket; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux) first when invoking `mise exec -- mix test` directly.
 
 See `docs/local-dev.md` for full environment setup and configuration.
 
 ## macOS Distribution
 
 The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
+That distribution is paused until Najib explicitly lifts the pause: `packaging/distribution-control` is committed as `state=paused`, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78`, and CI skips the Orchard.app and DMG assembly lane.
+Source development (`make dev`, `docs/local-dev.md`) is the current active installation path.
+Do not build, sign, notarize, staple, or publish an `Orchard.app` or DMG, even for validation, do not perform credentialed Developer ID payload signing, and do not describe native app or DMG distribution as currently available.
+Credential-free payload staging and payload signing contract tests remain available.
+The packaging code and dormant tests stay in the repository; see `packaging/dmg/README.md` for the re-enable procedure.
 Do not describe Orchard as having a supported public binary, and do not treat source availability as a licensing change.
 `SPEC.md` §11 owns the source-availability contract and `packaging/dmg/README.md` owns the release gates.
 Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current build and verification guidance.
@@ -380,17 +392,25 @@ security posture, operator documentation, and validation gates.
 | openspec/README.md | Initialized OpenSpec change workflow |
 | mix.exs | Umbrella project root |
 | docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |
-| docs/agents/ | Per-repo config for Matt Pocock engineering skills (issue tracker, triage labels, domain docs) |
+| docs/agents/ | GitHub triage labels, domain-doc guidance, and retired tracker transition notice |
 
-## Agent skills
+## Agent Coordination
 
-### Issue tracker
+### Tracking and publication
 
-Issues live in GitHub Issues for `kapitan-ai/orchard` (via `gh`). See `docs/agents/issue-tracker.md`.
+Linear is the private product-management system of record. GitHub is the public
+intake, collaboration, source-review, and release surface. Follow
+[`docs/process.md`](docs/process.md#tracking-and-publication) for private capture,
+minimal import of actionable public reports, and explicit public-ready decisions
+by the accountable product owner. Use `gh` for authorized GitHub operations, not
+as a fallback when the private tracker is unavailable. Tracker state and tool
+instructions do not grant publication, merge, release, or deployment authority.
 
 ### Triage labels
 
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+GitHub triage vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`) is documented in `docs/agents/triage-labels.md`.
+These labels do not define Linear states or authorize agent execution.
 
 ### Domain docs
 
