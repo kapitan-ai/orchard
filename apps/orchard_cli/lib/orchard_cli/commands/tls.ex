@@ -18,6 +18,16 @@ defmodule OrchardCLI.Commands.TLS do
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args), do: run(args, default_runtime())
 
+  @doc """
+  Runs a TLS command whose temporary generation directory is created inside
+  `staging_parent`, an existing owner-only directory on the same filesystem as the output
+  directory, instead of inside the output directory.
+  """
+  @spec run_in_private_stage([String.t()], Path.t()) :: OrchardCLI.command_result()
+  def run_in_private_stage(args, staging_parent) do
+    run(args, Map.put(default_runtime(), :staging_parent, staging_parent))
+  end
+
   @doc false
   @spec run([String.t()], map()) :: OrchardCLI.command_result()
   def run(args, runtime) do
@@ -397,7 +407,7 @@ defmodule OrchardCLI.Commands.TLS do
       server_days: server_days
     } = config
 
-    staging_dir = create_staging_dir(output_dir)
+    staging_dir = create_staging_dir(output_dir, runtime)
 
     try do
       ca_key = Path.join(staging_dir, "ca.key")
@@ -771,14 +781,14 @@ defmodule OrchardCLI.Commands.TLS do
     end
   end
 
-  # Staging dir is created *within* output_dir so that File.rename!/2 is a
-  # same-filesystem rename (atomic on POSIX).  Moving the staging dir outside
-  # output_dir would break this atomicity guarantee.
-  defp create_staging_dir(output_dir) do
+  # Staging dir is created within output_dir, or within a caller-supplied owner-only
+  # staging parent on the same filesystem, so that File.rename!/2 is a same-filesystem
+  # rename (atomic on POSIX).
+  defp create_staging_dir(output_dir, runtime) do
     File.mkdir_p!(output_dir)
     File.chmod!(output_dir, 0o750)
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-    staging_dir = Path.join(output_dir, ".staging-#{suffix}")
+    staging_dir = Path.join(Map.get(runtime, :staging_parent, output_dir), ".staging-#{suffix}")
     File.mkdir_p!(staging_dir)
     File.chmod!(staging_dir, 0o700)
     staging_dir

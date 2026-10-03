@@ -5,7 +5,7 @@ defmodule OrchardCLI.Commands.Transport do
 
   alias Orchard.EndpointMetadata
   alias OrchardCLI.Commands.{LifecycleSupport, TLS}
-  alias OrchardCLI.ShellEnv
+  alias OrchardCLI.{ShellEnv, TransportPublication}
 
   @default_support_root "/Library/Application Support/Orchard"
   @default_https_port 8443
@@ -100,20 +100,98 @@ defmodule OrchardCLI.Commands.Transport do
   defp enable_for_role(role, config, runtime) when role in [:all, :controller] do
     with :ok <- require_root(runtime),
          :ok <- require_controller_env(config),
-         :ok <- reject_tls_overrides(config),
-         {:ok, _tls_message} <- run_tls_init(config, runtime),
-         :ok <- prepare_public_dir(config, runtime),
-         {:ok, ca_certfile, warnings} <- publish_public_ca(config, runtime),
-         {:ok, endpoint_snapshot} <- snapshot_endpoint(config),
-         :ok <- write_endpoint_metadata(config, ca_certfile, runtime),
-         :ok <- upsert_controller_env(config, runtime, endpoint_snapshot),
-         {:ok, restart_line} <- restart_controller_if_loaded(role, runtime) do
-      {:ok, success_message(config, ca_certfile, warnings, restart_line)}
-    else
-      {:error, _message, _code} = error -> error
-      {:error, message} -> {:error, "Error: #{message}", 1}
+         {:ok, publication} <- prepare_publication(config, runtime) do
+      config
+      |> publish_and_configure(publication, runtime)
+      |> finish_publication(publication)
+      |> then(&restart_after_publication(&1, role, config, runtime))
+    end
+    |> format_error()
+  end
+
+  defp format_error({:error, _message, _code} = error), do: error
+  defp format_error({:error, message}), do: {:error, "Error: #{message}", 1}
+  defp format_error(result), do: result
+
+  defp prepare_publication(%{support_root: support_root}, runtime) do
+    opts = Map.get(runtime, :publication_opts, [])
+
+    case TransportPublication.prepare(support_root, opts) do
+      {:ok, publication} -> {:ok, publication}
+      {:error, reason} -> {:error, TransportPublication.format_error(reason)}
     end
   end
+
+  defp publish_and_configure(config, publication, runtime) do
+    with :ok <- reject_tls_overrides(config),
+         {:ok, _tls_message} <- run_tls_init(config, publication, runtime),
+         {:ok, ca_bytes, ca_certfile, warnings} <- load_public_ca(config, runtime),
+         {:ok, endpoint_bytes} <- encode_endpoint_metadata(config, ca_certfile, runtime) do
+      case TransportPublication.publish(publication, ca_bytes, endpoint_bytes) do
+        {:ok, stage_warnings} ->
+          configure(config, runtime, ca_certfile, warnings ++ stage_warnings)
+
+        {:error, reason} ->
+          {:ended, {:error, TransportPublication.format_error(reason)}}
+      end
+    else
+      error -> {:abort, error}
+    end
+  end
+
+  defp configure(config, runtime, ca_certfile, warnings) do
+    case upsert_controller_env(config, runtime) do
+      :ok -> {:published, ca_certfile, warnings}
+      {:error, message} -> {:rollback, message}
+    end
+  end
+
+  defp finish_publication({:published, ca_certfile, warnings}, publication) do
+    case TransportPublication.commit(publication) do
+      :ok ->
+        {:ok, ca_certfile, warnings}
+
+      {:error, reason} ->
+        {:error,
+         "public CA and endpoint metadata were published under #{publication.public_dir} " <>
+           "and controller.env was updated, but the publication helper did not confirm " <>
+           "COMMIT: #{TransportPublication.format_error(reason)}\n" <>
+           "Controller restart was NOT attempted. Inspect #{publication.public_dir} and " <>
+           "restart the controller once publication is verified."}
+    end
+  end
+
+  defp finish_publication({:rollback, message}, publication) do
+    with {:ok, stage_warnings} <- TransportPublication.rollback(publication),
+         :ok <- TransportPublication.commit(publication) do
+      {:error, Enum.join([message | stage_warnings], "\n")}
+    else
+      {:error, reason} ->
+        {:error, "#{message}; #{TransportPublication.format_error(reason)}"}
+    end
+  end
+
+  defp finish_publication({:ended, error}, _publication), do: error
+
+  defp finish_publication({:abort, error}, publication) do
+    case TransportPublication.abort(publication) do
+      :ok -> error
+      {:error, reason} -> append_abort_failure(error, TransportPublication.format_error(reason))
+    end
+  end
+
+  defp append_abort_failure({:error, message, code}, failure),
+    do: {:error, "#{message}\n#{failure}", code}
+
+  defp append_abort_failure({:error, message}, failure), do: {:error, "#{message}; #{failure}"}
+
+  defp restart_after_publication({:ok, ca_certfile, warnings}, role, config, runtime) do
+    with {:ok, restart_line} <- restart_controller_if_loaded(role, runtime) do
+      {:ok, success_message(config, ca_certfile, warnings, restart_line)}
+    end
+  end
+
+  defp restart_after_publication(error, _role, _config, _runtime), do: error
 
   defp require_root(runtime) do
     uid = runtime |> Map.get(:uid, &default_uid/0) |> then(& &1.())
@@ -140,7 +218,7 @@ defmodule OrchardCLI.Commands.Transport do
     end
   end
 
-  defp run_tls_init(%{host: host, support_root: support_root} = config, runtime) do
+  defp run_tls_init(%{host: host, support_root: support_root} = config, publication, runtime) do
     case existing_generated_tls(config) do
       {:ok, :reusable} ->
         {:ok, "existing generated local-CA TLS material reused"}
@@ -149,12 +227,12 @@ defmodule OrchardCLI.Commands.Transport do
         {:error, message, 1}
 
       :missing ->
-        tls_init = Map.get(runtime, :tls_init, &default_tls_init/2)
-        tls_init.(host, support_root)
+        tls_init = Map.get(runtime, :tls_init, &default_tls_init/3)
+        tls_init.(host, support_root, publication.stage_dir)
     end
   end
 
-  defp default_tls_init(host, support_root) do
+  defp default_tls_init(host, support_root, stage_dir) do
     args = ["init", "--no-trust", "--output-dir", Path.join([support_root, "config", "tls"])]
 
     args =
@@ -164,7 +242,7 @@ defmodule OrchardCLI.Commands.Transport do
         args ++ ["--host", host]
       end
 
-    TLS.run(args)
+    TLS.run_in_private_stage(args, stage_dir)
   end
 
   defp reject_tls_overrides(%{controller_env_path: path}) do
@@ -205,11 +283,7 @@ defmodule OrchardCLI.Commands.Transport do
     end
   end
 
-  defp upsert_controller_env(
-         %{controller_env_path: path, host: host, port: port} = config,
-         runtime,
-         snapshot
-       ) do
+  defp upsert_controller_env(%{controller_env_path: path, host: host, port: port}, runtime) do
     assignments =
       Enum.map(@transport_assignments, fn
         {key, :host} -> {key, host}
@@ -218,76 +292,28 @@ defmodule OrchardCLI.Commands.Transport do
       end)
 
     upsert = Map.get(runtime, :shell_env_upsert, &ShellEnv.upsert/2)
-
-    case upsert.(path, assignments) do
-      :ok ->
-        :ok
-
-      {:error, message} ->
-        restore_endpoint(config, snapshot)
-        {:error, message}
-    end
+    upsert.(path, assignments)
   end
 
-  defp prepare_public_dir(%{support_root: support_root, public_ca_path: public_ca_path}, runtime) do
-    public_dir = Path.dirname(public_ca_path)
-    expected_uid = Map.get(runtime, :owner_uid, current_uid())
-
-    with :ok <- File.mkdir_p(public_dir),
-         :ok <- verify_owner(support_root, expected_uid, "support root"),
-         :ok <- verify_safe_public_dir(public_dir, expected_uid),
-         :ok <- File.chmod(support_root, 0o711) do
-      File.chmod(public_dir, 0o755)
-    end
-  end
-
-  defp verify_owner(path, expected_uid, label) do
-    case File.stat(path) do
-      {:ok, %{uid: ^expected_uid}} -> :ok
-      {:ok, _stat} -> {:error, "#{label} is not owned by the expected Orchard service owner"}
-      {:error, reason} -> {:error, :file.format_error(reason)}
-    end
-  end
-
-  defp verify_safe_public_dir(public_dir, expected_uid) do
-    case File.stat(public_dir) do
-      {:ok, %{type: :directory, uid: ^expected_uid, mode: mode}} ->
-        if Bitwise.band(mode, 0o022) == 0 do
-          :ok
-        else
-          {:error, "public endpoint directory is group/world writable"}
-        end
-
-      {:ok, %{type: :directory}} ->
-        {:error, "public endpoint directory is not owned by the expected Orchard service owner"}
-
-      {:ok, _stat} ->
-        {:error, "public endpoint path is not a directory"}
-
-      {:error, reason} ->
-        {:error, :file.format_error(reason)}
-    end
-  end
-
-  defp publish_public_ca(%{tls_dir: tls_dir, public_ca_path: public_ca_path}, runtime) do
+  defp load_public_ca(%{tls_dir: tls_dir, public_ca_path: public_ca_path}, runtime) do
     source_ca = Path.join(tls_dir, "ca.crt")
     metadata_path = Path.join(tls_dir, ".orchard-tls-meta.json")
-    copy_public_ca = Map.get(runtime, :copy_public_ca, &copy_public_ca/2)
+    read_public_ca = Map.get(runtime, :read_public_ca, &read_public_ca/1)
 
     cond do
       not File.regular?(source_ca) ->
-        {:ok, nil, []}
+        {:ok, nil, nil, []}
 
       not generated_local_ca_metadata?(metadata_path) ->
-        {:ok, nil, []}
+        {:ok, nil, nil, []}
 
       true ->
-        case copy_public_ca.(source_ca, public_ca_path) do
-          {:ok, path} ->
-            {:ok, path, []}
+        case read_public_ca.(source_ca) do
+          {:ok, bytes} ->
+            {:ok, bytes, public_ca_path, []}
 
           {:error, reason} ->
-            {:ok, nil,
+            {:ok, nil, nil,
              [
                "Warning: local CA certificate could not be published for non-root status: #{reason}"
              ]}
@@ -295,21 +321,10 @@ defmodule OrchardCLI.Commands.Transport do
     end
   end
 
-  defp copy_public_ca(source_ca, public_ca_path) do
-    public_dir = Path.dirname(public_ca_path)
-    tmp_path = Path.join(public_dir, ".ca.crt.#{System.unique_integer([:positive])}.tmp")
-
-    with :ok <- File.mkdir_p(public_dir),
-         :ok <- File.chmod(public_dir, 0o755),
-         :ok <- File.cp(source_ca, tmp_path),
-         :ok <- File.chmod(tmp_path, 0o644),
-         :ok <- File.rename(tmp_path, public_ca_path),
-         :ok <- File.chmod(public_ca_path, 0o644) do
-      {:ok, public_ca_path}
-    else
-      {:error, reason} ->
-        File.rm(tmp_path)
-        {:error, :file.format_error(reason)}
+  defp read_public_ca(source_ca) do
+    case File.read(source_ca) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> {:error, :file.format_error(reason)}
     end
   end
 
@@ -367,26 +382,7 @@ defmodule OrchardCLI.Commands.Transport do
     |> Enum.any?(&(&1 == host))
   end
 
-  defp snapshot_endpoint(%{endpoint_path: path}) do
-    case File.read(path) do
-      {:ok, contents} -> {:ok, {:existing, contents}}
-      {:error, :enoent} -> {:ok, :missing}
-      {:error, reason} -> {:error, :file.format_error(reason)}
-    end
-  end
-
-  defp restore_endpoint(%{endpoint_path: path}, {:existing, contents}) do
-    File.write(path, contents)
-    File.chmod(path, 0o644)
-    :ok
-  end
-
-  defp restore_endpoint(%{endpoint_path: path}, :missing) do
-    File.rm(path)
-    :ok
-  end
-
-  defp write_endpoint_metadata(config, ca_certfile, runtime) do
+  defp encode_endpoint_metadata(config, ca_certfile, runtime) do
     metadata = %{
       transport_mode: "direct_https",
       public_host: config.host,
@@ -397,13 +393,9 @@ defmodule OrchardCLI.Commands.Transport do
       generated_by: "orchardctl transport enable-local-https"
     }
 
-    case EndpointMetadata.write(metadata,
-           path: config.endpoint_path,
-           now: Map.get(runtime, :now, &DateTime.utc_now/0)
-         ) do
-      :ok -> :ok
+    case EndpointMetadata.encode(metadata, now: Map.get(runtime, :now, &DateTime.utc_now/0)) do
+      {:ok, bytes} -> {:ok, bytes}
       {:error, {:invalid, message}} -> {:error, message}
-      {:error, reason} when is_atom(reason) -> {:error, :file.format_error(reason)}
     end
   end
 
@@ -505,13 +497,6 @@ defmodule OrchardCLI.Commands.Transport do
     Map.get(runtime, :support_root) ||
       System.get_env("ORCHARD_SUPPORT_ROOT") ||
       @default_support_root
-  end
-
-  defp current_uid do
-    case System.cmd("id", ["-u"], stderr_to_stdout: true) do
-      {output, 0} -> output |> String.trim() |> String.to_integer()
-      _other -> 0
-    end
   end
 
   defp default_runtime, do: %{}
