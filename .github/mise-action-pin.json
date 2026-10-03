@@ -1,0 +1,13 @@
+{
+  "sha": "c2a87611a18de5b3828c5652fe268e992400cb5c",
+  "requiredWorkflow": "required-validation.yml",
+  "requiredJobs": [
+    "linux-portable",
+    "provider-conformance",
+    "macos-host",
+    "mlx-validation",
+    "packaging-validation",
+    "app-distribution-validation",
+    "openspec-validation"
+  ]
+}

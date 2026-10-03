@@ -167,6 +167,12 @@ assert_case root-toolchain \
 assert_case workflow \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   .github/workflows/required-validation.yml
+assert_case mise-action-pin-authority \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  .github/mise-action-pin.json
+assert_case mise-action-pin-check \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  scripts/ci/check-mise-action-pins.mjs scripts/ci/test-mise-action-pins.mjs
 
 # Retained macOS-tagged tests exercise application source across module and
 # application boundaries, so every first-party application source, test, and

@@ -37,6 +37,18 @@ Required CI bootstraps mise `2026.9.2` through explicit `version` inputs in `.gi
 This bootstrap pin is separate from the runtime and developer-tool pins in `mise.toml`.
 Update every mise-action invocation together only after the matching platform release assets and signed checksums are published.
 
+The approved immutable action SHA and required bootstrap sites live in
+[`../.github/mise-action-pin.json`](../.github/mise-action-pin.json). Update that
+record only as part of a reviewed pin change with upstream provenance; workflow
+invocations are consumers, never the authority for their own consistency check.
+`mise exec -- npm run check:mise-action-pins` parses workflow YAML and checks all
+actual mise-action steps, including dormant jobs, against that record. It also
+requires one invocation in each retained bootstrap job. The OpenSpec validation
+lane runs this check and `mise exec -- npm run test:mise-action-pins` after the
+existing root npm install. Its failure fails the existing required aggregate.
+The check uses the direct pinned `yaml` dependency already present at the same
+version in the root lockfile; comments and shell strings are not invocations.
+
 The pinned toolchain currently covers:
 
 | Tool | Pin | Purpose |
