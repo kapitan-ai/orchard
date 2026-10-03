@@ -126,7 +126,7 @@ jobs:
           scripts/ci/linux-portable-validation-report.sh lockfiles "$REPORT_DIR" before
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -296,7 +296,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -343,7 +343,7 @@ jobs:
           pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -391,7 +391,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -436,7 +436,7 @@ jobs:
           pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -486,7 +486,7 @@ jobs:
       # verify-app-signing.sh runs the payload closure check through
       # `mise exec`, so the pinned toolchain is required here.
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: false
@@ -510,7 +510,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned toolchain
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.2
           cache: true
