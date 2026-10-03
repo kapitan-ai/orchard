@@ -42,13 +42,21 @@ validate_required "Provider-neutral conformance" "${CONFORMANCE_REQUIRED:?}"
 validate_required "macOS host validation" "${MACOS_REQUIRED:?}"
 validate_required "MLX validation" "${MLX_REQUIRED:?}"
 validate_required "Packaging validation" "${PACKAGING_REQUIRED:?}"
+validate_required "Orchard.app and DMG assembly validation" "${APP_DISTRIBUTION_REQUIRED:?}"
 validate_required "OpenSpec validation" "${OPENSPEC_REQUIRED:?}"
+
+# The assembly lane is a packaging consumer; it is never applicable alone.
+if [[ "$APP_DISTRIBUTION_REQUIRED" == "true" && "$PACKAGING_REQUIRED" != "true" ]]; then
+  printf 'Orchard.app and DMG assembly validation was required without packaging validation\n' >&2
+  exit 1
+fi
 
 require_result "Linux portable-core validation" "${PORTABLE_REQUIRED:?}" "${PORTABLE_RESULT:?}"
 require_result "Provider-neutral conformance" "${CONFORMANCE_REQUIRED:?}" "${CONFORMANCE_RESULT:?}"
 require_result "macOS host validation" "${MACOS_REQUIRED:?}" "${MACOS_RESULT:?}"
 require_result "MLX validation" "${MLX_REQUIRED:?}" "${MLX_RESULT:?}"
 require_result "Packaging validation" "${PACKAGING_REQUIRED:?}" "${PACKAGING_RESULT:?}"
+require_result "Orchard.app and DMG assembly validation" "${APP_DISTRIBUTION_REQUIRED:?}" "${APP_DISTRIBUTION_RESULT:?}"
 require_result "OpenSpec validation" "${OPENSPEC_REQUIRED:?}" "${OPENSPEC_RESULT:?}"
 
 printf 'All applicable Orchard validation lanes passed and all other lanes were skipped.\n'
