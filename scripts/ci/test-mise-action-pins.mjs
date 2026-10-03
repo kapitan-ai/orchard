@@ -14,6 +14,16 @@ const workflow = readFileSync(join(root, '.github/workflows/required-validation.
 const approved = `jdx/mise-action@${policy.sha}`;
 const stale = `jdx/mise-action@${'a'.repeat(40)}`;
 
+function formatInvocations(format) {
+  let replacements = 0;
+  const text = workflow.replace(new RegExp(`uses: ${approved}(?:[ \\t]*#[^\\n]*)?`, 'g'), () => {
+    replacements++;
+    return format(approved);
+  });
+  assert.equal(replacements, 7, 'format fixture must change all seven invocations');
+  return text;
+}
+
 function fixture(t, text = workflow, record = policy) {
   const dir = mkdtempSync(join(tmpdir(), 'orchard-mise-pin-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -31,7 +41,9 @@ function replaceInvocation(text, index, replacement) {
 test('current repository has seven approved invocations', () => assert.equal(checkPins(root), 7));
 
 test('stale seventh invocation fails while the first six remain approved', t => {
-  assert.throws(() => checkPins(fixture(t, replaceInvocation(workflow, 7, stale))), /approved immutable SHA/);
+  assert.throws(() => checkPins(fixture(t, replaceInvocation(workflow, 7, stale))), {
+    message: 'required-validation.yml: openspec-validation: mise-action must use the approved immutable SHA'
+  });
 });
 
 test('missing seventh pin is rejected', t => {
@@ -52,12 +64,12 @@ test('uniform stale pins cannot become their own authority', t => {
 });
 
 test('quoted uses keys/values and comments are parsed', t => {
-  const text = workflow.replaceAll(`uses: ${approved} # v4.3.0`, `'uses': "${approved}" # ${stale}`);
+  const text = formatInvocations(value => `'uses': "${value}" # ${stale}`);
   assert.equal(checkPins(fixture(t, text)), 7);
 });
 
 test('folded YAML scalar is parsed as an invocation', t => {
-  const text = workflow.replaceAll(`uses: ${approved} # v4.3.0`, `uses: >- # folded invocation\n          ${approved}`);
+  const text = formatInvocations(value => `uses: >- # folded invocation\n          ${value}`);
   assert.equal(checkPins(fixture(t, text)), 7);
 });
 
@@ -78,6 +90,18 @@ test('additional workflow invocation must use the approved SHA', t => {
   const dir = fixture(t);
   writeFileSync(join(dir, '.github/workflows/extra.yaml'), `jobs:\n extra:\n  steps: [{uses: '${stale}'}]\n`);
   assert.throws(() => checkPins(dir), /extra.yaml: extra/);
+});
+
+test('quoted whitespace cannot hide a stale invocation in a new workflow', t => {
+  const dir = fixture(t);
+  writeFileSync(join(dir, '.github/workflows/extra.yaml'), `jobs:\n extra:\n  steps: [{uses: ' ${stale} '} ]\n`);
+  assert.throws(() => checkPins(dir), /extra.yaml: extra/);
+});
+
+test('repository subdirectory references cannot evade the root action pin', t => {
+  const dir = fixture(t);
+  writeFileSync(join(dir, '.github/workflows/extra.yaml'), `jobs:\n extra:\n  steps: [{uses: 'jdx/mise-action/subdir@${policy.sha}'}]\n`);
+  assert.throws(() => checkPins(dir), /approved immutable SHA/);
 });
 
 test('duplicate retained bootstrap is rejected', t => {
@@ -149,4 +173,5 @@ test('existing OpenSpec lane carries both pin gates and preserves aggregate depe
   assert.match(steps[check].run, /mise exec -- npm run test:mise-action-pins/);
   assert.equal(steps[check]['continue-on-error'], undefined);
   assert.ok(jobs['required-validation-gate'].needs.includes('openspec-validation'));
+  assert.equal(jobs['openspec-validation'].if, "needs.changes.outputs.portable == 'true' || needs.changes.outputs.conformance == 'true'");
 });

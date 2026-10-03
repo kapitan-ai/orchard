@@ -4,7 +4,13 @@ Use this runbook for a scoped contributor or agent delivery. The participation,
 publication and merge authority in [CONTRIBUTING.md](../CONTRIBUTING.md) and
 the artifact and review gates in [process.md](process.md) still apply. A ready
 PR, successful automated review or green CI does not grant merge permission.
-Najib's explicit approval is required before an agent merges.
+Only Najib merges: directly, or through an agent acting through his account with
+explicit approval for the exact head. Other coordinators prepare and verify the
+delivery; contributor access does not grant merge authority.
+
+Scale evidence to risk. A trivial prose correction may use the direct-PR path
+with the exact head, validation commands/results and CI link. Implementation or
+contract changes use the independent review and readiness packet below.
 
 ## Scope and ownership
 
@@ -59,8 +65,9 @@ authority. New commits invalidate the packet's exact-head claim.
 
 ## Approved sequential integration
 
-Only after explicit merge approval, one coordinator performs protected merges
-in dependency order, one at a time. Recheck the current head/base, required
+Only after explicit merge approval, one coordinator prepares the dependency
+order and Najib performs protected merges directly or through his approved
+agent, one at a time. Recheck the current head/base, required
 checks, review conversations and approval scope immediately before each merge.
 Use normal protection and an exact-head guard; never bypass protection or
 change it to make a delivery pass.

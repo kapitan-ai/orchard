@@ -31,12 +31,14 @@ export function checkPins(root = repoRoot) {
       // Only action invocations are inspected; comments, run strings and env
       // values mentioning mise-action have no bearing on the approved pin.
       for (const step of job?.steps ?? []) {
-        if (typeof step?.uses !== 'string' || !/^jdx\/mise-action(?:@|$)/i.test(step.uses)) continue;
+        if (typeof step?.uses !== 'string') continue;
+        const uses = step.uses.trim();
+        if (!/^jdx\/mise-action(?:@|\/|$)/i.test(uses)) continue;
         count++;
         if (file === policy.requiredWorkflow && requiredCounts.has(jobName)) {
           requiredCounts.set(jobName, requiredCounts.get(jobName) + 1);
         }
-        if (step.uses !== `jdx/mise-action@${policy.sha}`) {
+        if (uses !== `jdx/mise-action@${policy.sha}`) {
           errors.push(`${file}: ${jobName}: mise-action must use the approved immutable SHA`);
         }
       }
