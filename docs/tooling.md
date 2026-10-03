@@ -151,6 +151,7 @@ scripts/test-transport-publication-second-uid.sh
 It builds the helpers into a disposable tree, pauses the test helper inside the private stage under child umasks `0022`, `0077`, `0002`, and `0000`, and proves the `nobody` account cannot read, list, or write the stage but can read the published `ca.crt` and `endpoint.json`.
 It also exercises real ACL refusal, foreign-owned ancestry refusal, root-owned custody, and, on Linux, the production helper's tmpfs refusal.
 It requires passwordless `sudo -n` and an existing `nobody` account, changes no sudoers, users, mounts, or grants, and fails rather than skipping when either is missing.
+Before it, the Linux portable and macOS host CI lanes run the focused Transport, TLS, and publication tests with `--include integration`, so Transport-invoked TLS generation runs real OpenSSL inside the private stage; those tests pass `--no-trust` or stop before any trust-store change.
 On Linux it also needs `setfacl` from the `acl` package.
 Fixtures live under the canonical temporary directory (`/private/tmp` on Darwin), never under the home directory or checkout, because the helper refuses ACL-bearing or symlinked ancestry.
 

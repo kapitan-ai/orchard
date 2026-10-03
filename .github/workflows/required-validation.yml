@@ -232,6 +232,13 @@ jobs:
           ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
 
+      - name: Test Transport private-stage publication with real TLS generation
+        run: >-
+          mise exec -- mix test --include integration --exclude macos
+          apps/orchard_cli/test/orchard_cli/transport_publication_test.exs
+          apps/orchard_cli/test/orchard_cli/commands/transport_test.exs
+          apps/orchard_cli/test/orchard_cli/commands/tls_test.exs
+
       - name: Validate Transport publication against a second UID
         run: scripts/test-transport-publication-second-uid.sh
 
@@ -365,9 +372,10 @@ jobs:
 
       - name: Test Transport private-stage publication
         run: |
-          mise exec -- mix test \
+          mise exec -- mix test --include integration \
             apps/orchard_cli/test/orchard_cli/transport_publication_test.exs \
-            apps/orchard_cli/test/orchard_cli/commands/transport_test.exs
+            apps/orchard_cli/test/orchard_cli/commands/transport_test.exs \
+            apps/orchard_cli/test/orchard_cli/commands/tls_test.exs
           scripts/test-transport-publication-second-uid.sh
 
   mlx-validation:
