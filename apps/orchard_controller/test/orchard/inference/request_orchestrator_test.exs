@@ -701,7 +701,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
 
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
-  alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.{DispatchCapacityFixtures, DispatchDeadline}
 
   def connect(target), do: {:ok, target}
 
@@ -784,20 +784,31 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
       send(test_pid, {:runtime_execute_called, request.request_id})
     end
 
-    events = next_execute_events()
+    case Process.get({__MODULE__, :timeout_fixture}) do
+      nil ->
+        emit_events(owner, stream_ref, request.request_id, next_execute_events())
+        send(owner, {:runtime_endpoint_done, stream_ref, :ok})
 
-    send(
-      owner,
-      {:runtime_endpoint_event, stream_ref, request.request_id, InferenceEvent.accepted(0)}
-    )
-
-    Enum.each(events, fn event ->
-      send(owner, {:runtime_endpoint_event, stream_ref, request.request_id, event})
-    end)
-
-    send(owner, {:runtime_endpoint_done, stream_ref, :ok})
+      %{before_cancel: before_cancel, trigger: trigger} = fixture ->
+        Process.put({__MODULE__, :cancel_drain}, {owner, stream_ref, request.request_id, fixture})
+        emit_events(owner, stream_ref, request.request_id, before_cancel)
+        fire_cancel_trigger(trigger)
+    end
 
     {:ok, stream_ref}
+  end
+
+  # The pre-cancel events are already queued, so the deadline cannot beat them.
+  defp fire_cancel_trigger({:deadline, session}), do: DispatchDeadline.fire(session)
+  defp fire_cancel_trigger({:caller_exit, caller}), do: send(caller, :exit)
+  defp fire_cancel_trigger(:event_handler), do: :ok
+
+  defp emit_events(owner, stream_ref, request_id, events) do
+    send(owner, {:runtime_endpoint_event, stream_ref, request_id, InferenceEvent.accepted(0)})
+
+    Enum.each(events, fn event ->
+      send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
+    end)
   end
 
   defp next_execute_events do
@@ -814,7 +825,21 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
     end
   end
 
-  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts) do
+    case Process.delete({__MODULE__, :cancel_drain}) do
+      {owner, stream_ref, request_id, %{during_drain: during_drain, done_result: done_result}} ->
+        Enum.each(during_drain, fn event ->
+          send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
+        end)
+
+        send(owner, {:runtime_endpoint_done, stream_ref, done_result})
+
+      nil ->
+        :ok
+    end
+
+    :ok
+  end
 
   def disconnect(_channel), do: :ok
 
@@ -1156,6 +1181,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
   alias Orchard.RuntimeEndpoint.Target
+  alias Orchard.TestSupport.DispatchDeadline
   alias Orchard.TestSupport.TerminalCardinality
 
   setup :setup_sentry_context
@@ -3310,6 +3336,339 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_step.result["output_usage_status"] == "lower_bound"
   end
 
+  test "SPEC.md §§3.7.1, 5.8, 12.4 (#329): legacy text before timeout permits zero lower-bound usage",
+       %{bundle: bundle} do
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-zero-bound", [
+        InferenceEvent.output_text_delta("visible before usage evidence")
+      ])
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_timeout"}} =
+             List.last(events)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
+    assert %DateTime{} = request.first_token_at
+    assert request.output_tokens == 0
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["failure_class"] == "deadline"
+    assert terminal["failure_code"] == "request_timeout"
+    assert terminal["output_committed"]
+    assert terminal["output_tokens"] == 0
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): timeout persists the latest positive usage update",
+       %{bundle: bundle} do
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-positive-bound", [
+        usage_update(4),
+        InferenceEvent.output_text_delta("visible output")
+      ])
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.output_tokens == 4
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["output_tokens"] == 4
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): invalid and regressing timeout updates keep the prior bound",
+       %{bundle: bundle} do
+    invalid = %InferenceEvent.Usage{input_tokens: 1, output_tokens: 8, total_tokens: 10}
+
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-rejected-usage", [
+        usage_update(5),
+        %InferenceEvent{event: %InferenceEvent.UsageUpdate{usage: invalid}},
+        usage_update(3),
+        InferenceEvent.output_text_delta("visible output")
+      ])
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): buffered completion proves exact usage without defeating timeout",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-buffered-completion",
+        [InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_timeout"}} =
+             List.last(events)
+
+    refute Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Completed{}}, &1))
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
+    assert request.output_tokens == 7
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["failure_class"] == "deadline"
+    assert terminal["failure_code"] == "request_timeout"
+    assert terminal["output_tokens"] == 7
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §12.4 (#329): regressing buffered completion keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 3, total_tokens: 4}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-regressing-completion",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §12.4 (#329): invalid buffered completion keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed = %InferenceEvent{
+      event: %InferenceEvent.Completed{
+        finish_reason: :finish_reason_stop,
+        usage: %InferenceEvent.Usage{input_tokens: 1, output_tokens: 8, total_tokens: 10}
+      }
+    }
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-invalid-completion",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 5.3, 5.8 (#329): buffered completion proves exact usage without defeating disconnect",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 6, total_tokens: 7}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-disconnect-buffered-completion",
+        [InferenceEvent.output_text_delta("disconnect")],
+        [completed],
+        trigger: :event_handler
+      )
+
+    handler = fn _request_id, event ->
+      if InferenceEvent.kind(event) == :output_text_delta, do: :cancel, else: :ok
+    end
+
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+    assert request.output_tokens == 6
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "cancelled"
+    assert terminal["failure_class"] == "cancellation"
+    assert terminal["failure_code"] == "request_caller_disconnect"
+    assert terminal["output_tokens"] == 6
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §§3.7.1, 5.3, 5.8 (#329): buffered completion proves exact usage when the caller process exits",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 6, total_tokens: 7}
+      )
+
+    caller = spawn_link(fn -> receive do: (:exit -> :ok) end)
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-caller-exit-buffered-completion",
+        [usage_update(2), InferenceEvent.output_text_delta("caller exit")],
+        [completed],
+        trigger: {:caller_exit, caller}
+      )
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model, caller: caller)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_caller_disconnect"}} =
+             List.last(events)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+    assert request.output_tokens == 6
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "cancelled"
+    assert terminal["failure_code"] == "request_caller_disconnect"
+    assert terminal["output_tokens"] == 6
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §12.4 (#329): buffered completion with regressing input keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 2, output_tokens: 7, total_tokens: 9}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-regressing-input-completion",
+        [usage_update(5, 3), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §12.4 (#329): buffered completion remains exact when the stream closes with an error",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-completion-stream-error",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed],
+        done_result: {:error, :stream_failed}
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    refute Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Completed{}}, &1))
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
+    assert request.output_tokens == 7
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 7
+    assert terminal["output_usage_status"] == "exact"
+  end
+
   test "SPEC 7.5.5: execute/3 persists a missing terminal as a durable failure",
        %{bundle: bundle} do
     target = [host: "10.0.0.1", port: 50_061]
@@ -5310,6 +5669,47 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   defp stub_runtime_event_queue(event_lists) when is_list(event_lists) do
     Process.put({StubRuntimeEndpointClient, :execute_events_queue}, event_lists)
+  end
+
+  defp configure_legacy_timeout!(
+         bundle,
+         model_id,
+         before_cancel,
+         during_drain \\ [],
+         opts \\ []
+       ) do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    trigger =
+      case Keyword.get(opts, :trigger, :deadline) do
+        :deadline -> {:deadline, DispatchDeadline.capture()}
+        trigger -> trigger
+      end
+
+    Process.put(
+      {StubRuntimeEndpointClient, :timeout_fixture},
+      %{
+        before_cancel: before_cancel,
+        during_drain: during_drain,
+        done_result: Keyword.get(opts, :done_result, :ok),
+        trigger: trigger
+      }
+    )
+
+    model = create_active_model!(bundle, model_id)
+    {model, canonical_request(model_id, stream?: true)}
+  end
+
+  defp usage_update(output_tokens, input_tokens \\ 1) do
+    InferenceEvent.usage_update(%InferenceEvent.Usage{
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: input_tokens + output_tokens
+    })
   end
 
   defp configure_alternate_attempt_nodes! do

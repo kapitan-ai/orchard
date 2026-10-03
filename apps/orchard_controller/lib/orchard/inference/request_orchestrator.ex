@@ -1403,13 +1403,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp unsuccessful_attempt_terminal_attrs(%AttemptOutcome{events: events} = outcome) do
     if Enum.any?(events, &InferenceEvent.terminal?/1) do
-      terminal_attrs_from_events(events)
+      terminal_attrs_from_events(events, attempt_usage(outcome))
     else
       outcome
       |> public_dispatch_reason()
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
-      |> Map.merge(EventUsage.terminal(events))
+      |> Map.merge(attempt_usage(outcome))
     end
   end
 
@@ -2280,17 +2280,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp finalize(
          db_request,
          canonical,
-         %AttemptOutcome{events: events, first_token_at: first_token_at} = outcome,
+         %AttemptOutcome{events: events} = outcome,
          execution_opts,
          %AttemptContext{} = context,
          retry_decision
        ) do
-    case build_terminal_attrs(
-           canonical,
-           events,
-           first_token_at,
-           execution_opts.success_persistence
-         ) do
+    case build_terminal_attrs(canonical, outcome, execution_opts.success_persistence) do
       {:ok, terminal_attrs} ->
         persist_terminal(
           db_request,
@@ -2308,8 +2303,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
-    terminal_attrs = terminal_attrs_from_events(events)
+  defp build_terminal_attrs(
+         canonical,
+         %AttemptOutcome{events: events, first_token_at: first_token_at} = outcome,
+         success_persistence
+       ) do
+    terminal_attrs = terminal_attrs_from_events(events, attempt_usage(outcome))
 
     result =
       if terminal_attrs.state == :completed and is_function(success_persistence, 2) do
@@ -2385,17 +2384,20 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_context,
          terminal_persister
        ) do
-    events =
+    usage =
       case step_context do
-        {_owner, %AttemptContext{}, %AttemptOutcome{events: events}, _decision} -> events
-        nil -> []
+        {_owner, %AttemptContext{}, %AttemptOutcome{} = outcome, _decision} ->
+          attempt_usage(outcome)
+
+        nil ->
+          EventUsage.terminal([])
       end
 
     terminal_attrs =
       reason
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
-      |> Map.merge(EventUsage.terminal(events))
+      |> Map.merge(usage)
 
     case terminal_persister.(
            db_request,
@@ -2470,9 +2472,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp terminal_attrs_from_events(events) do
-    usage = EventUsage.terminal(events)
-
+  defp terminal_attrs_from_events(events, usage) do
     base_attrs =
       case Enum.find(events, &InferenceEvent.terminal?/1) do
         nil ->
@@ -2492,6 +2492,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     Map.merge(base_attrs, usage)
   end
+
+  defp attempt_usage(%AttemptOutcome{terminal_usage: usage}) when is_map(usage), do: usage
+  defp attempt_usage(%AttemptOutcome{events: events}), do: EventUsage.terminal(events)
 
   defp terminal_conformance_failure_attrs(code, message) do
     code
