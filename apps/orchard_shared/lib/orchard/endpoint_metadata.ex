@@ -44,12 +44,22 @@ defmodule Orchard.EndpointMetadata do
   @spec write(map(), keyword()) :: :ok | {:error, {:invalid, String.t()} | File.posix()}
   def write(metadata, opts \\ []) when is_map(metadata) do
     path = Keyword.get(opts, :path, default_path())
+
+    with {:ok, contents} <- encode(metadata, opts),
+         :ok <- ensure_public_dir(Path.dirname(path)) do
+      atomic_write(path, contents)
+    end
+  end
+
+  @doc """
+  Validates and encodes metadata into the exact sidecar bytes `write/2` stores, without touching the filesystem.
+  """
+  @spec encode(map(), keyword()) :: {:ok, binary()} | {:error, {:invalid, String.t()}}
+  def encode(metadata, opts \\ []) when is_map(metadata) do
     now = Keyword.get(opts, :now, &DateTime.utc_now/0)
 
-    with {:ok, normalized} <- normalize_write_metadata(metadata, now),
-         :ok <- ensure_public_dir(Path.dirname(path)),
-         {:ok, json} <- Jason.encode(normalized) do
-      atomic_write(path, json <> "\n")
+    with {:ok, normalized} <- normalize_write_metadata(metadata, now) do
+      {:ok, Jason.encode!(normalized) <> "\n"}
     end
   end
 
