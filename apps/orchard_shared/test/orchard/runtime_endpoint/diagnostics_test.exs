@@ -49,15 +49,134 @@ defmodule Orchard.RuntimeEndpoint.DiagnosticsTest do
     assert result.inventory.amd.count == 2
   end
 
+  for {vendor, opposite_source} <- [nvidia: "rocm-smi", amd: "nvidia-smi"] do
+    test "SPEC.md §4.6.1 #{vendor} counts require the provider's vendor-specific source" do
+      vendor = unquote(vendor)
+      provider = provider(vendor, 2)
+
+      for count <- [2, 0] do
+        provider = %{provider | devices: Enum.take(provider.devices, count)}
+        raw = %{inventory() | accelerator_providers: [provider]}
+        assert project(raw).inventory[vendor].count == count
+
+        for source <- [
+              unquote(opposite_source),
+              "",
+              nil,
+              "unknown",
+              "lscpu --json",
+              "sensitive source"
+            ] do
+          poisoned = %{provider | evidence: %{provider.evidence | source: source}}
+          result = project(%{raw | accelerator_providers: [poisoned]})
+          assert result.inventory[vendor].count == nil
+          refute Jason.encode!(result) =~ "sensitive"
+        end
+      end
+    end
+
+    test "SPEC.md §4.6.1 every #{vendor} device requires the vendor-specific source" do
+      vendor = unquote(vendor)
+      provider = provider(vendor, 2)
+      raw = %{inventory() | accelerator_providers: [provider]}
+
+      for index <- [0, 1],
+          source <- [
+            unquote(opposite_source),
+            "",
+            nil,
+            "unknown",
+            "/proc/meminfo",
+            "sensitive source"
+          ] do
+        devices =
+          List.update_at(provider.devices, index, fn device ->
+            %{device | evidence: %{device.evidence | source: source}}
+          end)
+
+        result = project(%{raw | accelerator_providers: [%{provider | devices: devices}]})
+        assert result.inventory[vendor].count == nil
+        refute Jason.encode!(result) =~ "sensitive"
+      end
+    end
+
+    test "matching #{vendor} sources do not override stale, partial or error evidence" do
+      vendor = unquote(vendor)
+      provider = provider(vendor, 2)
+
+      for evidence <- [
+            %{provider.evidence | state: :HOST_EVIDENCE_STATE_PARTIAL},
+            %{provider.evidence | state: :HOST_EVIDENCE_STATE_ERROR},
+            %{provider.evidence | observed_at_unix_ms: @now - 195_001}
+          ],
+          location <- [:provider, :device] do
+        changed =
+          case location do
+            :provider ->
+              %{provider | evidence: evidence}
+
+            :device ->
+              %{
+                provider
+                | devices: List.update_at(provider.devices, 1, &%{&1 | evidence: evidence})
+              }
+          end
+
+        result = project(%{inventory() | accelerator_providers: [changed]})
+        assert result.inventory[vendor].count == nil
+      end
+    end
+  end
+
+  for {vendor, opposite_source} <- [nvidia: "amd_probe", amd: "nvidia_probe"],
+      json? <- [false, true] do
+    test "SPEC.md §4.6.1 normalized #{vendor} counts require matching sources (JSON: #{json?})" do
+      vendor = unquote(vendor)
+      block = project(%{inventory() | accelerator_providers: [provider(vendor, 2)]})
+
+      for count <- [2, 0] do
+        block = put_in(block, [:inventory, vendor, :count], count)
+        assert Diagnostics.normalize(block, @now).inventory[vendor].count == count
+        json = Jason.decode!(Jason.encode!(block))
+        assert Diagnostics.normalize(json, @now).inventory[vendor].count == count
+
+        for source <- [
+              unquote(opposite_source),
+              :missing,
+              nil,
+              "unknown",
+              "cpu_probe",
+              "nvidia-smi",
+              "sensitive source"
+            ] do
+          poisoned =
+            update_in(block, [:inventory, vendor], fn section ->
+              if source == :missing,
+                do: Map.delete(section, :source),
+                else: Map.put(section, :source, source)
+            end)
+
+          input = if unquote(json?), do: Jason.decode!(Jason.encode!(poisoned)), else: poisoned
+          result = Diagnostics.normalize(input, @now)
+          assert result.inventory[vendor].count == nil
+          assert result.inventory.cpu.count == 12
+          refute Jason.encode!(result) =~ "sensitive"
+        end
+      end
+    end
+  end
+
   test "device counts expire at the oldest contributing device timestamp" do
-    provider = provider(:nvidia, 1)
-    [device] = provider.devices
-    device = %{device | evidence: %{device.evidence | observed_at_unix_ms: @now - 195_000}}
-    raw = %{inventory() | accelerator_providers: [%{provider | devices: [device]}]}
-    result = project(raw)
-    assert result.inventory.nvidia.count == 1
-    assert result.inventory.nvidia.observed_at_unix_ms == @now - 195_000
-    assert Diagnostics.normalize(result, @now + 1).inventory.nvidia.count == nil
+    for vendor <- [:nvidia, :amd] do
+      provider = provider(vendor, 1)
+      [device] = provider.devices
+      device = %{device | evidence: %{device.evidence | observed_at_unix_ms: @now - 195_000}}
+      raw = %{inventory() | accelerator_providers: [%{provider | devices: [device]}]}
+      result = project(raw)
+      assert result.inventory[vendor].count == 1
+      assert result.inventory[vendor].observed_at_unix_ms == @now - 195_000
+      assert Diagnostics.normalize(result, @now + 1).inventory[vendor].count == nil
+    end
   end
 
   test "old or disabled inventory is absent and missing runtime timestamps are invalid" do

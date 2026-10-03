@@ -106,7 +106,8 @@ defmodule Orchard.RuntimeEndpoint.Diagnostics do
         normalized = evidence(section, now_ms, @inventory_max_age_ms)
 
         count =
-          if normalized.status == "observed", do: diagnostic_count(get(section, :count), key)
+          if normalized.status == "observed" and valid_source?(key, get(section, :source)),
+            do: diagnostic_count(get(section, :count), key)
 
         {key,
          Map.merge(normalized, %{
@@ -126,10 +127,13 @@ defmodule Orchard.RuntimeEndpoint.Diagnostics do
     valid_devices? =
       is_list(devices) and
         Enum.all?(devices, fn device ->
-          device.vendor == expected and section_evidence(device, now_ms).status == "observed"
+          device_evidence = section_evidence(device, now_ms)
+
+          device.vendor == expected and device_evidence.status == "observed" and
+            valid_source?(vendor, device_evidence.source)
         end)
 
-    if evidence.status == "observed" and valid_devices? do
+    if evidence.status == "observed" and valid_source?(vendor, evidence.source) and valid_devices? do
       oldest =
         Enum.reduce(devices, evidence.observed_at_unix_ms, fn device, time ->
           min(time, device.evidence.observed_at_unix_ms)
@@ -151,6 +155,10 @@ defmodule Orchard.RuntimeEndpoint.Diagnostics do
   defp section_count(section, :cpu), do: positive_count(get(section, :logical_processor_count))
   defp section_count(section, :network), do: length(section.interfaces)
   defp section_count(_section, _key), do: nil
+
+  defp valid_source?(:nvidia, source), do: source == "nvidia_probe"
+  defp valid_source?(:amd, source), do: source == "amd_probe"
+  defp valid_source?(_section, _source), do: true
 
   defp section_evidence(section, now_ms) do
     raw = get(section, :evidence)

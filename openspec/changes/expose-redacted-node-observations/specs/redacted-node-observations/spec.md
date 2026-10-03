@@ -8,7 +8,15 @@ Under SPEC.md §4.6.1 and Milestone 9, existing runtime snapshots and shared Nod
 
 - **WHEN** a runtime target returns valid fresh CPU-only, NVIDIA or AMD inventory
 - **THEN** diagnostics expose only allowlisted observations with distinct vendor provenance
+- **AND** NVIDIA/AMD counts, including zero, require matching vendor enums and `nvidia-smi`/`rocm-smi` evidence respectively on the provider and every contributing device
 - **AND** no capacity, device binding, readiness, admission, custody, release or qualification follows
+
+#### Scenario: Vendor source provenance fails closed
+
+- **WHEN** provider or contributing-device sources are missing, unknown, opposite-vendor, non-vendor or inconsistent
+- **THEN** the vendor count is null rather than positive or zero
+- **AND** re-normalized atom-key or JSON sections admit NVIDIA counts only with `nvidia_probe` and AMD counts only with `amd_probe`
+- **AND** fresh matching empty-device observations retain zero counts without changing freshness, oldest-contributing-time or size bounds
 
 #### Scenario: Old reader or old Agent
 
