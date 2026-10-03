@@ -7,18 +7,26 @@ OUTPUT_ROOT="$REPO_ROOT"
 PYTHON_TOOLING_ROOT="$REPO_ROOT/proto/orchard/worker/tooling"
 PROTOC_GEN_ELIXIR_VERSION="0.16.0"
 
+SHARED_PROTOS=(common events peer_grant reasoning runtime)
+
 generated_output_paths() {
+  for proto in "${SHARED_PROTOS[@]}"; do
+    printf 'apps/orchard_shared/lib/cluster/v1/%s.pb.ex\n' "$proto"
+  done
   printf '%s\n' \
     apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/common_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/common_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/events_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/events_pb2_grpc.py \
+    native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/reasoning_pb2.py \
+    native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/reasoning_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/runtime_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/runtime_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2_grpc.py \
-    proto/orchard/worker/v1/worker_runtime.descriptor.pb
+    proto/orchard/worker/v1/worker_runtime.descriptor.pb \
+    proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb
 }
 
 while [[ $# -gt 0 ]]; do
@@ -94,6 +102,7 @@ mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
   --include_imports \
   "$REPO_ROOT/proto/cluster/v1/common.proto" \
   "$REPO_ROOT/proto/cluster/v1/events.proto" \
+  "$REPO_ROOT/proto/cluster/v1/reasoning.proto" \
   "$REPO_ROOT/proto/cluster/v1/runtime.proto" \
   "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.proto"
 
@@ -103,6 +112,21 @@ mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
   --plugin="protoc-gen-elixir=$PLUGIN_PATH" \
   --elixir_out="plugins=grpc,package_prefix=Orchard:$ELIXIR_STAGE" \
   "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.proto"
+
+SHARED_STAGE="$STAGE_ROOT/shared"
+mkdir -p "$SHARED_STAGE"
+SHARED_PROTO_PATHS=()
+for proto in "${SHARED_PROTOS[@]}"; do
+  SHARED_PROTO_PATHS+=("$REPO_ROOT/proto/cluster/v1/$proto.proto")
+done
+
+mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
+  python -m grpc_tools.protoc \
+  -I "$REPO_ROOT/proto" \
+  --plugin="protoc-gen-elixir=$PLUGIN_PATH" \
+  --elixir_out="plugins=grpc,package_prefix=Orchard:$SHARED_STAGE" \
+  "${SHARED_PROTO_PATHS[@]}"
+mise exec -- mix format "$SHARED_STAGE"/cluster/v1/*.pb.ex
 
 RAW_ELIXIR="$ELIXIR_STAGE/orchard/worker/v1/worker_runtime.pb.ex"
 COMPAT_ELIXIR="$STAGE_ROOT/worker_runtime.pb.ex"
@@ -121,6 +145,11 @@ install_output() {
   install -m 0644 "$source" "$destination"
 }
 
+for proto in "${SHARED_PROTOS[@]}"; do
+  install_output "$SHARED_STAGE/cluster/v1/$proto.pb.ex" \
+    "apps/orchard_shared/lib/cluster/v1/$proto.pb.ex"
+done
+
 install_output "$COMPAT_ELIXIR" \
   apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex
 
@@ -129,6 +158,8 @@ for relative_path in \
   cluster/v1/common_pb2_grpc.py \
   cluster/v1/events_pb2.py \
   cluster/v1/events_pb2_grpc.py \
+  cluster/v1/reasoning_pb2.py \
+  cluster/v1/reasoning_pb2_grpc.py \
   cluster/v1/runtime_pb2.py \
   cluster/v1/runtime_pb2_grpc.py \
   orchard/worker/v1/worker_runtime_pb2.py \
@@ -139,5 +170,14 @@ done
 
 install_output "$DESCRIPTOR_STAGE" \
   proto/orchard/worker/v1/worker_runtime.descriptor.pb
+
+# The preparation fixture is encoded by the checkout's shared Elixir bindings.
+# Those bindings are generated outputs above, so the drift check covers the
+# encoder as well as the encoded bytes.
+ORCHARD_PROTO_FIXTURE_OUTPUT="$OUTPUT_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb" \
+  mise exec -- mix run --no-start -e '
+    Code.require_file("scripts/support/worker-runtime-preparation-fixture.exs")
+    Orchard.WorkerRuntimePreparationFixture.write!(System.fetch_env!("ORCHARD_PROTO_FIXTURE_OUTPUT"))
+  '
 
 printf 'generated Worker Runtime Python and Elixir bindings under %s\n' "$OUTPUT_ROOT"

@@ -222,6 +222,25 @@ defmodule OrchardConsole.RequestLiveTest do
       refute has_element?(view, "#request-output-tokens", "123")
       assert has_element?(view, "#request-total-tokens", "214")
       refute has_element?(view, "#request-more-evidence details[open]")
+
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
+      assert has_element?(view, "#inspector-attempt-result", "retried")
+      assert has_element?(view, "#inspector-attempt-result", "internal_error")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-attempt-start time[datetime="2026-09-11T14:32:05Z"])
+             )
+
+      assert has_element?(view, ~s(#inspector-attempt-end time[datetime="2026-09-11T14:32:06Z"]))
+      refute has_element?(view, "#inspector-attempt", "No bounded timing interval")
+
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome dd", "completed")
+      refute has_element?(view, "#inspector-attempt-result", "retry_decision")
+      refute has_element?(view, "#inspector-attempt-result", "output_usage_status")
+      assert has_element?(view, "#request-summary-card", "Completed after retry")
     end
 
     test "renders token counts including zero", %{conn: conn} do
@@ -1310,6 +1329,14 @@ defmodule OrchardConsole.RequestLiveTest do
       view |> element("button[phx-click=refresh_request]") |> render_click()
       assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
       assert has_element?(view, "#request-output-tokens", "17")
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="refresh_request"][phx-disable-with="Checking…"]),
+               "Refresh"
+             )
+
+      refute has_element?(view, "button[phx-click=refresh_request] > *")
     end
 
     test "refresh updates DOM with new data", %{conn: conn} do
@@ -1574,9 +1601,577 @@ defmodule OrchardConsole.RequestLiveTest do
     end
   end
 
+  describe "selected persisted evidence" do
+    test "selection commands focus the panel and distinguish its action from inline inspection",
+         %{
+           conn: conn
+         } do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert has_element?(view, ~s(#request-evidence-inspector[tabindex="-1"]))
+      assert has_element?(view, "#request-attempt-1-1 summary", "Inspect attempt")
+
+      [mounted_commands] =
+        view
+        |> element("#request-recorded-events")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#request-recorded-events")
+        |> LazyHTML.attribute("phx-mounted")
+
+      assert [["ignore_attrs", %{"attrs" => ["open"]}]] = Jason.decode!(mounted_commands)
+
+      for selector <- ["#request-attempt-1-1", "#request-event-1"] do
+        button = "#{selector} button[aria-controls=request-evidence-inspector]"
+        assert has_element?(view, button, "Show in Selected evidence")
+
+        [commands] =
+          view
+          |> element(button)
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.query("button")
+          |> LazyHTML.attribute("phx-click")
+
+        assert [
+                 ["push", %{"event" => "select_evidence"}],
+                 ["focus", %{"to" => "#request-evidence-inspector"}]
+               ] =
+                 Jason.decode!(commands)
+
+        view |> element(button) |> render_click()
+
+        assert has_element?(
+                 view,
+                 button <> ~s([aria-pressed="true"].border-navy.bg-slate-100),
+                 "Selected"
+               )
+
+        assert has_element?(view, "#inspector-request", request.public_id)
+        refute has_element?(view, "#inspector-request-id")
+      end
+
+      assert has_element?(
+               view,
+               ~s(#request-attempt-1-1 button[aria-pressed="false"].border-slate-200.bg-white)
+             )
+    end
+
+    test "SPEC §3.7.1 candidate hints never replace validated source identity" do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation",
+        result: %{"output_tokens" => 7}
+      })
+
+      [started, completed] = Requests.list_request_events(request)
+      own_id = "inference_turn:t1:a1"
+      other_id = "inference_turn:t1:a2"
+
+      events = [
+        started,
+        %{
+          completed
+          | payload:
+              Map.new(completed.payload, fn {key, value} ->
+                {String.to_existing_atom(key), value}
+              end)
+        },
+        %{
+          started
+          | seq: 3,
+            payload:
+              Map.merge(started.payload, %{
+                :step_id => own_id,
+                "step_id" => other_id,
+                "attempt" => 2
+              })
+        },
+        %{started | seq: 4, payload: Map.put(started.payload, :step_id, other_id)},
+        %{started | seq: 5, payload: Map.put(started.payload, "attempt", 99)},
+        %{started | seq: 6, event_type: "metadata"},
+        %{started | seq: 7, payload: nil},
+        %{started | seq: 8, payload: []},
+        %{started | seq: 9, payload: %{}},
+        %{started | seq: 10, event_type: "request_step.unknown"}
+      ]
+
+      unrelated =
+        for seq <- 11..138 do
+          %{
+            started
+            | seq: seq,
+              payload:
+                Map.merge(started.payload, %{
+                  "step_id" => "inference_turn:t1:a#{seq}",
+                  "attempt" => seq
+                })
+          }
+        end
+
+      {:ok, socket} =
+        OrchardConsole.RequestLive.mount(
+          %{"public_id" => request.public_id},
+          %{},
+          %Phoenix.LiveView.Socket{}
+        )
+
+      {:noreply, socket} = OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+      events = events ++ unrelated
+
+      socket =
+        Phoenix.Component.assign(socket,
+          events: events,
+          attempts: OrchardConsole.RequestEvidence.attempts(events)
+        )
+
+      {:noreply, socket} =
+        OrchardConsole.RequestLive.handle_event("select_evidence", %{"attempt" => own_id}, socket)
+
+      document =
+        render_component(&OrchardConsole.RequestLive.render/1, socket.assigns)
+        |> LazyHTML.from_fragment()
+
+      assert document
+             |> LazyHTML.query("#request-evidence-inspector article")
+             |> LazyHTML.attribute("id") ==
+               ["inspector-event-1", "inspector-event-2", "inspector-event-4"]
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-outcome dd")
+             |> LazyHTML.text()
+             |> String.trim() == "completed"
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-result code")
+             |> LazyHTML.text()
+             |> Jason.decode!() == %{"output_tokens" => 7}
+    end
+
+    test "attempt selection uses the loaded projection and replaces it on refresh", %{conn: conn} do
+      request = create_request!(%{state: :running})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      append_inspector_step!(request, %{step_id: "inference_turn:t1:a2", attempt: 2})
+      render_click(view, "select_evidence", %{"attempt" => "inference_turn:t1:a2"})
+      assert has_element?(view, "#request-evidence-selection", "Select an attempt")
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "Turn 1 · Attempt 2 selected")
+
+      Repo.delete_all(
+        from(event in RequestEvent, where: event.request_id == ^request.id and event.seq == 2)
+      )
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "no longer available")
+      refute has_element?(view, "#inspector-attempt")
+      refute has_element?(view, "#request-attempt-1-2")
+    end
+
+    test "selection uses only loaded events and preserves Request scope", %{conn: conn} do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      foreign = create_request!(%{payload_capture_mode: :full})
+
+      Repo.insert!(%RequestEvent{
+        request_id: foreign.id,
+        seq: 99,
+        event_type: "foreign",
+        payload: %{"value" => "other-request"}
+      })
+
+      Repo.insert!(%RequestEvent{
+        request_id: request.id,
+        seq: 1,
+        event_type: "state_transition",
+        state: :failed,
+        occurred_at: ~U[2026-09-11 14:32:07.123456Z],
+        payload: %{"parent_step_id" => "unvalidated-parent", "state" => "completed"}
+      })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert has_element?(
+               view,
+               "#request-evidence-selection",
+               "Select an attempt or recorded event"
+             )
+
+      refute has_element?(view, "#request-evidence-inspector [data-copy-json]")
+
+      render_click(view, "select_evidence", %{"event" => "99"})
+      assert has_element?(view, "#request-evidence-selection", "Select an attempt")
+      refute render(view) =~ "other-request"
+
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-request", request.public_id)
+      refute has_element?(view, "#inspector-request-id")
+      assert has_element?(view, "#inspector-event-1-scope dd", "Request")
+      assert has_element?(view, "#inspector-event-1-outcome dd", "failed")
+      assert has_element?(view, "#request-summary-card", "completed")
+      assert has_element?(view, "#inspector-event-1-parent dd", "Not established")
+      refute has_element?(view, "#inspector-event-1-parent", "unvalidated-parent")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-event-1-time time[datetime="2026-09-11T14:32:07Z"][phx-hook="LocalTime"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#request-event-1 button[aria-pressed="true"][aria-controls="request-evidence-inspector"]),
+               "Selected"
+             )
+
+      render_click(view, "select_evidence", %{"event" => "1junk"})
+      render_click(view, "select_evidence", %{"attempt" => "inference_turn:t99:a99"})
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      assert has_element?(view, "#request-back-to-requests[href='/console/requests']")
+    end
+
+    for mode <- [:none, :metadata, :full] do
+      @capture_mode mode
+      test "SPEC §3.7.1 and §10.10 inspector respects #{@capture_mode} retained tool evidence", %{
+        conn: conn
+      } do
+        request = create_request!(%{payload_capture_mode: @capture_mode})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.proposed",
+          step_type: "tool_call",
+          step_id: "tool_call:t1:ccall_inspector",
+          parent_step_id: "inference_turn:t1:a1",
+          boundary: "post_observation",
+          call_id: "call_inspector",
+          tool_name: "calendar.lookup",
+          arguments_json: ~s({"date":"2026-10-01"}),
+          result: %{"finish_reason" => "tool_calls"}
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+        view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+        assert has_element?(view, "#inspector-event-1-scope", "tool_call · Turn 1 · Attempt 1")
+        assert has_element?(view, "#inspector-event-1-parent dd", "inference_turn:t1:a1")
+        assert has_element?(view, "#inspector-event-1-boundary dd", "post_observation")
+        assert has_element?(view, "#inspector-event-1-outcome dd", "Not recorded")
+
+        assert has_element?(
+                 view,
+                 "#request-evidence-inspector",
+                 "#{String.capitalize(to_string(@capture_mode))} capture was selected"
+               )
+
+        assert has_element?(
+                 view,
+                 "#inspector-event-payload-1[phx-hook=RequestPayload] [data-copy-json]"
+               )
+
+        payload =
+          view
+          |> element("#inspector-event-payload-1 code")
+          |> render()
+          |> LazyHTML.from_fragment()
+          |> LazyHTML.text()
+          |> Jason.decode!()
+
+        if @capture_mode == :full do
+          assert payload["tool_name"] == "calendar.lookup"
+          assert payload["arguments_json"] == ~s({"date":"2026-10-01"})
+          assert payload["call_id"] == "call_inspector"
+        else
+          refute Map.has_key?(payload, "tool_name")
+          refute Map.has_key?(payload, "arguments_json")
+          refute payload["call_id"] == "call_inspector"
+          assert has_element?(view, "#inspector-event-1-step dd", "tool_call:t1:csha256:")
+        end
+      end
+    end
+
+    test "invalid envelopes and legacy metadata never establish step identities", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      for {seq, type, state} <- [
+            {1, "request_step.started", nil},
+            {2, "legacy_event", nil},
+            {3, "request_step.failed", :completed}
+          ] do
+        Repo.insert!(%RequestEvent{
+          request_id: request.id,
+          seq: seq,
+          event_type: type,
+          state: state,
+          payload: %{"step_id" => "inference_turn:t1:a1", "parent_step_id" => "forged-parent"}
+        })
+      end
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      refute has_element?(view, "#request-attempt-1-1")
+
+      for seq <- [1, 2, 3] do
+        view
+        |> element("#request-event-#{seq} button[phx-value-event]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-event-#{seq}-scope", "Unclassified event")
+        assert has_element?(view, "#inspector-event-#{seq}-step", "Not established")
+        assert has_element?(view, "#inspector-event-#{seq}-parent", "Not established")
+        assert has_element?(view, "#inspector-event-payload-#{seq}", "forged-parent")
+      end
+
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-event-1", "Invalid step envelope")
+
+      view |> element("#request-event-3 button[phx-value-event]") |> render_click()
+      assert has_element?(view, "#inspector-event-3-outcome dd", "Not established")
+    end
+
+    test "missing payload remains distinct from expiry, redaction and zero", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :none})
+      append_event!(request, %{event_type: "state_transition", state: :received})
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+      assert has_element?(
+               view,
+               "#inspector-event-empty-1",
+               "No retained payload. Absence does not establish expiry or redaction."
+             )
+
+      refute has_element?(view, "#inspector-event-1 [data-copy-json]")
+    end
+
+    for status <- ["exact", "lower_bound"] do
+      @usage_status status
+      test "SPEC §3.7.1 rejected attempt retains #{@usage_status} usage under none capture", %{
+        conn: conn
+      } do
+        request = create_request!(%{state: :failed, payload_capture_mode: :none})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.failed",
+          boundary: "post_observation",
+          result: %{
+            "attempt_outcome" => "failed",
+            "started_at" => "2026-10-01T10:00:00.100000Z",
+            "ended_at" => "2026-10-01T10:00:00.300000Z",
+            "accepted" => false,
+            "output_committed" => false,
+            "execution_resolution" => "not_started",
+            "capacity_release_outcome" => "not_applicable",
+            "failure_class" => "capacity_rejection",
+            "failure_code" => "cluster_busy",
+            "retry_decision" => "not_retryable",
+            "excluded_node_ids" => [],
+            "output_tokens" => 0,
+            "output_usage_status" => @usage_status
+          }
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+        view
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-attempt-outcome dd", "failed")
+        assert has_element?(view, "#inspector-attempt-result", "cluster_busy")
+        assert has_element?(view, "#inspector-attempt-result", @usage_status)
+        assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+        assert has_element?(view, "#request-evidence-inspector", "None capture was selected")
+      end
+    end
+
+    test "selected active attempt refreshes to terminal evidence and replays after remount", %{
+      conn: conn
+    } do
+      request = create_request!(%{state: :running})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Terminal outcome not recorded")
+      assert has_element?(view, "#inspector-attempt-end", "Not recorded")
+      assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+      assert has_element?(view, "#inspector-event-1-parent", "Not recorded")
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation",
+        result: %{"output_tokens" => 7}
+      })
+
+      {:ok, _} = Requests.mark_terminal(request, %{state: :completed})
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#inspector-attempt-outcome dd", "completed")
+      assert has_element?(view, "#inspector-attempt-result", "7")
+      assert has_element?(view, "#inspector-event-1")
+      assert has_element?(view, "#inspector-event-2")
+      assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+
+      {:ok, replay, _} = live(conn, "/console/requests/#{request.public_id}")
+      assert has_element?(replay, "#request-evidence-selection", "Select an attempt")
+
+      replay
+      |> element("#request-attempt-1-1 button[phx-value-attempt]")
+      |> render_click()
+
+      assert has_element?(replay, "#inspector-attempt-outcome dd", "completed")
+      assert has_element?(replay, "#inspector-attempt-result", "7")
+    end
+
+    test "event selection preserves native disclosure commands on replacement and clears removed evidence",
+         %{
+           conn: conn
+         } do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      event =
+        append_event!(request, %{
+          event_type: "metadata",
+          payload: %{"value" => "selected-payload"}
+        })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+      append_event!(request, %{event_type: "state_transition", state: :running})
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      refute has_element?(view, "#inspector-event-2")
+      assert has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      event =
+        Repo.update!(Ecto.Changeset.change(event, payload: %{"value" => "replacement-payload"}))
+
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      assert has_element?(view, "#inspector-event-payload-1", "replacement-payload")
+      refute has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-event-1 > details[phx-mounted='[["ignore_attrs",{"attrs":["open"]}]]'])
+             )
+
+      Repo.delete!(event)
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#request-evidence-selection", "no longer available")
+      refute has_element?(view, "#request-evidence-inspector code")
+      refute render(view) =~ "selected-payload"
+    end
+
+    test "navigation clears selection even when destination has the same event sequence", %{
+      conn: conn
+    } do
+      parent = create_request!()
+      child = create_request!(%{retry_of_request_id: parent.id})
+      append_inspector_step!(parent)
+      append_inspector_step!(child)
+      {:ok, view, _} = live(conn, "/console/requests/#{child.public_id}")
+      view |> element("#request-event-1 button[phx-value-event]") |> render_click()
+
+      {:ok, destination, _} =
+        view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
+
+      assert has_element?(destination, "#request-evidence-selection", "Select an attempt")
+      refute has_element?(destination, "#inspector-event-1")
+    end
+
+    test "SPEC §3.7.1 conflicting and invalid terminal results remain distinct", %{conn: conn} do
+      request = create_request!(%{payload_capture_mode: :full})
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.failed",
+        boundary: "post_observation"
+      })
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation"
+      })
+
+      append_inspector_step!(request, %{
+        step_id: "inference_turn:t1:a2",
+        attempt: 2,
+        event_type: "request_step.failed",
+        boundary: "post_observation",
+        result: %{"result_invalid" => true}
+      })
+
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      view |> element("#request-attempt-1-1 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Conflicting terminal evidence")
+      assert has_element?(view, "#inspector-attempt-start", "Not recorded")
+      assert has_element?(view, "#inspector-attempt-result-empty", "No unambiguous")
+      assert has_element?(view, "#inspector-event-1-outcome", "failed")
+      assert has_element?(view, "#inspector-event-2-outcome", "completed")
+
+      view |> element("#request-attempt-1-2 button[phx-value-attempt]") |> render_click()
+      assert has_element?(view, "#inspector-attempt-outcome", "Invalid terminal evidence")
+      assert has_element?(view, "#inspector-event-3-outcome", "Invalid terminal evidence")
+      refute has_element?(view, "#inspector-event-1")
+      assert has_element?(view, ~s(#request-attempt-1-1 button[aria-pressed="false"]))
+    end
+
+    for state <- [:completed, :failed, :timed_out, :cancelled, :interrupted] do
+      @terminal_state state
+      test "SPEC §3.7.1 selected #{@terminal_state} attempt preserves its recorded outcome", %{
+        conn: conn
+      } do
+        request = create_request!(%{state: @terminal_state, payload_capture_mode: :full})
+
+        append_inspector_step!(request, %{
+          event_type: "request_step.#{@terminal_state}",
+          boundary: "post_observation",
+          result: %{"output_tokens" => 0}
+        })
+
+        {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+        view
+        |> element("#request-attempt-1-1 button[phx-value-attempt]")
+        |> render_click()
+
+        assert has_element?(view, "#inspector-attempt-outcome dd", to_string(@terminal_state))
+        assert has_element?(view, "#inspector-event-1-outcome dd", to_string(@terminal_state))
+        assert has_element?(view, "#inspector-attempt", "No bounded timing interval")
+        assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+      end
+    end
+  end
+
   # ===========================================================================
   # Helpers
   # ===========================================================================
+
+  defp append_inspector_step!(request, attrs \\ %{}) do
+    step =
+      Map.merge(
+        %{
+          event_type: "request_step.started",
+          step_id: "inference_turn:t1:a1",
+          step_type: "inference_turn",
+          turn_index: 1,
+          attempt: 1,
+          boundary: "pre_side_effect",
+          result: %{}
+        },
+        attrs
+      )
+
+    {:ok, events} = Requests.append_request_step_events(request, [step])
+    events
+  end
 
   defp append_event!(request, attrs) do
     {:ok, event} = Requests.append_request_event(request, attrs)
