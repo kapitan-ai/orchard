@@ -11,8 +11,11 @@
 ## 2. Prerequisites and schema handoff
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
-- [ ] 2.2 After this change is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically, reproducing `design.md` §2.1 unchanged. Do not begin that work from this documentation PR.
-- [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
+- [x] 2.2 Re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically, reproducing `design.md` §2.1 unchanged.
+- [x] 2.2a Record owner decision D-A: `NodeRuntimeService` remains legacy-only and gains no `PrepareInference`; gRPC-compatibility-only candidates are non-advertising for negotiated reasoning.
+- [x] 2.2b Record owner decision D-B: #327 adds no manifest typed fields, and earlier “manifest fields” wording is not a closure criterion.
+- [x] 2.2c Record owner decision D-C: the schema slice lands separately from the runtime slices.
+- [x] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage at the schema and reciprocal-fixture boundary. Covered by encoding the selector on both status requests and every `ReasoningLiveObservation` variant against the current schema and the pinned N-1 descriptor golden, in both decode directions. Adapter emission and classification remain under 2.4.
 - [ ] 2.4 Cover exact `ModelRef` selection on a multi-model Node and request/selected-worker association through both adapters. Wrong version, missing worker, malformed field 9 without field 8, and unattributable results must remain unknown; only complete attributable negatives count toward exhaustion. Preserve legacy N-1 projections and live-only freshness without extra fanout.
 - [ ] 2.5 Cover optional/default frozen inputs, nil versus invalid effort, nested parameters, and future execution-affecting additive/nested fields: bind and compare them or reject without silent decoding/mapping loss. Validate field 14 independently outside frozen input and retain negotiated token/logprob rejection.
 
@@ -30,7 +33,8 @@
 - [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation. For selected-effort tuples, prove exact-tuple classification readiness does not impose semantic approval or support claims on technical advertisement, admission, selection, scheduling, preparation, or dispatch; retain all technical proofs and terminal enabled-conformance failure.
 - [x] 3.5 Record D4 (`terminal_conformance + internal_error`) as a #328 handoff without implementing it here.
 
-## 4. Future validation
+## 4. Validation
 
-- [ ] 4.1 Run the applicable protocol drift, reciprocal N/N-1 fixture, provider-neutral, Elixir, native, and coverage workflows after implementation.
-- [ ] 4.2 Re-run strict change and all-change OpenSpec validation after implementation and before PR handoff.
+- [x] 4.0 Schema slice: run the protocol drift check (shared Elixir, Worker Runtime Elixir and Python bindings, descriptor golden, preparation fixture), the reciprocal fixtures against the pinned N-1 descriptor golden, and the Elixir, native, and coverage workflows. Run strict change-scoped OpenSpec validation.
+- [ ] 4.1 Run the applicable protocol drift, reciprocal N/N-1 fixture, provider-neutral, Elixir, native, and coverage workflows after the runtime tasks in 2.4, 2.5, and 3.x are implemented.
+- [ ] 4.2 Re-run strict change and all-change OpenSpec validation after the runtime tasks are implemented and before the final PR handoff.

@@ -7,6 +7,7 @@ The repository SHALL own an executable classifier that emits independent portabl
 Changes to shared contracts, proto source, root configuration, toolchain, release composition, normative product contracts, accepted OpenSpec contracts, or the required workflow SHALL trigger every consuming lane needed to prove compatibility.
 Documentation-only optimization MUST NOT classify a normative `SPEC.md` or OpenSpec contract change as ordinary prose that skips applicable validation.
 First-party umbrella application source that the packaged release composes MUST select the packaging lane.
+Changes to `apps/<app>/lib/**`, `apps/<app>/test/**`, and `apps/<app>/mix.exs` MUST select the macOS host lane, because retained macOS-tagged tests exercise that code across module and application boundaries; this selection only adds the macOS host lane and MUST NOT clear any other selected lane.
 Unknown paths MUST select every lane rather than risk missing a dependency edge.
 An empty changed-path set MUST fail classification rather than emit an all-inapplicable decision.
 
@@ -20,13 +21,14 @@ An empty changed-path set MUST fail classification rather than emit an all-inapp
 
 - **WHEN** a change modifies only portable Controller source
 - **THEN** the Linux portable, provider-neutral conformance, and packaging lanes run because the packaged release builds that source
-- **AND** unrelated macOS host and MLX provider lanes are explicitly inapplicable
+- **AND** the macOS host lane runs because retained macOS-tagged tests consume that source
+- **AND** the unrelated MLX provider lane is explicitly inapplicable
 
 #### Scenario: Portable application test-only change
 
 - **WHEN** a change modifies only portable first-party application test source
-- **THEN** the Linux portable and provider-neutral conformance lanes run
-- **AND** unrelated macOS host, MLX provider, and packaging lanes are explicitly inapplicable
+- **THEN** the Linux portable, provider-neutral conformance, and macOS host lanes run
+- **AND** unrelated MLX provider and packaging lanes are explicitly inapplicable
 
 #### Scenario: Changed paths cannot be resolved
 
@@ -48,9 +50,9 @@ The aggregate decision SHALL be implemented by a repository-owned evaluator with
 
 #### Scenario: Controller-only portable change
 
-- **WHEN** dependency classification proves that no platform implementation or packaging contract is affected
-- **THEN** the required gate omits expensive platform lanes
-- **AND** it still requires the Linux portable and applicable conformance lanes
+- **WHEN** dependency classification selects Linux portable, conformance, macOS host, and packaging validation for a Controller-only source change
+- **THEN** the required gate requires all four selected lanes to pass
+- **AND** the unrelated MLX provider lane must be explicitly skipped
 
 #### Scenario: Applicable lane fails or skips
 
