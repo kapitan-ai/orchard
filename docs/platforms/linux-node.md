@@ -74,6 +74,22 @@ Controllers drop an inventory outside the observation-only bounds on both BEAM a
 Across version skew, gRPC status keeps inventory fields added by a newer Node Agent as decoded unknown fields, while a BEAM Runtime Endpoint inventory term that carries fields this Controller does not define fails its bound check and reads as absent.
 This behavior is validated against synthetic fixtures and is not host qualification.
 
+## Redacted runtime-target diagnostics
+
+The existing authenticated `GET /ops/v1/health` response exposes nullable `runtime.diagnostics` to cluster-scoped Operators and admins, with `Cache-Control: no-store`. It re-normalizes the diagnostics block from its single existing `OrchardConsole.Runtime.snapshot/1` read. Failed snapshots and missing/legacy or unknown-schema blocks return null, even if a failed snapshot contains positive diagnostic evidence. Diagnostics do not affect the HTTP health status or readiness result; public `/health/ready` remains status-only.
+
+The retained `OrchardConsole.Runtime.snapshot/1` and `cluster_snapshot/1` status paths produce the block from the Agent's cached inventory. `Orchard.ClusterManagement.StatusBuilder.runtime_target_status_map/1` also carries that projection through shared NodeStatus. The projection starts no probe or additional runtime call. This tranche does not add a Console panel, route or CLI command.
+
+Registered-node `orchardctl nodes list --json` and `nodes inspect <node-id> --json` have `status.v1` diagnostics set to null (inside each status object). Persisted Nodes and admission candidates have no volatile host-inventory source. Missing additive fields from older readers normalize to null; missing/disabled Agent inventory is `absent`. An adapter may already have dropped invalid inventory, which then also reads as absent.
+
+The schema-version-1 block contains `authority: "observation_only"`, `runtime` and `inventory`. Runtime reports evidence `status`, `source: "runtime_endpoint"`, `observed_at_unix_ms`, `age_ms`, `health` (`ready`, `not_ready`, `unknown`) and `worker_state` (`starting`, `idle`, `busy`, `stopping`, `failed`, `stopped`, `unknown`). Inventory reports its own evidence status/time/age and fixed `cpu`, `memory`, `disk`, `platform`, `network`, `nvidia` and `amd` sections. Each section contains status, source, time, age and nullable count. Counts mean logical processors, interfaces or observed devices; memory/disk/platform counts are always null. No byte capacity is exposed. Source categories are `cpu_probe`, `memory_probe`, `disk_probe`, `platform_probe`, `network_probe`, `nvidia_probe`, `amd_probe` or `unknown`; raw probe paths and arguments are not retained.
+
+Evidence states are `observed`, `absent`, `partial`, `error`, `invalid` and `stale`. Only fresh observed evidence contributes counts. The projection rejects future/invalid timestamps and applies the diagnostic age and traversal limits in SPEC.md §4.6.1. It recalculates ages from original timestamps on shared-status normalization, never from the time a page was read. Device counts require fresh observed evidence for every listed device and matching vendor provenance; their section timestamp is the oldest contributing provider/device timestamp so a cached count expires with its oldest evidence. Missing vendor evidence is null, not a healthy/free device or zero capacity.
+
+Vendor provenance requires `nvidia-smi` evidence on both the NVIDIA provider and every contributing NVIDIA device, or `rocm-smi` on the AMD provider and every contributing AMD device. Re-normalized NVIDIA/AMD sections require `nvidia_probe`/`amd_probe`, respectively. Missing, unknown, opposite-vendor, non-vendor or inconsistent sources suppress the count to null, including an otherwise zero-device count. Fresh matching empty-device observations still report zero observed devices, not capacity.
+
+The redaction guarantee covers this new block, not every pre-existing field on the surrounding status object. It excludes arbitrary health messages, identifiers, network addresses, paths, credentials, environment and unknown protobuf data. It does not change persistence, readiness, admission, scheduling, capacity, custody, release, or qualification. Public health remains status-only and support commands remain retired. This is narrow progress on inventory and runtime health/lifecycle observations; broader logs and metrics diagnostics and task 3.3 remain incomplete.
+
 ## Qualification gates
 
 Candidate source qualification requires every applicable gate below on an exact clean source revision:

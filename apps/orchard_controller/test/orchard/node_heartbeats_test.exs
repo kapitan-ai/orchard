@@ -5,7 +5,7 @@ defmodule Orchard.NodeHeartbeatsTest do
   alias Orchard.NodeHeartbeats
   alias Orchard.NodeHeartbeats.Payload
   alias Orchard.Nodes.{Node, NodeHeartbeat}
-  alias Orchard.RuntimeEndpoint.{Observation, Target}
+  alias Orchard.RuntimeEndpoint.{Diagnostics, Observation, Target}
 
   setup do
     previous_control_plane = Application.get_env(:orchard_controller, :control_plane)
@@ -241,6 +241,13 @@ defmodule Orchard.NodeHeartbeatsTest do
     assert with_inventory.host_inventory == inventory
 
     assert Payload.build(target, with_inventory, node_id: node_id) ==
+             Payload.build(target, without, node_id: node_id)
+
+    diagnostics = Diagnostics.project(with_inventory, inventory.observed_at_unix_ms)
+
+    with_diagnostics = Map.put(with_inventory, :diagnostics, diagnostics)
+
+    assert Payload.build(target, with_diagnostics, node_id: node_id) ==
              Payload.build(target, without, node_id: node_id)
   end
 

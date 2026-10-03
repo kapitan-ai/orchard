@@ -23,6 +23,8 @@
 - [x] 3.2 Implement separate NVIDIA and AMD accelerator observations with stable identities, and verify no capacity, allocation, device binding, or runtime startup follows
 - [ ] 3.3 Expose redacted health, logs, metrics, inventory, and lifecycle diagnostics through retained generic surfaces, and verify no support-bundle or archive format is introduced
 
+The `expose-redacted-node-observations` change covers only the bounded runtime-target inventory and health/worker-state projection, exposed through the existing authenticated `GET /ops/v1/health` runtime summary. Registered-node status has no persisted host inventory. Logs, metrics breadth and candidate qualification remain deferred; 3.3 is not complete.
+
 ## 4. Trust
 
 - [ ] 4.1 Propose a future credential lifecycle OpenSpec change reviewed under `docs/process.md` and reconcile it into `SPEC.md` before implementing credential behavior
