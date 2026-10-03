@@ -189,6 +189,8 @@ Accepted controls detect unexpected mutation of signed nested code and entitleme
 Current checksum and JSON sidecars are not authenticated against coordinated substitution and must not be treated alone as release provenance.
 
 These requirements do not mean every development build or currently available artifact is Developer ID signed, notarized, stapled, or published through a governed release process.
+Native `Orchard.app` and DMG distribution is currently paused (`SPEC.md` §11.0): the committed `packaging/distribution-control` makes the app assembly, app signing, and DMG entrypoints refuse, so no Orchard-produced app or DMG artifact is currently issued.
+Treat any `Orchard.app` or DMG presented as a current Orchard release as unofficial.
 Candidate manifests, supported Release Lines, SBOM gates, immutable promotion, publication-byte verification, and publication-state controls in the active product-versioning change must not be treated as implemented policy until accepted and delivered.
 
 ## Reporting a vulnerability

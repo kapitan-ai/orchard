@@ -6,6 +6,61 @@ defmodule Orchard.Inference.ChatErrorTest do
   alias Orchard.InferenceEvent
   alias Orchard.Requests.CapturePolicy
 
+  test "KAP-119 SPEC.md §7.2.9 every SSE passthrough kind sanitizes unknown codes" do
+    for {kind, code, message} <- [
+          {:request_failed, "internal_error", "Internal error"},
+          {:request_interrupted, "internal_error", "Internal error"},
+          {:request_timed_out, "request_timeout", "Request timed out"},
+          {:request_cancelled, "request_cancelled", "Request was cancelled"}
+        ] do
+      error = %ChatError{
+        kind: kind,
+        source_code: "unknown_runtime_code",
+        source_message: "private runtime detail"
+      }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: code,
+               message: message,
+               param: nil
+             }
+    end
+  end
+
+  test "KAP-119 SPEC.md §§3.7.1, 7.2.9 SSE failures retain only recognized codes" do
+    for code <- ["made_up_retryable", "worker_down/private-detail"] do
+      mapping =
+        code
+        |> InferenceEvent.failed("untrusted worker detail", true)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+    end
+
+    for code <- [
+          "worker_down",
+          "runtime_unavailable",
+          "tool_call_parse_failed",
+          "tool_choice_not_satisfied"
+        ] do
+      mapping =
+        code
+        |> InferenceEvent.failed("recognized failure", false)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping.code == code
+      assert mapping.message == "recognized failure"
+    end
+  end
+
   test "prepare validation mappings preserve OpenAI envelope fields" do
     error = ChatError.from_prepare_reason({:validation, {:missing_required_field, "model"}})
     mapping = ChatError.api_mapping(error)
