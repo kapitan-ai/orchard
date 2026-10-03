@@ -30,7 +30,7 @@ _None this week._
 
 ### Features
 
-- Cluster operators can now retry an eligible terminal full-capture Request through `POST /ops/v1/requests/:id/retry`. Retries revalidate current Model access, preserve the original deadline, narrow capture and routing budgets, and are capped at three descendants per original Request; retained negotiated-reasoning Requests remain ineligible until their reconstruction contract ships. ([#423](https://github.com/kapitan-ai/orchard/pull/423))
+- Cluster operators can now retry an eligible terminal full-capture Request through `POST /ops/v1/requests/:id/retry`. Retries revalidate current Model access, retain the original timeout duration, narrow capture and routing budgets, and are capped at three descendants per original Request; retained negotiated-reasoning Requests remain ineligible until their reconstruction contract ships. ([#423](https://github.com/kapitan-ai/orchard/pull/423))
 
 ### Bug fixes
 
