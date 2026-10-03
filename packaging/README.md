@@ -1,6 +1,8 @@
 # Orchard Packaging and Operator Runbook
 
 The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
+That distribution is currently paused (`SPEC.md` §11.0): `packaging/distribution-control` is committed as `state=paused`, the app and DMG entrypoints refuse, and source development in [`../docs/local-dev.md`](../docs/local-dev.md) is the current active installation path.
+This runbook describes the approved packaged behavior for existing rehearsal installations and for use after distribution is resumed; see [`dmg/README.md`](dmg/README.md#distribution-pause) for the pause and its re-enable procedure.
 Source availability does not promise a supported public binary; see [`dmg/README.md`](dmg/README.md) for the release gates a public binary must clear.
 The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
@@ -721,10 +723,10 @@ Run the focused packaging checks from the repository root:
 ```bash
 scripts/test-build-payload.sh
 scripts/test-payload-signing-contracts.sh
-scripts/test-build-app.sh
-scripts/test-app-signing.sh
-scripts/test-build-dmg.sh
+scripts/test-distribution-control.sh
 swift test --package-path packaging/app
 ```
+
+While distribution is paused, do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`; they assemble an app bundle and a disk image and refuse with exit status `78`.
 
 Developer ID signing, notarization, stapling, draft publication, and system-root lifecycle mutations remain explicit credential or authorization gates.
