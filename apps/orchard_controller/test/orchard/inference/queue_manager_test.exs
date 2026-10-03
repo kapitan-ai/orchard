@@ -1694,7 +1694,7 @@ defmodule Orchard.Inference.QueueManagerTest do
 
   test "SPEC.md §5.5 caller-dead requeue retires source before other lane promotion" do
     node_id = Ecto.UUID.generate()
-    config = queue_config(capacity: 0, max_wait_ms: 1_000, poll_interval_ms: 50)
+    config = queue_config(capacity: 0, max_wait_ms: 5_000, poll_interval_ms: 50)
     caller = spawn(fn -> Process.sleep(:infinity) end)
 
     try do
@@ -1727,6 +1727,7 @@ defmodule Orchard.Inference.QueueManagerTest do
         assert {:error, :request_caller_disconnect, _metadata} =
                  QueueManager.requeue(first_grant, first_request, config: config)
 
+        assert queue_entry_awaiting?(second_ticket)
         refute Task.yield(second_awaiter, 100)
 
         assert :ok = QueueManager.abandon(second_ticket)

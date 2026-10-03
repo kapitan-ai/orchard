@@ -1431,7 +1431,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :live
-    test "SPEC.md M4 retries one uncommitted attempt across JSON and SSE", %{bundle: bundle} do
+    test "SPEC.md §5.3 (#329) charges only the selected retry attempt across JSON and SSE", %{
+      bundle: bundle
+    } do
       create_queue_model!(bundle, "chat-bounded-retry")
       %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry")
       grant_active_models!(tenant)
@@ -1439,7 +1441,16 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       for stream? <- [false, true] do
         idempotency_key = "chat-bounded-retry-#{stream?}"
 
-        nodes = configure_retry_nodes!(successful_retry_events())
+        [first, second] = successful_retry_events()
+
+        discarded_usage =
+          InferenceEvent.usage_update(%InferenceEvent.Usage{
+            input_tokens: 1,
+            output_tokens: 5,
+            total_tokens: 6
+          })
+
+        nodes = configure_retry_nodes!([[discarded_usage | first], second])
 
         Process.put(:orchard_retry_started_probe, fn request ->
           send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
@@ -1494,6 +1505,13 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert request.reserved_output_tokens == 0
         assert_logical_identity!(request, idempotency_key, :metadata)
         assert_successful_retry!(request, nodes)
+        assert request.output_tokens == 1
+        assert request.output_usage_status == :exact
+        [_, discarded, _, selected] = Requests.list_request_step_events(request)
+        assert discarded.result["output_tokens"] == 5
+        assert discarded.result["output_usage_status"] == "lower_bound"
+        assert selected.result["output_tokens"] == 1
+        assert selected.result["output_usage_status"] == "exact"
       end
     end
 
@@ -2024,10 +2042,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert_tool_serializer_failure!(request)
     end
 
-    test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Chat errors" do
+    test "KAP-119 SPEC.md §§7.2.9, 7.5.3a normalize unknown and reasoning Chat SSE failures" do
       worker_message = "<think>worker marker bytes and model output</think>"
 
       for code <- [
+            "made_up_retryable",
+            "request_interrupted/private-detail",
             "reasoning_parser_conformance_failed",
             "reasoning_policy_conformance_failed"
           ] do
@@ -2052,6 +2072,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
         assert [{:error, payload}] =
                  Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert List.last(events) == {:error, payload}
 
         assert payload["error"] == %{
                  "code" => "internal_error",

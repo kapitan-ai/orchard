@@ -39,6 +39,7 @@ jobs:
       macos: ${{ steps.classify.outputs.macos }}
       mlx: ${{ steps.classify.outputs.mlx }}
       packaging: ${{ steps.classify.outputs.packaging }}
+      app_distribution: ${{ steps.classify.outputs.app_distribution }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,8 +57,12 @@ jobs:
         run: |
           set -o pipefail
 
+          # The committed Distribution Pause Control decides whether the
+          # Orchard.app and DMG assembly lane is applicable (SPEC.md §11.0).
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            printf '%s=true\n' portable conformance macos mlx packaging >> "$GITHUB_OUTPUT"
+            printf '%s=true\n' portable conformance macos mlx packaging \
+              | scripts/ci/resolve-app-distribution-lane.sh \
+              >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -69,6 +74,7 @@ jobs:
 
           printf '%s\n' "$changed_paths" \
             | scripts/ci/classify-required-validation-paths.sh \
+            | scripts/ci/resolve-app-distribution-lane.sh \
             >> "$GITHUB_OUTPUT"
 
       - name: Test validation fan-out and aggregate gate
@@ -76,6 +82,11 @@ jobs:
           scripts/ci/test-classify-required-validation-paths.sh
           scripts/ci/test-required-validation-gate.sh
           scripts/ci/test-platform-test-routing.sh
+          scripts/ci/test-app-distribution-lane.sh
+          scripts/ci/test-linux-portable-validation-report.sh
+
+      - name: Test distribution pause guards
+        run: scripts/test-distribution-control.sh
 
   linux-portable:
     name: Linux portable control-plane core
@@ -101,6 +112,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # Report steps are diagnostic: they never fail the lane, and a missing
+      # or incomplete report means unknown, never success (docs/tooling.md).
+      - name: Start validation report
+        continue-on-error: true
+        env:
+          ORCHARD_REPORT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ORCHARD_REPORT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: |
+          scripts/ci/linux-portable-validation-report.sh start "$REPORT_DIR"
+          scripts/ci/linux-portable-validation-report.sh source "$REPORT_DIR"
+          scripts/ci/linux-portable-validation-report.sh lockfiles "$REPORT_DIR" before
+
       - name: Install pinned toolchain
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
@@ -118,6 +142,49 @@ jobs:
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 
+      # `mise current` reports the configured toolchain; the runtime probes
+      # report what each installed runtime says. Probes never install tools
+      # or create environments: mise auto-install is off for this step only,
+      # and uv discovers each package's existing .venv interpreter; only a path
+      # inside that .venv counts, and its version is read from that exact path
+      # (absent, incompatible, or fallback interpreters mean unknown).
+      # The PostgreSQL probe is a read-only SHOW; only its numeric value is kept.
+      - name: Record setup identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MISE_EXEC_AUTO_INSTALL: "false"
+          PGCONNECT_TIMEOUT: "5"
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: |
+          # Collect every fact possible; a missing fact is recorded as unknown.
+          set +e
+          report=scripts/ci/linux-portable-validation-report.sh
+          probe() { timeout 60 "$@" 2>/dev/null | head -n 1; }
+          "$report" lockfiles "$REPORT_DIR" after
+          {
+            printf 'mise %s\n' "$(probe mise --version | awk '{ print $1 }')"
+            timeout 60 mise current 2>/dev/null
+          } | "$report" tools "$REPORT_DIR"
+          {
+            printf 'erlang %s\n' "$(probe mise exec -- erl -noshell -eval \
+              '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().')"
+            printf 'elixir %s\n' "$(probe mise exec -- elixir --short-version)"
+            printf 'uv %s\n' "$(probe mise exec -- uv --version | awk '{ print $2 }')"
+            root="$(pwd -P)"
+            for package in orchard_tokenizer orchard_worker_mlx; do
+              found="$(probe mise exec -- uv python find --directory "native/$package")"
+              version=""
+              case "$found" in
+                *..*) ;;
+                "$root/native/$package/.venv/bin/"*)
+                  version="$(probe mise exec -- uv python find --no-project --show-version "$found")" ;;
+              esac
+              printf 'python_%s %s\n' "${package#orchard_}" "$version"
+            done
+          } | "$report" runtime "$REPORT_DIR"
+          probe psql -X -A -t -c 'SHOW server_version_num' | "$report" postgres "$REPORT_DIR"
+
       - name: Prove portable compilation excludes Darwin helpers
         run: scripts/test-portable-core-compilation.sh
 
@@ -127,6 +194,7 @@ jobs:
           MIX_ENV=test mise exec -- mix ecto.migrate
 
       - name: Cache Dialyzer PLTs
+        id: dialyzer-plt
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -134,6 +202,20 @@ jobs:
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
           key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+
+      # Re-evaluates the unchanged cache key expression above (actions/cache
+      # exposes only cache-hit) and records its SHA-256 identity.
+      - name: Record cache identity
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          DIALYZER_PLT_CACHE_HIT: ${{ steps.dialyzer-plt.outputs.cache-hit }}
+          DIALYZER_PLT_KEY: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          DIALYZER_PLT_OUTCOME: ${{ steps.dialyzer-plt.outcome }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: >-
+          scripts/ci/linux-portable-validation-report.sh cache "$REPORT_DIR" dialyzer_plt
+          "$DIALYZER_PLT_OUTCOME" "$DIALYZER_PLT_CACHE_HIT" "$DIALYZER_PLT_KEY"
 
       - name: Run portable static gates
         run: |
@@ -143,7 +225,38 @@ jobs:
           mise exec -- mix dialyzer
 
       - name: Run portable tests and coverage
+        env:
+          ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
+
+      # Writes the publication receipt only after a successful finalize has
+      # published report.txt as a regular, non-symlink file.
+      - name: Finalize validation report
+        id: finalize-report
+        if: always()
+        continue-on-error: true
+        env:
+          JOB_STATUS: ${{ job.status }}
+          REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
+        run: |
+          scripts/ci/linux-portable-validation-report.sh finalize "$REPORT_DIR" "$JOB_STATUS"
+          if [[ -f "$REPORT_DIR/report.txt" && ! -L "$REPORT_DIR/report.txt" ]]; then
+            printf 'published=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Uploads only report.txt, and only when the finalize step itself
+      # succeeded (its outcome, before continue-on-error) and wrote its receipt.
+      # A failed, cancelled, or skipped finalize, or a non-file report.txt,
+      # uploads nothing. The staging file and raw output are never uploaded.
+      - name: Upload validation report
+        if: always() && steps.finalize-report.outcome == 'success' && steps.finalize-report.outputs.published == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-portable-validation-report-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/orchard-linux-portable-report/report.txt
+          if-no-files-found: warn
+          retention-days: 14
 
   provider-conformance:
     name: Provider-neutral conformance
@@ -272,8 +385,10 @@ jobs:
           mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx
           pytest
 
+  # Payload, signing-contract, Swift package, relocated-root lifecycle, and
+  # packaged orchardctl checks. It never assembles Orchard.app or a DMG.
   packaging-validation:
-    name: Orchard.app and DMG validation
+    name: Packaging contract validation
     needs: changes
     if: needs.changes.outputs.packaging == 'true'
     runs-on: macos-15
@@ -318,22 +433,48 @@ jobs:
           scripts/test-build-payload.sh
           scripts/test-payload-signing-contracts.sh
 
-      - name: Test Orchard.app lifecycle and assembly
+      - name: Test Orchard.app package and service lifecycle
         run: |
           xcrun swift-format lint --recursive packaging/app/Sources packaging/app/Tests
           swift build --package-path packaging/app
           swift test --package-path packaging/app
           swift test --package-path packaging/app --enable-code-coverage
           scripts/test-app-service-lifecycle.sh
-          scripts/test-build-app.sh
-          scripts/test-app-signing.sh
-          scripts/test-build-dmg.sh
 
       - name: Test packaged orchardctl
         run: |
           scripts/test-payload-orchardctl-controller-runtime.sh
           scripts/test-payload-orchardctl-console-pty.sh
           scripts/test-payload-orchardctl-controller-release.sh
+
+  # Dormant while packaging/distribution-control is paused (SPEC.md §11.0):
+  # the classifier then reports app_distribution=false and the gate requires
+  # this job to be skipped.
+  app-distribution-validation:
+    name: Orchard.app and DMG assembly validation
+    needs: changes
+    if: needs.changes.outputs.app_distribution == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # verify-app-signing.sh runs the payload closure check through
+      # `mise exec`, so the pinned toolchain is required here.
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.9.2
+          cache: false
+
+      - name: Test Orchard.app assembly, signing, and DMG handoff
+        run: |
+          scripts/test-build-app.sh
+          scripts/test-app-signing.sh
+          scripts/test-build-dmg.sh
 
   openspec-validation:
     name: OpenSpec validation
@@ -373,6 +514,7 @@ jobs:
       - macos-host
       - mlx-validation
       - packaging-validation
+      - app-distribution-validation
       - openspec-validation
     if: always()
     runs-on: ubuntu-latest
@@ -385,6 +527,8 @@ jobs:
 
       - name: Evaluate required validation results
         env:
+          APP_DISTRIBUTION_REQUIRED: ${{ needs.changes.outputs.app_distribution }}
+          APP_DISTRIBUTION_RESULT: ${{ needs.app-distribution-validation.result }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           CONFORMANCE_REQUIRED: ${{ needs.changes.outputs.conformance }}
           CONFORMANCE_RESULT: ${{ needs.provider-conformance.result }}

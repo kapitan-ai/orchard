@@ -1,3 +1,46 @@
+defmodule Orchard.Cluster.V1.HostEvidenceState do
+  @moduledoc false
+
+  use Protobuf,
+    enum: true,
+    full_name: "cluster.v1.HostEvidenceState",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:HOST_EVIDENCE_STATE_UNSPECIFIED, 0)
+  field(:HOST_EVIDENCE_STATE_OBSERVED, 1)
+  field(:HOST_EVIDENCE_STATE_ABSENT, 2)
+  field(:HOST_EVIDENCE_STATE_PARTIAL, 3)
+  field(:HOST_EVIDENCE_STATE_ERROR, 4)
+end
+
+defmodule Orchard.Cluster.V1.HostInventoryAuthority do
+  @moduledoc false
+
+  use Protobuf,
+    enum: true,
+    full_name: "cluster.v1.HostInventoryAuthority",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:HOST_INVENTORY_AUTHORITY_UNSPECIFIED, 0)
+  field(:HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY, 1)
+end
+
+defmodule Orchard.Cluster.V1.AcceleratorVendor do
+  @moduledoc false
+
+  use Protobuf,
+    enum: true,
+    full_name: "cluster.v1.AcceleratorVendor",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:ACCELERATOR_VENDOR_UNSPECIFIED, 0)
+  field(:ACCELERATOR_VENDOR_NVIDIA, 1)
+  field(:ACCELERATOR_VENDOR_AMD, 2)
+end
+
 defmodule Orchard.Cluster.V1.StatusRequest do
   @moduledoc false
 
@@ -159,6 +202,202 @@ defmodule Orchard.Cluster.V1.WorkerCrashCounter do
   field(:counter_version, 3, type: :string, json_name: "counterVersion")
 end
 
+defmodule Orchard.Cluster.V1.HostEvidence do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostEvidence",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:state, 1, type: Orchard.Cluster.V1.HostEvidenceState, enum: true)
+  field(:source, 2, type: :string)
+  field(:observed_at_unix_ms, 3, type: :uint64, json_name: "observedAtUnixMs")
+  field(:error_code, 4, type: :string, json_name: "errorCode")
+end
+
+defmodule Orchard.Cluster.V1.HostCpuObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostCpuObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:architecture, 2, type: :string)
+  field(:logical_processor_count, 3, type: :uint32, json_name: "logicalProcessorCount")
+  field(:core_count, 4, type: :uint32, json_name: "coreCount")
+  field(:socket_count, 5, type: :uint32, json_name: "socketCount")
+  field(:vendor_id, 6, type: :string, json_name: "vendorId")
+  field(:model_name, 7, type: :string, json_name: "modelName")
+end
+
+defmodule Orchard.Cluster.V1.HostMemoryObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostMemoryObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:physical_bytes, 2, type: :uint64, json_name: "physicalBytes")
+  field(:available_bytes, 3, type: :uint64, json_name: "availableBytes")
+  field(:swap_total_bytes, 4, type: :uint64, json_name: "swapTotalBytes")
+  field(:swap_free_bytes, 5, type: :uint64, json_name: "swapFreeBytes")
+end
+
+defmodule Orchard.Cluster.V1.HostDiskObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostDiskObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:mount_point, 2, type: :string, json_name: "mountPoint")
+  field(:filesystem, 3, type: :string)
+  field(:total_bytes, 4, type: :uint64, json_name: "totalBytes")
+  field(:available_bytes, 5, type: :uint64, json_name: "availableBytes")
+end
+
+defmodule Orchard.Cluster.V1.HostPlatformObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostPlatformObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:os_id, 2, type: :string, json_name: "osId")
+  field(:os_name, 3, type: :string, json_name: "osName")
+  field(:os_version, 4, type: :string, json_name: "osVersion")
+  field(:kernel_release, 5, type: :string, json_name: "kernelRelease")
+  field(:architecture, 6, type: :string)
+  field(:libc_name, 7, type: :string, json_name: "libcName")
+  field(:libc_version, 8, type: :string, json_name: "libcVersion")
+  field(:systemd_version, 9, type: :string, json_name: "systemdVersion")
+  field(:cgroup_mode, 10, type: :string, json_name: "cgroupMode")
+end
+
+defmodule Orchard.Cluster.V1.HostNetworkAddressObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostNetworkAddressObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:family, 1, type: :string)
+  field(:address, 2, type: :string)
+  field(:prefix_length, 3, type: :uint32, json_name: "prefixLength")
+  field(:scope, 4, type: :string)
+end
+
+defmodule Orchard.Cluster.V1.HostNetworkInterfaceObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostNetworkInterfaceObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:name, 1, type: :string)
+  field(:index, 2, type: :uint32)
+  field(:oper_state, 3, type: :string, json_name: "operState")
+  field(:mtu, 4, type: :uint32)
+  field(:link_type, 5, type: :string, json_name: "linkType")
+  field(:hardware_address, 6, type: :string, json_name: "hardwareAddress")
+  field(:addresses, 7, repeated: true, type: Orchard.Cluster.V1.HostNetworkAddressObservation)
+end
+
+defmodule Orchard.Cluster.V1.HostNetworkObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostNetworkObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:interfaces, 2, repeated: true, type: Orchard.Cluster.V1.HostNetworkInterfaceObservation)
+end
+
+defmodule Orchard.Cluster.V1.AcceleratorObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.AcceleratorObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:vendor, 2, type: Orchard.Cluster.V1.AcceleratorVendor, enum: true)
+  field(:stable_id, 3, type: :string, json_name: "stableId")
+  field(:identity_kind, 4, type: :string, json_name: "identityKind")
+  field(:device_ordinal, 5, type: :uint32, json_name: "deviceOrdinal")
+  field(:pci_address, 6, type: :string, json_name: "pciAddress")
+  field(:numa_node, 7, type: :string, json_name: "numaNode")
+  field(:model_name, 8, type: :string, json_name: "modelName")
+  field(:memory_total_bytes, 9, type: :uint64, json_name: "memoryTotalBytes")
+  field(:driver_version, 10, type: :string, json_name: "driverVersion")
+end
+
+defmodule Orchard.Cluster.V1.AcceleratorRuntimeObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.AcceleratorRuntimeObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:name, 2, type: :string)
+  field(:version, 3, type: :string)
+end
+
+defmodule Orchard.Cluster.V1.AcceleratorProviderObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.AcceleratorProviderObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:evidence, 1, type: Orchard.Cluster.V1.HostEvidence)
+  field(:vendor, 2, type: Orchard.Cluster.V1.AcceleratorVendor, enum: true)
+  field(:devices, 3, repeated: true, type: Orchard.Cluster.V1.AcceleratorObservation)
+  field(:visibility_filter, 4, type: :string, json_name: "visibilityFilter")
+  field(:runtime, 5, type: Orchard.Cluster.V1.AcceleratorRuntimeObservation)
+end
+
+defmodule Orchard.Cluster.V1.HostInventoryObservation do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostInventoryObservation",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:schema_version, 1, type: :uint32, json_name: "schemaVersion")
+  field(:observed_at_unix_ms, 2, type: :uint64, json_name: "observedAtUnixMs")
+  field(:authority, 3, type: Orchard.Cluster.V1.HostInventoryAuthority, enum: true)
+  field(:cpu, 4, type: Orchard.Cluster.V1.HostCpuObservation)
+  field(:memory, 5, type: Orchard.Cluster.V1.HostMemoryObservation)
+  field(:disk, 6, type: Orchard.Cluster.V1.HostDiskObservation)
+  field(:platform, 7, type: Orchard.Cluster.V1.HostPlatformObservation)
+  field(:network, 8, type: Orchard.Cluster.V1.HostNetworkObservation)
+
+  field(:accelerator_providers, 9,
+    repeated: true,
+    type: Orchard.Cluster.V1.AcceleratorProviderObservation,
+    json_name: "acceleratorProviders"
+  )
+end
+
 defmodule Orchard.Cluster.V1.StatusResponse do
   @moduledoc false
 
@@ -226,6 +465,11 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     repeated: true,
     type: Orchard.Cluster.V1.WorkerCrashCounter,
     json_name: "workerCrashCounters"
+  )
+
+  field(:host_inventory, 15,
+    type: Orchard.Cluster.V1.HostInventoryObservation,
+    json_name: "hostInventory"
   )
 end
 
