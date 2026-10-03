@@ -1,4 +1,4 @@
-.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version macos-native-helpers macos-native-test-helpers format compile credo dialyzer test cover check-elixir
+.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version macos-native-helpers macos-native-test-helpers linux-native-helpers linux-native-test-helpers format compile credo dialyzer test cover check-elixir
 
 MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
 
@@ -13,6 +13,8 @@ help:
 	  '  make validate-product-version Validate Product Version consistency' \
 	  '  make macos-native-helpers Build macOS helpers for source development' \
 	  '  make macos-native-test-helpers Build macOS helpers for Mix tests' \
+	  '  make linux-native-helpers Build Linux helpers for source development' \
+	  '  make linux-native-test-helpers Build Linux helpers for Mix tests' \
 	  '  make format         Run Elixir formatter' \
 	  '  make test           Run default test suite' \
 	  '  make cover          Run default test suite with coverage' \
@@ -55,13 +57,22 @@ macos-native-helpers:
 macos-native-test-helpers:
 	scripts/build-macos-native-helpers.sh --output _build/test/lib/orchard_cli/priv --include-test-helper
 
+linux-native-helpers:
+	scripts/build-linux-native-helpers.sh --output _build/dev/lib/orchard_cli/priv
+
+linux-native-test-helpers:
+	scripts/build-linux-native-helpers.sh --output _build/test/lib/orchard_cli/priv --include-test-helper
+
 HOST_OS ?= $(shell uname -s)
 
 ifeq ($(HOST_OS),Darwin)
-MACOS_TEST_HELPER_PREREQ := macos-native-test-helpers
+NATIVE_TEST_HELPER_PREREQ := macos-native-test-helpers
 MIX_TEST_PLATFORM_ARGS :=
+else ifeq ($(HOST_OS),Linux)
+NATIVE_TEST_HELPER_PREREQ := linux-native-test-helpers
+MIX_TEST_PLATFORM_ARGS := --exclude macos
 else
-MACOS_TEST_HELPER_PREREQ :=
+NATIVE_TEST_HELPER_PREREQ :=
 MIX_TEST_PLATFORM_ARGS := --exclude macos
 endif
 
@@ -77,10 +88,10 @@ credo:
 dialyzer:
 	mise exec -- mix dialyzer
 
-test: $(MACOS_TEST_HELPER_PREREQ)
+test: $(NATIVE_TEST_HELPER_PREREQ)
 	mise exec -- mix test $(MIX_TEST_PLATFORM_ARGS)
 
-cover: $(MACOS_TEST_HELPER_PREREQ)
+cover: $(NATIVE_TEST_HELPER_PREREQ)
 	mise exec -- mix test --cover $(MIX_TEST_PLATFORM_ARGS)
 
 check-elixir: format compile credo dialyzer test cover

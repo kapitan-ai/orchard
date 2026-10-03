@@ -29,6 +29,64 @@ defmodule OrchardConsole.RuntimeTest do
   end
 
   describe "snapshot/0" do
+    test "SPEC.md §4.6.1 projects inventory once through the runtime-target status seam" do
+      alias Orchard.Cluster.V1.{HostCpuObservation, HostEvidence, HostInventoryObservation}
+      alias Orchard.ClusterManagement.{NodeStatus, StatusBuilder}
+
+      now = DateTime.utc_now()
+      time = DateTime.to_unix(now, :millisecond) - 1000
+
+      inventory = %HostInventoryObservation{
+        schema_version: 1,
+        authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+        observed_at_unix_ms: time,
+        cpu: %HostCpuObservation{
+          evidence: %HostEvidence{
+            state: :HOST_EVIDENCE_STATE_OBSERVED,
+            source: "lscpu --json",
+            observed_at_unix_ms: time
+          },
+          logical_processor_count: 7,
+          model_name: "private hardware detail"
+        }
+      }
+
+      observation = %Observation{
+        observed_at: now,
+        host_inventory: inventory,
+        worker_state: :idle,
+        health: %{ready: true, health_message: "private message"}
+      }
+
+      stub_client(connect: {:ok, :ch}, status: {:ok, observation}, disconnect: :ok)
+
+      assert {:ok, snapshot} = Runtime.snapshot(timeout: 2000)
+      assert snapshot.diagnostics.inventory.cpu.count == 7
+      assert snapshot.diagnostics.inventory.cpu.observed_at_unix_ms == time
+      assert snapshot.diagnostics.runtime.health == "ready"
+      refute Jason.encode!(snapshot.diagnostics) =~ "private"
+      refute Map.has_key?(snapshot, :host_inventory)
+
+      target = Map.put(snapshot, :status, :ok)
+      status = StatusBuilder.runtime_target_status_map(target)
+      assert status.diagnostics.inventory.cpu.count == 7
+      assert status.diagnostics.inventory.cpu.observed_at_unix_ms == time
+      assert status.diagnostics.inventory.cpu.age_ms >= snapshot.diagnostics.inventory.cpu.age_ms
+      assert status.diagnostics.runtime.worker_state == "idle"
+      refute status.scheduling.eligible
+      assert status.dispatch_capacity == nil
+      assert status.lifecycle.state == nil
+      assert {:ok, shared} = NodeStatus.new(Jason.decode!(Jason.encode!(status)))
+      assert NodeStatus.to_map(shared).diagnostics.inventory.cpu.count == 7
+
+      assert_received {:connect_called, _}
+      refute_received {:connect_called, _}
+      assert_received {:status_called_with_opts, [timeout: 2000]}
+      refute_received {:status_called_with_opts, _}
+      assert_received {:observe_status_called, _, ^observation, _}
+      refute_received {:observe_status_called, _, _, _}
+    end
+
     test "success path normalizes worker state, sorts models, preserves count" do
       stub_client(
         connect: {:ok, :test_channel},

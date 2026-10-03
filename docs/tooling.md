@@ -18,7 +18,8 @@ Dependency compilation on the current macOS profile still requires a working hos
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 Required validation runs broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance on Linux.
-Separate macOS lanes prove host lifecycle, Orchard.app/DMG behavior, and MLX runtime behavior.
+Separate macOS lanes prove host lifecycle, packaging contracts, Orchard.app and DMG assembly, and MLX runtime behavior.
+Native Orchard.app and DMG distribution is paused under `SPEC.md` §11.0, so `scripts/ci/resolve-app-distribution-lane.sh` reads the committed `packaging/distribution-control` and reports `app_distribution=false`; CI then skips the assembly lane, and the gate expects that skip.
 `scripts/ci/classify-required-validation-paths.sh` selects which lanes a pull request runs from its changed paths, unknown paths select every lane, and `scripts/ci/evaluate-required-validation.sh` backs the single required `Required Orchard validation gate` check by demanding success from every selected lane and `skipped` from every unselected one.
 Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain credentialed release-only operations.
 
@@ -40,13 +41,13 @@ The pinned toolchain currently covers:
 
 | Tool | Pin | Purpose |
 |------|-----|---------|
-| Erlang/OTP | `29.0.2` | BEAM runtime, compiler, Dialyzer PLTs, releases |
+| Erlang/OTP | `29.1.1` | BEAM runtime, compiler, Dialyzer PLTs, releases |
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
 | Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
 | npm | `11.13.0` | Package manager for root tool and asset pins |
-| OpenSpec | `@fission-ai/openspec@1.10.0` | OpenSpec change/spec validation |
+| OpenSpec | `@fission-ai/openspec@1.13.1` | OpenSpec change/spec validation |
 | esbuild | `0.28.2` | Phoenix JavaScript asset bundling CLI |
 | Tailwind CSS | `4.3.3` | Phoenix CSS asset build CLI |
 
@@ -62,10 +63,20 @@ the Python interpreter version that `uv` is allowed to use.
 
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
-Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
-On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
-Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
-The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
+Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers, or the Transport publication helper, in the development CLI application.
+On Linux, `make linux-native-helpers` builds the Transport publication helper with the host C compiler (`cc`, or `CC`) for source development.
+`orchardctl transport enable-local-https` refuses before TLS generation when `orchard-transport-publish` is absent from the CLI application `priv` directory; no Mix step builds it implicitly.
+On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage the macOS test helpers automatically and run every test; on Linux hosts they stage the Linux Transport publication helpers and exclude the retained `macos` tag.
+Run `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux) first when invoking `mix test` directly.
+Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian, so GNU coreutils is a required host test prerequisite on every host.
+The Node Agent test helper checks fixed absolute paths in order and uses the first one whose `--version` identifies GNU coreutils `timeout`; it never searches `PATH` and installs nothing.
+Linux coreutils provides `/usr/bin/timeout`, which is checked first.
+On macOS, `brew install coreutils` installs g-prefixed tools such as `gtimeout` and a `libexec/gnubin` directory with unprefixed names, and may also link an unprefixed `timeout` into the Homebrew `bin` directory when that does not conflict.
+The helper checks each of these under both `/opt/homebrew` and `/usr/local`: `bin/timeout`, `bin/gtimeout`, and `opt/coreutils/libexec/gnubin/timeout`.
+Those tests always run; without a verified GNU guardian they fail with install guidance rather than being skipped.
+The explicit macOS builder owns sources under `packaging/macos/native_helpers` plus the shared `packaging/native_helpers/orchard_transport_publish.c`, and stages binaries into the selected `orchard_cli` application `priv` directory.
+`scripts/build-linux-native-helpers.sh` is the Linux counterpart for the shared Transport helper only.
+Both builders stage the fault-injecting `orchard-transport-publish-test` only with `--include-test-helper`, and a production-only build removes it; payload assembly never ships it.
 Payload assembly invokes the same builder before producing the packaged CLI release.
 Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
 
@@ -116,8 +127,8 @@ make test
 make cover
 ```
 
-The last two steps use the Make wrappers because they stage the retained macOS test helpers before Mix runs on Darwin and exclude macOS-only tests on non-Darwin hosts.
-Substitute `mise exec -- mix test` and `mise exec -- mix test --cover` on Darwin only after `make macos-native-test-helpers`.
+The last two steps use the Make wrappers because they stage the host's test helpers before Mix runs and exclude macOS-only tests on non-Darwin hosts.
+Substitute `mise exec -- mix test` and `mise exec -- mix test --cover` only after `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux).
 
 Portable-boundary and macOS native-helper proofs:
 
@@ -126,10 +137,24 @@ scripts/test-portable-core-compilation.sh
 scripts/test-build-macos-native-helpers.sh
 ```
 
-The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard Darwin helper artifact.
-The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal helper.
+The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard native helper artifact, including `orchard-transport-publish*`.
+The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal and Transport publication helpers.
 It also runs the lifecycle process-snapshot syscall regressions with LLVM coverage, including inaccessible unrelated processes and fail-closed BEAM identity checks.
 Run both when changing umbrella compile configuration, the retained helper sources, or the helper builder.
+
+Transport publication second-UID proof (SPEC.md §10.7, ADR 0036):
+
+```bash
+scripts/test-transport-publication-second-uid.sh
+```
+
+It builds the helpers into a disposable tree, pauses the test helper inside the private stage under child umasks `0022`, `0077`, `0002`, and `0000`, and proves the `nobody` account cannot read, list, or write the stage but can read the published `ca.crt` and `endpoint.json`.
+It also exercises real ACL refusal, foreign-owned ancestry refusal, root-owned custody, and, on Linux, the production helper's tmpfs refusal.
+On Linux, the focused Transport tests and the production-helper checks need `TMPDIR` (or `/tmp`) on ext4; the test-only helper's tmpfs acceptance does not qualify tmpfs hosts.
+It requires passwordless `sudo -n` and an existing `nobody` account, changes no sudoers, users, mounts, or grants, and fails rather than skipping when either is missing.
+Before it, the Linux portable and macOS host CI lanes run the focused Transport, TLS, and publication tests with `--include integration`, so Transport-invoked TLS generation runs real OpenSSL inside the private stage; those tests pass `--no-trust` or stop before any trust-store change.
+On Linux it also needs `setfacl` from the `acl` package.
+Fixtures live under the canonical temporary directory (`/private/tmp` on Darwin), never under the home directory or checkout, because the helper refuses ACL-bearing or symlinked ancestry.
 
 Required CI lane proofs:
 
@@ -138,11 +163,32 @@ scripts/test-linux-portable-core.sh
 scripts/test-provider-neutral-conformance.sh
 scripts/ci/test-classify-required-validation-paths.sh
 scripts/ci/test-required-validation-gate.sh
+scripts/ci/test-linux-portable-validation-report.sh
 ```
 
 `scripts/test-linux-portable-core.sh` runs the Linux portable lane's tests, coverage, tokenizer checks, and non-accelerator Worker Runtime checks; it excludes the `integration`, `macos`, `mlx_smoke`, and `mlx_benchmark` tags and refuses to run on Darwin.
+It builds no native helpers, so run `make linux-native-test-helpers` first; the CI lane stages them in a separate step.
 `scripts/test-provider-neutral-conformance.sh` runs the focused Worker Runtime, Runtime Endpoint, capability, lifecycle-invariant, and scheduler contract tests against the prepared test database.
-The two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+The first two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
+
+The Linux portable lane also uploads a bounded validation report, which is diagnostic only.
+Validation is unchanged: the lane runs the same commands with the same arguments, order, exclusions, and fail-fast behavior, and the required gate still reads job results.
+When `ORCHARD_LINUX_PORTABLE_REPORT_DIR` is set, `scripts/test-linux-portable-core.sh` streams each command's output to stdout, parses a private temporary copy, and deletes that copy.
+If the capture `tee` stops early, the rest of the output is still drained to stdout, so the command never sees a broken pipe; only bytes the failed `tee` had already read may be missing from the log, and that step's capture is recorded as failed.
+When a command exits on its own, the script's exit status is that command's status, and a reporting failure only prints a warning.
+When the run is interrupted by SIGINT or SIGTERM in this mode, the script finishes the current command and then exits with 130 or 143, whatever that command returned, and the report records the interruption as `unknown`.
+The report file holds only allowlisted `key=value` facts: source, head, and base SHAs, event and run attempt, public runner image, the configured toolchain from `mise current`, the versions reported by Erlang/OTP, Elixir, and uv, and the version of each package's existing `.venv` Python found through `uv python find` (probes never install tools, run Python directly, or create environments; an absent or incompatible environment, or a fallback interpreter outside the package `.venv`, is `unknown`), the numeric PostgreSQL `server_version_num` from a read-only `SHOW`, committed lockfile SHA-256 before and after setup, the existing Dialyzer PLT cache hit or miss with a SHA-256 of its unchanged key, and each command's label, exit status, and elapsed time.
+For test commands it also records the ExUnit seed and result totals that were already printed, pytest totals, coverage totals, and up to 20 failure identities per command, given as module and file location or pytest node ID with parameters removed.
+It never holds raw output, assertion payloads, passing-test names, environment values, credentials, or absolute paths.
+A changed lockfile is reported but does not fail the lane.
+Facts accumulate in an unpublished staging file.
+The finalize step accepts only the fixed staging vocabulary, then validates, bounds, and redacts the facts and publishes `report.txt` with a single rename.
+The upload runs only when that step succeeded and confirmed `report.txt` is a regular file, so a failed or interrupted finalize uploads nothing.
+`report.result` is `success` only when all ten commands are recorded in order with valid facts and status 0, every suite summary was recognized, every metadata fact is known, and the job had not failed or been cancelled.
+It is `failure` only when a command recorded a known nonzero exit status and the run was neither interrupted nor cancelled; `tests.result` and `tests.first_failed_step` still record that command outcome.
+An interrupted run, unrecognized output, a malformed or missing fact, or an unexpected key gives `unknown`, and a hard cancellation can leave no artifact at all; treat a missing artifact as unknown too.
+`scripts/ci/test-linux-portable-validation-report.sh` drives the lane script with disposable `uname` and `mise` stubs and proves the exact command order, the stop at each failing command, the host guard, a failing capture `tee`, interrupt handling, report completeness, the upload receipt, report bounds, and redaction on any host.
+Run it in the foreground, because its interrupt cases need a trappable SIGINT, and set `ORCHARD_TEST_BASH=/bin/bash` to repeat it under macOS bash 3.2.
 
 Native validation:
 
@@ -167,12 +213,13 @@ swift build --package-path packaging/app
 swift test --package-path packaging/app
 swift test --package-path packaging/app --enable-code-coverage
 scripts/test-app-service-lifecycle.sh
-scripts/test-build-app.sh
-scripts/test-app-signing.sh
-scripts/test-build-dmg.sh
+scripts/test-distribution-control.sh
 ```
 
-The last command uses the deterministic local Amore substitute by default.
+The last command proves the distribution pause guards with fixture trees and fake tools, and never assembles an app or DMG.
+While `packaging/distribution-control` is paused, do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`; they assemble an app bundle and a disk image, and the guarded entrypoints refuse with exit status `78`.
+After an approved resume, run them after the commands above.
+`scripts/test-build-dmg.sh` uses the deterministic local Amore substitute by default.
 Set `ORCHARD_TEST_REAL_AMORE=1` only for the credential-free local Amore DMG assembly smoke.
 Developer ID signing, notarization, stapling, draft publication, and system-root lifecycle changes require their separately documented credentials or interactive authorization.
 
@@ -219,15 +266,16 @@ mise exec -- mix proto.gen.worker
   pinned `protoc-gen-elixir` escript. Install the escript through the pinned
   Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
 - `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
-  `proto/cluster/v1/{common,events,peer_grant,runtime}.proto` into
+  `proto/cluster/v1/{common,events,peer_grant,reasoning,runtime}.proto` into
   `apps/orchard_shared/lib/cluster/v1/`.
 - `proto/orchard/worker/v1/worker_runtime.proto` is the sole authoritative Worker Runtime schema.
-- `mix proto.gen.worker` generates committed Python messages and gRPC stubs under `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`, the committed Elixir messages, service, and stub at `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex`, and the descriptor-set golden beside the canonical schema.
+- `mix proto.gen.worker` generates committed Python messages and gRPC stubs under `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`, the committed Elixir messages, service, and stub at `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex`, the shared Elixir cluster modules under `apps/orchard_shared/lib/cluster/v1/` (byte-identical to `mix proto.gen`), the descriptor-set golden beside the canonical schema, and the Elixir preparation wire fixture encoded from `scripts/support/worker-runtime-preparation-fixture.exs`.
 - Worker generation uses the provider-neutral Python tool environment and lock under `proto/orchard/worker/tooling/` and requires `protoc-gen-elixir` 0.16.0.
   Install the Elixir generator through the pinned Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
-- `mix proto.check.worker` regenerates every committed output into a temporary root and fails when any output is missing or byte-different.
+- `mix proto.check.worker` regenerates every committed output into a temporary root, including the shared Elixir cluster modules that encode the preparation fixture, and fails when any output is missing or byte-different.
   `scripts/test-worker-runtime-binding-drift.sh` proves that deliberate drift is rejected without modifying the checkout.
 - Descriptor and reciprocal Python/Elixir semantic fixtures live under `proto/orchard/worker/v1/` and are exercised by provider-neutral validation.
+  `fixtures/n_minus_1/worker_runtime.descriptor.pb` is a pinned, hand-maintained N-1 golden: the descriptor set from pre-reasoning baseline `126eb1bcbf89e1ef9bab913407196128b5b71ca4`. It is not a generator output; replace it only when the supported N-1 revision changes.
 
 ## Node Policy
 
@@ -264,6 +312,13 @@ Some dependencies are host services or Apple platform tools and are not managed
 by mise:
 
 - PostgreSQL local or external service
+- GNU coreutils `timeout` for the Node Agent host-inventory probe tests
+  (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`,
+  found as `timeout`, `gtimeout`, or the coreutils `gnubin` `timeout`)
+- POSIX ACL tools `/usr/bin/getfacl` and `/usr/bin/setfacl` on Linux for CLI
+  output-path ACL inspection and its tests (Ubuntu `acl` package)
+- A host C compiler for the explicit native-helper builders, including the
+  Linux Transport publication helper (`cc`, or `CC`; Ubuntu `build-essential`)
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
   Elixir proto generation
 - Xcode Command Line Tools and macOS distribution tools such as `codesign`,
