@@ -148,8 +148,16 @@ defmodule OrchardCLI.Commands.Transport do
 
   defp finish_publication({:published, ca_certfile, warnings}, publication) do
     case TransportPublication.commit(publication) do
-      :ok -> {:ok, ca_certfile, warnings}
-      {:error, reason} -> {:error, TransportPublication.format_error(reason)}
+      :ok ->
+        {:ok, ca_certfile, warnings}
+
+      {:error, reason} ->
+        {:error,
+         "public CA and endpoint metadata were published under #{publication.public_dir} " <>
+           "and controller.env was updated, but the publication helper did not confirm " <>
+           "COMMIT: #{TransportPublication.format_error(reason)}\n" <>
+           "Controller restart was NOT attempted. Inspect #{publication.public_dir} and " <>
+           "restart the controller once publication is verified."}
     end
   end
 

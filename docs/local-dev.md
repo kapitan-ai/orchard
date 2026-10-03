@@ -968,6 +968,7 @@ Source development needs `make macos-native-helpers` or `make linux-native-helpe
 The helper qualifies only local APFS/HFS volumes on Darwin and ext4 on Linux, and refuses ACL-bearing, symlinked, group- or world-writable, or foreign-owned support roots and ancestors unchanged.
 It also refuses before TLS generation when `config/` is wider than `0700` (as `orchardctl env init` creates it) or when `controller.env` or a `config/tls/` source is a symlink, foreign-owned, group-writable, or ACL-bearing.
 Tests place support roots under the canonical temporary directory (`/private/tmp` on Darwin) with explicit `0700` fixture roots; the test-only helper additionally accepts tmpfs.
+On Linux, Transport tests that run the production helper place their fixtures under `TMPDIR` (or `/tmp`), so that directory must be on ext4; on a tmpfs `/tmp` those tests refuse with an unqualified-filesystem error. The test-only helper's tmpfs acceptance is a test-fixture convenience, not a claim that tmpfs hosts qualify for production publication.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)

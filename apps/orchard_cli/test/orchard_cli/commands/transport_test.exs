@@ -1153,6 +1153,60 @@ defmodule OrchardCLI.Commands.TransportTest do
         File.rm_rf(support_root)
       end
     end
+
+    test "COMMIT failure after publication and env upsert reports both completed and skips restart" do
+      support_root = tmp_support_root()
+      pid_file = Path.join(support_root, "helper.pid")
+      parent = self()
+
+      runtime =
+        enabled_runtime(support_root, %{
+          publication_opts: [
+            executable: TransportFixture.helper(:production),
+            wrapper: ["/bin/sh", "-c", ~s(echo $$ > "#{pid_file}" && exec "$0" "$@")]
+          ],
+          shell_env_upsert: fn path, assignments ->
+            result = ShellEnv.upsert(path, assignments)
+            kill_helper!(pid_file)
+            result
+          end,
+          cmd: fn program, args, opts ->
+            send(parent, {:cmd, program, args, opts})
+            {"{ pid = 123 }", 0}
+          end
+        })
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        public = Path.join(support_root, "public")
+        assert message =~ "public CA and endpoint metadata were published under #{public}"
+        assert message =~ "controller.env was updated"
+        assert message =~ "did not confirm COMMIT"
+        assert message =~ "Controller restart was NOT attempted"
+
+        assert File.read!(Path.join([support_root, "config", "controller.env"])) =~
+                 "ORCHARD_PUBLIC_HOST"
+
+        assert_public_profile(support_root)
+        assert collect_cmds() == []
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    defp kill_helper!(pid_file) do
+      pid = pid_file |> File.read!() |> String.trim()
+      {_output, 0} = System.cmd("kill", ["-KILL", pid])
+
+      Enum.find(1..500, fn _attempt ->
+        Process.sleep(10)
+        elem(System.cmd("kill", ["-0", pid], stderr_to_stdout: true), 1) != 0
+      end) || flunk("transport publication helper #{pid} did not exit")
+    end
   end
 
   defp collect_cmds do
