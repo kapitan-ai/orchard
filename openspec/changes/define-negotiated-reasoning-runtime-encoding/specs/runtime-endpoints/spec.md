@@ -24,6 +24,13 @@ The interface SHALL expose unary `PrepareInference` before execution. It SHALL r
 
 Legacy status, execution, and event projections SHALL omit reasoning additions for older or non-advertising bindings. Reasoning evidence is live-only: heartbeat and durable observation writes MUST NOT carry it or extend its freshness.
 
+The Controller-to-Node `NodeRuntimeService` gRPC compatibility binding SHALL
+remain legacy-only and non-advertising for negotiated reasoning. It SHALL gain
+no `PrepareInference` RPC, and its adapter SHALL emit neither the reasoning
+observation selector nor observation. A negotiated Request SHALL be placed only
+through a binding that can prove preparation; therefore a
+gRPC-compatibility-only candidate SHALL be non-advertising for the tuple.
+
 #### Scenario: A live probe cannot prove an unloaded placement
 
 - **WHEN** a live reasoning observation has no valid loaded binding for the requested model
@@ -116,3 +123,9 @@ Legacy status, execution, and event projections SHALL omit reasoning additions f
 - **WHEN** the Runtime Endpoint binding does not advertise the reasoning observation projection
 - **THEN** Orchard sends no reasoning field or event to that binding
 - **AND** legacy behavior remains available under its existing contract
+
+#### Scenario: A candidate has only the gRPC compatibility binding
+
+- **WHEN** a loaded candidate is reachable only through `NodeRuntimeService`
+- **THEN** it advertises no negotiated reasoning tuple and receives no reasoning selector
+- **AND** Orchard does not place a negotiated Request there because the binding cannot prove preparation

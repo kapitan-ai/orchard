@@ -4,6 +4,7 @@ package cluster.v1;
 
 import "cluster/v1/common.proto";
 import "cluster/v1/events.proto";
+import "cluster/v1/reasoning.proto";
 
 // Compatibility transport for Runtime Endpoint operations.
 // The transport-independent Runtime Endpoint Interface is the Controller
@@ -21,7 +22,9 @@ service NodeRuntimeService {
   rpc ScorePrefixCache(ScorePrefixCacheRequest) returns (ScorePrefixCacheResponse);
 }
 
-message StatusRequest {}
+message StatusRequest {
+  ReasoningObservationRequest reasoning_observation = 1;
+}
 
 // Node metadata reported by the node-agent alongside runtime status.
 message RuntimeNodeMetadata {
@@ -302,6 +305,7 @@ message StatusResponse {
   // absent or zero values as node capacity 1.
   uint32 max_concurrency = 12;
   repeated WorkerCrashCounter worker_crash_counters = 13;
+  ReasoningLiveObservation reasoning_observation = 14;
   // Additive observation-only host evidence. Absence means not observed and
   // creates no readiness, scheduling, allocation, provider, or custody fact.
   HostInventoryObservation host_inventory = 15;
@@ -382,6 +386,7 @@ message ExecuteInferenceRequest {
   repeated uint32 prompt_token_ids = 11;
   bool return_token_ids = 12;
   bool return_logprobs = 13;
+  PreparationRedemption preparation_redemption = 14;
 }
 
 message CancelInferenceRequest {
