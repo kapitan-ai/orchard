@@ -55,7 +55,8 @@ record_helper_inventory() {
       "$(hash_file "$file" | cut -d' ' -f1)" \
       "${file#"$BUILD_PATH/"}" >> "$destination"
   done < <(find "$BUILD_PATH" -type f \
-    \( -name 'orchard-secret-tty*' -o -name 'orchard-lifecycle-helper' \) |
+    \( -name 'orchard-secret-tty*' -o -name 'orchard-lifecycle-helper' \
+    -o -name 'orchard-transport-publish*' \) |
     LC_ALL=C sort)
 }
 

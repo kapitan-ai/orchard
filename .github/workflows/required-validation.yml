@@ -224,10 +224,23 @@ jobs:
           mise exec -- mix credo --strict
           mise exec -- mix dialyzer
 
+      - name: Stage Linux Transport publication helpers
+        run: make linux-native-test-helpers
+
       - name: Run portable tests and coverage
         env:
           ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
+
+      - name: Test Transport private-stage publication with real TLS generation
+        run: >-
+          mise exec -- mix test --include integration --exclude macos
+          apps/orchard_cli/test/orchard_cli/transport_publication_test.exs
+          apps/orchard_cli/test/orchard_cli/commands/transport_test.exs
+          apps/orchard_cli/test/orchard_cli/commands/tls_test.exs
+
+      - name: Validate Transport publication against a second UID
+        run: scripts/test-transport-publication-second-uid.sh
 
       # Writes the publication receipt only after a successful finalize has
       # published report.txt as a regular, non-symlink file.
@@ -356,6 +369,14 @@ jobs:
           scripts/test-build-macos-native-helpers.sh
           make macos-native-test-helpers
           mise exec -- mix test --only macos
+
+      - name: Test Transport private-stage publication
+        run: |
+          mise exec -- mix test --include integration \
+            apps/orchard_cli/test/orchard_cli/transport_publication_test.exs \
+            apps/orchard_cli/test/orchard_cli/commands/transport_test.exs \
+            apps/orchard_cli/test/orchard_cli/commands/tls_test.exs
+          scripts/test-transport-publication-second-uid.sh
 
   mlx-validation:
     name: MLX provider validation

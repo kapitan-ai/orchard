@@ -63,16 +63,20 @@ the Python interpreter version that `uv` is allowed to use.
 
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
-Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
-On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
-Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
+Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers, or the Transport publication helper, in the development CLI application.
+On Linux, `make linux-native-helpers` builds the Transport publication helper with the host C compiler (`cc`, or `CC`) for source development.
+`orchardctl transport enable-local-https` refuses before TLS generation when `orchard-transport-publish` is absent from the CLI application `priv` directory; no Mix step builds it implicitly.
+On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage the macOS test helpers automatically and run every test; on Linux hosts they stage the Linux Transport publication helpers and exclude the retained `macos` tag.
+Run `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux) first when invoking `mix test` directly.
 Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian, so GNU coreutils is a required host test prerequisite on every host.
 The Node Agent test helper checks fixed absolute paths in order and uses the first one whose `--version` identifies GNU coreutils `timeout`; it never searches `PATH` and installs nothing.
 Linux coreutils provides `/usr/bin/timeout`, which is checked first.
 On macOS, `brew install coreutils` installs g-prefixed tools such as `gtimeout` and a `libexec/gnubin` directory with unprefixed names, and may also link an unprefixed `timeout` into the Homebrew `bin` directory when that does not conflict.
 The helper checks each of these under both `/opt/homebrew` and `/usr/local`: `bin/timeout`, `bin/gtimeout`, and `opt/coreutils/libexec/gnubin/timeout`.
 Those tests always run; without a verified GNU guardian they fail with install guidance rather than being skipped.
-The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
+The explicit macOS builder owns sources under `packaging/macos/native_helpers` plus the shared `packaging/native_helpers/orchard_transport_publish.c`, and stages binaries into the selected `orchard_cli` application `priv` directory.
+`scripts/build-linux-native-helpers.sh` is the Linux counterpart for the shared Transport helper only.
+Both builders stage the fault-injecting `orchard-transport-publish-test` only with `--include-test-helper`, and a production-only build removes it; payload assembly never ships it.
 Payload assembly invokes the same builder before producing the packaged CLI release.
 Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
 
@@ -123,8 +127,8 @@ make test
 make cover
 ```
 
-The last two steps use the Make wrappers because they stage the retained macOS test helpers before Mix runs on Darwin and exclude macOS-only tests on non-Darwin hosts.
-Substitute `mise exec -- mix test` and `mise exec -- mix test --cover` on Darwin only after `make macos-native-test-helpers`.
+The last two steps use the Make wrappers because they stage the host's test helpers before Mix runs and exclude macOS-only tests on non-Darwin hosts.
+Substitute `mise exec -- mix test` and `mise exec -- mix test --cover` only after `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux).
 
 Portable-boundary and macOS native-helper proofs:
 
@@ -133,10 +137,24 @@ scripts/test-portable-core-compilation.sh
 scripts/test-build-macos-native-helpers.sh
 ```
 
-The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard Darwin helper artifact.
-The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal helper.
+The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard native helper artifact, including `orchard-transport-publish*`.
+The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal and Transport publication helpers.
 It also runs the lifecycle process-snapshot syscall regressions with LLVM coverage, including inaccessible unrelated processes and fail-closed BEAM identity checks.
 Run both when changing umbrella compile configuration, the retained helper sources, or the helper builder.
+
+Transport publication second-UID proof (SPEC.md §10.7, ADR 0036):
+
+```bash
+scripts/test-transport-publication-second-uid.sh
+```
+
+It builds the helpers into a disposable tree, pauses the test helper inside the private stage under child umasks `0022`, `0077`, `0002`, and `0000`, and proves the `nobody` account cannot read, list, or write the stage but can read the published `ca.crt` and `endpoint.json`.
+It also exercises real ACL refusal, foreign-owned ancestry refusal, root-owned custody, and, on Linux, the production helper's tmpfs refusal.
+On Linux, the focused Transport tests and the production-helper checks need `TMPDIR` (or `/tmp`) on ext4; the test-only helper's tmpfs acceptance does not qualify tmpfs hosts.
+It requires passwordless `sudo -n` and an existing `nobody` account, changes no sudoers, users, mounts, or grants, and fails rather than skipping when either is missing.
+Before it, the Linux portable and macOS host CI lanes run the focused Transport, TLS, and publication tests with `--include integration`, so Transport-invoked TLS generation runs real OpenSSL inside the private stage; those tests pass `--no-trust` or stop before any trust-store change.
+On Linux it also needs `setfacl` from the `acl` package.
+Fixtures live under the canonical temporary directory (`/private/tmp` on Darwin), never under the home directory or checkout, because the helper refuses ACL-bearing or symlinked ancestry.
 
 Required CI lane proofs:
 
@@ -149,6 +167,7 @@ scripts/ci/test-linux-portable-validation-report.sh
 ```
 
 `scripts/test-linux-portable-core.sh` runs the Linux portable lane's tests, coverage, tokenizer checks, and non-accelerator Worker Runtime checks; it excludes the `integration`, `macos`, `mlx_smoke`, and `mlx_benchmark` tags and refuses to run on Darwin.
+It builds no native helpers, so run `make linux-native-test-helpers` first; the CI lane stages them in a separate step.
 `scripts/test-provider-neutral-conformance.sh` runs the focused Worker Runtime, Runtime Endpoint, capability, lifecycle-invariant, and scheduler contract tests against the prepared test database.
 The first two `scripts/ci/test-*` proofs are the trigger matrix and fail-closed aggregate tests; run them on any host when changing the classifier, the evaluator, or `.github/workflows/required-validation.yml`.
 
@@ -297,6 +316,8 @@ by mise:
   found as `timeout`, `gtimeout`, or the coreutils `gnubin` `timeout`)
 - POSIX ACL tools `/usr/bin/getfacl` and `/usr/bin/setfacl` on Linux for CLI
   output-path ACL inspection and its tests (Ubuntu `acl` package)
+- A host C compiler for the explicit native-helper builders, including the
+  Linux Transport publication helper (`cc`, or `CC`; Ubuntu `build-essential`)
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
   Elixir proto generation
 - Xcode Command Line Tools and macOS distribution tools such as `codesign`,
