@@ -45,8 +45,10 @@ Aggregate capacity is the conservative limit the node agent enforces across load
 
 Issue #409 keeps compatibility and lifecycle regression evidence separate from
 model qualification. The native suite covers normalized EOS IDs independently
-of text stop sequences, manifest identity and bundle-relative paths despite
-misleading names, and empty, partial, and hybrid prefix-cache snapshots.
+of text stop sequences, manifest-bound capability evidence and bundle-relative
+paths despite misleading requested, manifest, folder, and config names, and
+empty, partial, and hybrid prefix-cache snapshots. A name never grants EOS,
+parser, tool, or capability authority.
 
 `test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup`
 holds two synthetic requests in one batch after partial prefill, cancels one,
@@ -54,9 +56,12 @@ and proves the other retains its output, exact usage, and one completion while
 the shared runtime retains both active entries until the batch returns terminal
 responses. It then proves the request and detokenizer registries are empty.
 `test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout` covers
-the distinct reset policy: an undrained cancellation resets the shared batch
-and gives other active requests a retryable collateral failure. It is not a
-peer-preservation path.
+the distinct reset policy. It admits both synthetic requests before cancelling
+one, then proves an undrained cancellation resets the shared batch, leaving the
+cancelled request exactly one terminal event and the collateral request a
+single retryable failure with no terminal event of its own, and leaves the
+runtime request, active, and detokenizer registries empty before teardown. It
+is not a peer-preservation path.
 
 These tests use fake generation dependencies and do not establish MLX-LM cache
 reachability, real Metal behavior, model compatibility, Apple Silicon hardware
