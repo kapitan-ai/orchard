@@ -4,6 +4,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
   """
 
   alias Orchard.ClusterManagement.{ReasonCodes, Value}
+  alias Orchard.RuntimeEndpoint.Diagnostics
 
   @object "cluster_management.node_status"
   @contract_version "orchard.cluster_management.status.v1"
@@ -26,6 +27,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
             compatibility: %{status: "unknown"},
             scheduling: %{eligible: false, reason_codes: []},
             dispatch_capacity: nil,
+            diagnostics: nil,
             warnings: []
 
   @type t :: %__MODULE__{}
@@ -76,6 +78,8 @@ defmodule Orchard.ClusterManagement.NodeStatus do
          compatibility: compatibility,
          scheduling: scheduling,
          dispatch_capacity: dispatch_capacity,
+         diagnostics:
+           Diagnostics.normalize(value(attrs, :diagnostics), System.system_time(:millisecond)),
          warnings: warnings
        }}
     end
@@ -104,6 +108,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
       compatibility: json_map(status.compatibility),
       scheduling: json_map(status.scheduling),
       dispatch_capacity: json_map(status.dispatch_capacity),
+      diagnostics: Diagnostics.normalize(status.diagnostics, System.system_time(:millisecond)),
       warnings: Enum.map(status.warnings, &json_map/1)
     }
   end

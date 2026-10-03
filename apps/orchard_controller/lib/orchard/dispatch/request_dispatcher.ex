@@ -48,7 +48,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   alias Orchard.Dispatch.{AttemptEventDelivery, AttemptOutcome}
   alias Orchard.DomainMetrics
   alias Orchard.Inference
-  alias Orchard.Inference.{ModelLoadFailure, QueueManager, RequestDeadline}
+  alias Orchard.Inference.{EventUsage, ModelLoadFailure, QueueManager, RequestDeadline}
   alias Orchard.InferenceEvent
 
   alias Orchard.RuntimeEndpoint.{
@@ -105,7 +105,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               terminal_detail: :na,
               event_count: 0,
               anomaly: :none,
-              conformance_defect: :none
+              conformance_defect: :none,
+              terminal_usage: nil
 
     @type t :: %__MODULE__{
             request_id: String.t(),
@@ -129,7 +130,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             terminal_detail: String.t() | :na,
             event_count: non_neg_integer(),
             anomaly: :none | :delta_before_accepted | :terminal_before_accepted,
-            conformance_defect: :none | :missing_terminal | :duplicate_terminal | :post_terminal
+            conformance_defect: :none | :missing_terminal | :duplicate_terminal | :post_terminal,
+            terminal_usage: AttemptOutcome.terminal_usage() | nil
           }
 
     @spec new(keyword()) :: t()
@@ -156,7 +158,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         terminal_detail: :na,
         event_count: 0,
         anomaly: :none,
-        conformance_defect: :none
+        conformance_defect: :none,
+        terminal_usage: nil
       }
     end
   end
@@ -313,7 +316,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # -- Private ---------------------------------------------------------------
 
   defp build_attempt_outcome(result, release_outcome, started_at, schedule) do
-    {result, execution_evidence, safety_state, first_token_at} = attempt_evidence(result)
+    {result, execution_evidence, safety_state, first_token_at, terminal_usage} =
+      attempt_evidence(result)
+
     ended_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     events = result_events(result)
     accepted = Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Accepted{}}, &1))
@@ -338,7 +343,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       delivery_state: delivery_state(delivery),
       delivered_event_count: delivered_event_count(delivery),
       runtime_retryable: attempt_runtime_retryable(terminal),
-      model_load_category: attempt_model_load_category(result)
+      model_load_category: attempt_model_load_category(result),
+      terminal_usage: terminal_usage
     }
 
     {:ok, outcome} = AttemptOutcome.new(attrs)
@@ -346,18 +352,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp attempt_evidence(
-         {:attempt_evidence, {:attempt_timing, result, first_token_at}, execution_resolution,
-          safety_state}
+         {:attempt_evidence, {:attempt_timing, result, first_token_at, terminal_usage},
+          execution_resolution, safety_state}
        ),
-       do: {result, execution_resolution, safety_state, first_token_at}
+       do: {result, execution_resolution, safety_state, first_token_at, terminal_usage}
 
   defp attempt_evidence({:attempt_evidence, result, execution_resolution, safety_state}),
-    do: {result, execution_resolution, safety_state, nil}
+    do: {result, execution_resolution, safety_state, nil, nil}
 
-  defp attempt_evidence({:attempt_timing, result, first_token_at}),
-    do: {result, nil, :available, first_token_at}
+  defp attempt_evidence({:attempt_timing, result, first_token_at, terminal_usage}),
+    do: {result, nil, :available, first_token_at, terminal_usage}
 
-  defp attempt_evidence(result), do: {result, nil, :available, nil}
+  defp attempt_evidence(result), do: {result, nil, :available, nil, nil}
 
   defp effective_release_outcome(_release_outcome, :unresolved, _safety_state), do: :unresolved
 
@@ -1218,7 +1224,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     final_metrics = finalize_metrics(final_metrics, :ok)
     put_dispatch_terminal_context(final_metrics, target)
     emit_timing_log(final_metrics, :ok)
-    {:attempt_timing, {:ok, events, delivery}, final_metrics.first_token_at}
+
+    {:attempt_timing, {:ok, events, delivery}, final_metrics.first_token_at,
+     final_metrics.terminal_usage}
   end
 
   defp handle_dispatch_result({:error, reason}, metrics, target) do
@@ -1687,9 +1695,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp stream_error_result(
          %{accepted?: true, cancellation_started_before_acceptance?: false} = loop_ctx,
          events,
-         metrics,
+         _metrics,
          reason
        ) do
+    loop_ctx = put_completed_usage(loop_ctx, events)
+    metrics = loop_ctx.metrics
+
     failed_event =
       InferenceEvent.failed(
         "stream_error",
@@ -1901,17 +1912,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     drain_until_terminal_or_done(loop_ctx, events, reason, deadline)
   end
 
-  defp drain_done_result(%{conformance_defect: defect} = loop_ctx, events, _cancel_reason)
+  defp drain_done_result(%{conformance_defect: defect} = loop_ctx, events, _reason)
        when defect != :none do
     synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
   end
 
   defp drain_done_result(loop_ctx, events, cancel_reason)
        when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
-    normalized_reason =
-      if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
+    normalized_reason = if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
 
-    synthesize_cancel_terminal(loop_ctx, events, normalized_reason, "")
+    loop_ctx
+    |> put_completed_usage(events)
+    |> synthesize_cancel_terminal(events, normalized_reason, "")
   end
 
   defp drain_done_result(
@@ -1932,6 +1944,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp drain_done_result(loop_ctx, events, cancel_reason),
     do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
 
+  # SPEC.md §12.4: once the stream closes, a buffered Completed can prove exact
+  # usage only when it validates against the attempt's full cumulative history.
+  defp put_completed_usage(
+         %{terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = completed} =
+           loop_ctx,
+         events
+       ) do
+    terminal_usage = EventUsage.terminal(Enum.reverse([completed | events]))
+    put_in(loop_ctx.metrics.terminal_usage, terminal_usage)
+  end
+
+  defp put_completed_usage(loop_ctx, _events), do: loop_ctx
+
+  # A Completed buffered before the drain deadline does not prove exact usage while
+  # the stream is still open, so the synthesized terminal keeps the latest validated
+  # lower bound (SPEC.md §12.4 "when proven").
   defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
     result =
       case loop_ctx.conformance_defect do
@@ -2264,9 +2292,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp track_usage(
          %Metrics{} = metrics,
          %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}}
-       ) do
-    put_output_tokens(metrics, usage)
-  end
+       ),
+       do: put_output_tokens(metrics, usage)
 
   defp track_usage(metrics, _event), do: metrics
 

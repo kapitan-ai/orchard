@@ -24,7 +24,8 @@ defmodule Orchard.Dispatch.AttemptOutcome do
     :delivery_state,
     :delivered_event_count
   ]
-  defstruct @enforce_keys ++ [runtime_retryable: nil, model_load_category: nil]
+  defstruct @enforce_keys ++
+              [runtime_retryable: nil, model_load_category: nil, terminal_usage: nil]
 
   @attempt_outcomes [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @execution_resolutions [:not_started, :terminated, :unresolved]
@@ -42,6 +43,11 @@ defmodule Orchard.Dispatch.AttemptOutcome do
   @type commitment_kind :: :text | :tool_call | :structured_output
   @type delivery_state :: :pending | :selected | :discarded | :failed
   @type failure :: InferenceAttemptFailure.evidence() | nil
+  @type terminal_usage :: %{
+          required(:output_tokens) => non_neg_integer(),
+          required(:output_usage_status) => String.t(),
+          optional(:input_tokens) => non_neg_integer()
+        }
 
   @type t :: %__MODULE__{
           attempt_outcome: attempt_outcome(),
@@ -59,7 +65,8 @@ defmodule Orchard.Dispatch.AttemptOutcome do
           delivery_state: delivery_state(),
           delivered_event_count: non_neg_integer(),
           runtime_retryable: boolean() | nil,
-          model_load_category: ModelLoadFailure.category() | nil
+          model_load_category: ModelLoadFailure.category() | nil,
+          terminal_usage: terminal_usage() | nil
         }
 
   @spec new(map()) :: {:ok, t()} | {:error, :invalid_attempt_outcome}
@@ -85,6 +92,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
          valid_result?(attempt_outcome, failure, execution_resolution, capacity_release_outcome) and
          valid_runtime_retryable?(attempt_outcome, Map.get(attrs, :runtime_retryable)) and
          valid_model_load_category?(failure, Map.get(attrs, :model_load_category)) and
+         valid_terminal_usage?(Map.get(attrs, :terminal_usage)) and
          ordered_timestamps?(started_at, ended_at, first_token_at) and
          valid_commitment?(accepted, output_committed, output_commitment_kind, first_token_at) and
          valid_delivery?(
@@ -100,6 +108,25 @@ defmodule Orchard.Dispatch.AttemptOutcome do
   end
 
   def new(_attrs), do: {:error, :invalid_attempt_outcome}
+
+  defp valid_terminal_usage?(nil), do: true
+
+  defp valid_terminal_usage?(%{output_tokens: output_tokens, output_usage_status: status} = usage)
+       when status in ["exact", "lower_bound"] do
+    bounded_non_negative_integer?(output_tokens) and valid_usage_input?(usage)
+  end
+
+  defp valid_terminal_usage?(_usage), do: false
+
+  defp valid_usage_input?(usage) do
+    case Map.fetch(usage, :input_tokens) do
+      {:ok, input_tokens} -> bounded_non_negative_integer?(input_tokens)
+      :error -> true
+    end
+  end
+
+  defp bounded_non_negative_integer?(value),
+    do: is_integer(value) and value >= 0 and value <= 2_147_483_647
 
   @spec select(t(), String.t(), (String.t(), InferenceEvent.t() -> term()) | nil) :: t()
   def select(%__MODULE__{delivery_state: :pending} = outcome, request_id, event_handler) do

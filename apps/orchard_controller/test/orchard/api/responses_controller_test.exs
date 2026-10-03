@@ -999,6 +999,7 @@ defmodule Orchard.API.ResponsesControllerTest do
       {:model_busy, 503, "server_error", "model_busy"},
       {:queue_full, 429, "rate_limit_error", "queue_full"},
       {:queue_timeout, 504, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
       {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
     ]
 
@@ -1382,7 +1383,8 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   @tag :live
-  test "SPEC.md M4 retries one uncommitted attempt across JSON and typed SSE", %{bundle: bundle} do
+  test "SPEC.md §5.3 (#329) charges only the selected retry attempt across JSON and typed SSE",
+       %{bundle: bundle} do
     create_queue_model!(bundle, "responses-bounded-retry")
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-bounded-retry")
     grant_active_models!(tenant)
@@ -1390,7 +1392,16 @@ defmodule Orchard.API.ResponsesControllerTest do
     for stream? <- [false, true] do
       idempotency_key = "responses-bounded-retry-#{stream?}"
 
-      nodes = configure_retry_nodes!(successful_retry_events())
+      [first, second] = successful_retry_events()
+
+      discarded_usage =
+        InferenceEvent.usage_update(%InferenceEvent.Usage{
+          input_tokens: 1,
+          output_tokens: 5,
+          total_tokens: 6
+        })
+
+      nodes = configure_retry_nodes!([[discarded_usage | first], second])
 
       Process.put(:orchard_retry_started_probe, fn request ->
         send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
@@ -1443,6 +1454,13 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert request.reserved_output_tokens == 0
       assert_logical_identity!(request, idempotency_key, :metadata)
       assert_successful_retry!(request, nodes)
+      assert request.output_tokens == 1
+      assert request.output_usage_status == :exact
+      [_, discarded, _, selected] = Requests.list_request_step_events(request)
+      assert discarded.result["output_tokens"] == 5
+      assert discarded.result["output_usage_status"] == "lower_bound"
+      assert selected.result["output_tokens"] == 1
+      assert selected.result["output_usage_status"] == "exact"
     end
   end
 
@@ -2054,7 +2072,8 @@ defmodule Orchard.API.ResponsesControllerTest do
     cases = [
       {:model_busy, "server_error", "model_busy"},
       {:queue_full, "rate_limit_error", "queue_full"},
-      {:queue_timeout, "server_error", "queue_timeout"}
+      {:queue_timeout, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"}
     ]
 
     for {reason, type, code} <- cases do
