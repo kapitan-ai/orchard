@@ -49,7 +49,6 @@ end
 defmodule Orchard.API.OperatorHealthTest do
   use Orchard.ConnCase, async: false
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Ops.HealthController
   alias Orchard.API.ReadinessRemediation
 
@@ -210,6 +209,7 @@ defmodule Orchard.API.OperatorHealthTest do
     assert body["checks"]["public_api_https_enabled"] == true
   end
 
+  @tag :db
   test "operator health omits remediation when all readiness checks pass", %{conn: _conn} do
     previous_mode = Application.get_env(:orchard_controller, :transport_mode)
     previous_degraded = Application.get_env(:orchard_controller, :transport_degraded, false)
@@ -220,8 +220,6 @@ defmodule Orchard.API.OperatorHealthTest do
     Application.put_env(:orchard_controller, :transport_degraded, false)
     Application.put_env(:orchard_controller, :enable_db_checks, true)
     Application.put_env(:orchard_controller, :start_repo, true)
-
-    :ok = Sandbox.checkout(Orchard.Repo)
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :transport_mode, previous_mode)

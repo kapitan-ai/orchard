@@ -1,6 +1,14 @@
 defmodule Orchard.RuntimeEndpoint.DomainTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.Cluster.V1.{
+    AcceleratorProviderObservation,
+    HostCpuObservation,
+    HostInventoryObservation,
+    HostNetworkInterfaceObservation,
+    HostNetworkObservation
+  }
+
   alias Orchard.RuntimeEndpoint.{
     ModelRef,
     Observation,
@@ -109,6 +117,137 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
 
     assert observation.worker_crash_counters == counters
     assert Observation.new(%{}).worker_crash_counters == []
+  end
+
+  describe "SPEC.md §4.1 observation-only host inventory" do
+    test "a bounded inventory is preserved and an older observation decodes as absent" do
+      inventory = host_inventory(cpu: %HostCpuObservation{architecture: "x86_64"})
+
+      assert Observation.new(%{host_inventory: inventory}).host_inventory == inventory
+      assert Observation.new(%{}).host_inventory == nil
+    end
+
+    test "an inventory without observation-only authority or the known schema is absent" do
+      assert Observation.new(%{
+               host_inventory: host_inventory(authority: :HOST_INVENTORY_AUTHORITY_UNSPECIFIED)
+             }).host_inventory ==
+               nil
+
+      assert Observation.new(%{host_inventory: host_inventory(schema_version: 2)}).host_inventory ==
+               nil
+
+      assert Observation.new(%{host_inventory: %{schema_version: 1}}).host_inventory == nil
+    end
+
+    test "oversized or malformed inventory is absent rather than truncated" do
+      long = String.duplicate("a", 257)
+      interface = %HostNetworkInterfaceObservation{name: "eth0"}
+
+      oversized_string = host_inventory(cpu: %HostCpuObservation{model_name: long})
+      invalid_utf8 = host_inventory(cpu: %HostCpuObservation{model_name: <<0xFF>>})
+
+      too_many_interfaces =
+        host_inventory(
+          network: %HostNetworkObservation{interfaces: List.duplicate(interface, 65)}
+        )
+
+      duplicate_vendor =
+        host_inventory(
+          accelerator_providers: [
+            %AcceleratorProviderObservation{vendor: :ACCELERATOR_VENDOR_NVIDIA},
+            %AcceleratorProviderObservation{vendor: :ACCELERATOR_VENDOR_NVIDIA}
+          ]
+        )
+
+      for inventory <- [oversized_string, invalid_utf8, too_many_interfaces, duplicate_vendor] do
+        assert Observation.new(%{host_inventory: inventory}).host_inventory == nil
+      end
+    end
+
+    test "malformed or missing raw unknown-field state is absent without raising" do
+      valid = host_inventory(cpu: %HostCpuObservation{architecture: "x86_64"})
+
+      malformed = [
+        %{valid | __unknown_fields__: :bogus},
+        Map.delete(valid, :__unknown_fields__),
+        %{valid | __unknown_fields__: [{20, 9, "x"}]},
+        %{valid | __unknown_fields__: [{20, 0, 1} | :tail]},
+        %{valid | cpu: %{valid.cpu | __unknown_fields__: :bogus}},
+        # varint beyond uint64, and a field number beyond the protobuf maximum
+        %{valid | __unknown_fields__: [{20, 0, 18_446_744_073_709_551_616}]},
+        %{valid | __unknown_fields__: [{536_870_912, 0, 1}]},
+        %{valid | __unknown_fields__: [{20, 1, <<1, 2, 3>>}]},
+        %{valid | __unknown_fields__: [{20, 3, <<>>}]},
+        # lower bounds: field number 0 and a negative varint
+        %{valid | __unknown_fields__: [{0, 0, 1}]},
+        %{valid | __unknown_fields__: [{20, 0, -1}]},
+        # unknown tuples reusing a field number the message defines
+        %{valid | __unknown_fields__: [{2, 2, "x"}]},
+        %{valid | __unknown_fields__: [{4, 2, <<0xFF>>}]},
+        %{valid | cpu: %{valid.cpu | __unknown_fields__: [{3, 2, "x"}]}},
+        # known fields of the wrong range or shape
+        %{valid | cpu: %{valid.cpu | logical_processor_count: 4_294_967_296}},
+        %{valid | accelerator_providers: [%AcceleratorProviderObservation{vendor: :bogus}]}
+      ]
+
+      for inventory <- malformed do
+        assert Observation.new(%{host_inventory: inventory}).host_inventory == nil
+      end
+    end
+
+    test "an additive field decoded from a newer writer is preserved" do
+      valid = host_inventory(cpu: %HostCpuObservation{architecture: "x86_64"})
+      # field 20, varint wire type, value 7
+      decoded =
+        HostInventoryObservation.decode(
+          HostInventoryObservation.encode(valid) <> <<0xA0, 0x01, 0x07>>
+        )
+
+      assert decoded.__unknown_fields__ == [{20, 0, 7}]
+      assert Observation.new(%{host_inventory: decoded}).host_inventory == decoded
+
+      at_limits = %{
+        valid
+        | __unknown_fields__: [
+            {536_870_911, 0, 18_446_744_073_709_551_615},
+            {21, 1, <<0::64>>},
+            {22, 2, "x"},
+            {23, 5, <<0::32>>}
+          ]
+      }
+
+      assert Observation.new(%{host_inventory: at_limits}).host_inventory == at_limits
+    end
+
+    test "a raw BEAM inventory term with a field this reader does not define is absent" do
+      valid = host_inventory(cpu: %HostCpuObservation{architecture: "x86_64"})
+
+      assert Observation.new(%{host_inventory: Map.put(valid, :future_field, 1)}).host_inventory ==
+               nil
+    end
+
+    test "improper lists from a raw BEAM term are absent without raising" do
+      provider = %AcceleratorProviderObservation{vendor: :ACCELERATOR_VENDOR_NVIDIA}
+
+      top_level = host_inventory(accelerator_providers: [provider | :tail])
+
+      nested =
+        host_inventory(accelerator_providers: [%{provider | devices: [:device | :tail]}])
+
+      assert Observation.new(%{host_inventory: top_level}).host_inventory == nil
+      assert Observation.new(%{host_inventory: nested}).host_inventory == nil
+    end
+  end
+
+  defp host_inventory(attrs) do
+    struct(
+      %HostInventoryObservation{
+        schema_version: 1,
+        observed_at_unix_ms: 1_789_743_600_000,
+        authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY
+      },
+      attrs
+    )
   end
 
   test "SPEC.md §4.6.2 observations preserve aggregate capacity evidence before fallbacks" do

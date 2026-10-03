@@ -205,6 +205,45 @@ defmodule Orchard.NodeHeartbeatsTest do
              Payload.invalid(:duplicate_placement_model_ref)
   end
 
+  # SPEC.md §4.1 and §4.6.1: host inventory is volatile observation-only
+  # evidence and is not part of the persisted heartbeat allowlist.
+  test "host inventory never reaches the persisted heartbeat payload" do
+    node_id = Ecto.UUID.generate()
+    target = Target.grpc_compat(host: "127.0.0.1", port: 50_071, node_id: node_id)
+
+    inventory = %Orchard.Cluster.V1.HostInventoryObservation{
+      schema_version: 1,
+      observed_at_unix_ms: 1_789_743_600_000,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+      accelerator_providers: [
+        %Orchard.Cluster.V1.AcceleratorProviderObservation{
+          vendor: :ACCELERATOR_VENDOR_NVIDIA,
+          devices: [
+            %Orchard.Cluster.V1.AcceleratorObservation{
+              vendor: :ACCELERATOR_VENDOR_NVIDIA,
+              stable_id: "GPU-00000000-0000-4000-8000-000000000001",
+              memory_total_bytes: 85_899_345_920
+            }
+          ]
+        }
+      ]
+    }
+
+    attrs = %{
+      availability: :available,
+      aggregate_active_request_count: 0,
+      aggregate_max_concurrency: 2
+    }
+
+    without = Observation.new(attrs)
+    with_inventory = Observation.new(Map.put(attrs, :host_inventory, inventory))
+
+    assert with_inventory.host_inventory == inventory
+
+    assert Payload.build(target, with_inventory, node_id: node_id) ==
+             Payload.build(target, without, node_id: node_id)
+  end
+
   test "ADR 0017 payload cap configuration rejects values too small for the invalid envelope" do
     Application.put_env(:orchard_controller, :node_heartbeat_payload_max_bytes, 127)
 
