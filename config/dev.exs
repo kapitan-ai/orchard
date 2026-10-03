@@ -557,6 +557,40 @@ cond do
     :ok
 end
 
+# Observation-only host inventory is default-off (SPEC.md §4.1 and §4.9).
+# The Linux capability provider and each accelerator vendor are explicit opt-ins.
+host_inventory_provider =
+  case System.get_env("ORCHARD_NODE_HOST_INVENTORY", "disabled") do
+    "disabled" ->
+      nil
+
+    "linux" ->
+      Orchard.Node.LinuxHostInventory
+
+    other ->
+      raise "ORCHARD_NODE_HOST_INVENTORY must be disabled|linux, got: #{inspect(other)}"
+  end
+
+host_inventory_accelerators =
+  "ORCHARD_NODE_HOST_INVENTORY_ACCELERATORS"
+  |> System.get_env("")
+  |> String.split(",", trim: true)
+  |> Enum.map(fn
+    "nvidia" ->
+      :nvidia
+
+    "amd" ->
+      :amd
+
+    other ->
+      raise "ORCHARD_NODE_HOST_INVENTORY_ACCELERATORS entries must be nvidia|amd, got: #{inspect(other)}"
+  end)
+  |> Enum.uniq()
+
+config :orchard_node_agent, :host_inventory,
+  provider: host_inventory_provider,
+  provider_opts: [accelerators: host_inventory_accelerators]
+
 config :orchard_node_agent,
   beam_peer_grants:
     if(node_peer_grant_enabled?,

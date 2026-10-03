@@ -31,6 +31,6 @@ None.
 ## Impact
 
 - Portable and provider-neutral changes gain required Linux evidence.
-- Controller-only portable changes can skip unrelated Apple-only lanes when the classifier proves that those dependencies are unaffected.
+- Controller-only `lib/**` and `test/**` changes require macOS host evidence; the unrelated MLX provider lane can remain inapplicable when dependency classification proves it unaffected.
 - Normative, shared-interface, root-toolchain, root-configuration, release-composition, and workflow changes fan out to all lanes.
 - This change makes no Linux Platform Profile, distribution, host-lifecycle, Node, or accelerator support claim.

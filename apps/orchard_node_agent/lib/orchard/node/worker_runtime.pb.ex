@@ -5,6 +5,11 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusRequest do
     full_name: "orchard.worker.v1.WorkerStatusRequest",
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
+
+  field(:reasoning_observation, 1,
+    type: Orchard.Cluster.V1.ReasoningObservationRequest,
+    json_name: "reasoningObservation"
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus do
@@ -105,6 +110,16 @@ defmodule Orchard.Node.Worker.V1.WorkerCapabilities do
   field(:implementation_version, 5, type: :string, json_name: "implementationVersion")
   field(:service_incarnation, 6, type: :string, json_name: "serviceIncarnation")
   field(:profiles, 7, repeated: true, type: Orchard.Node.Worker.V1.WorkerCapabilityProfile)
+
+  field(:loaded_binding, 8,
+    type: Orchard.Cluster.V1.WorkerLoadedBinding,
+    json_name: "loadedBinding"
+  )
+
+  field(:reasoning_evidence, 9,
+    type: Orchard.Cluster.V1.ReasoningEvidenceEnvelope,
+    json_name: "reasoningEvidence"
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
@@ -173,6 +188,12 @@ defmodule Orchard.Node.Worker.V1.WorkerRuntimeService.Service do
   )
 
   rpc(:Cancel, Orchard.Cluster.V1.CancelInferenceRequest, Orchard.Cluster.V1.Ack)
+
+  rpc(
+    :PrepareInference,
+    Orchard.Cluster.V1.PrepareInferenceRequest,
+    Orchard.Cluster.V1.PrepareInferenceResponse
+  )
 
   rpc(
     :ScorePrefixCache,

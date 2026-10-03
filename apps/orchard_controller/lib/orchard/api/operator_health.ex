@@ -2,6 +2,7 @@ defmodule Orchard.API.OperatorHealth do
   @moduledoc false
 
   alias Orchard.API.{HealthEvaluation, Readiness, ReadinessRemediation, Transport}
+  alias Orchard.RuntimeEndpoint.Diagnostics
 
   @runtime_probe_timeout_ms 1_000
 
@@ -62,7 +63,7 @@ defmodule Orchard.API.OperatorHealth do
   defp probe_runtime do
     case runtime_impl().snapshot(timeout: @runtime_probe_timeout_ms) do
       {:ok, snapshot} -> build_runtime_summary(:ok, snapshot)
-      {:error, error} -> build_runtime_summary(error.status, error)
+      {:error, error} -> build_runtime_summary(error.status, Map.delete(error, :diagnostics))
     end
   rescue
     _ ->
@@ -86,6 +87,11 @@ defmodule Orchard.API.OperatorHealth do
       display_name: meta_field(meta, :display_name),
       worker_state: to_string(Map.get(snapshot, :worker_state, :unknown)),
       health: classify_health(health),
+      diagnostics:
+        Diagnostics.normalize(
+          Map.get(snapshot, :diagnostics),
+          System.system_time(:millisecond)
+        ),
       counts: %{
         active_requests: if(status == :ok, do: Map.get(snapshot, :active_request_count, 0)),
         loaded_models: if(status == :ok, do: length(Map.get(snapshot, :loaded_models, [])))

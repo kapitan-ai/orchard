@@ -67,23 +67,25 @@ Profile kinds are qualified and composable:
 
 | Profile kind | Current or accepted Orchard profile | Scope |
 |---|---|---|
-| Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile | Host operating system, architecture, roles, and platform acceptance |
+| Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile; accepted experimental Linux Node candidate | Host operating system, architecture, roles, and platform acceptance |
 | Distribution | macOS native distribution profile | Orchard.app, DMG, host lifecycle, paths, credential storage, rollback, retained state, and release evidence |
 | Runtime-provider | macOS MLX Node runtime profile | A Node role pairing the portable Node Agent with Apple Silicon, Metal, MLX-LM, the tokenizer stack, conformance, and real-runtime qualification |
-| Acceptance | mixed-platform acceptance profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes |
+| Acceptance | mixed-platform acceptance profile; accepted `macos_controller_linux_node_model_free` profile, not yet satisfied | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes; model-free evidence that a macOS Controller operates the Linux Node candidate at `N` and `N-1` |
 
 Host-lifecycle adapters remain platform integration boundaries.
 Orchard.app and DMG remain deployment artifacts.
 Neither is a profile.
 The portable Node Agent stays inside the portable Orchard control-plane core and does not become provider-specific under a runtime-provider profile.
 
-The supported v1 Apple Silicon macOS platform profile covers the current app-installed all-in-one path and the validated source-development split-role path.
+The supported v1 Apple Silicon macOS platform profile covers the approved app-installed all-in-one path and the validated source-development split-role path.
+Native `Orchard.app` and DMG distribution is currently paused under `SPEC.md` §11.0, so source development is the current active installation path.
 Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps, and Active/Standby operation remains a Milestone 7 target.
 The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
 The mixed-platform acceptance profile becomes satisfied only after Milestone 8 build, conformance, packaging, upgrade, rollback, security, and topology acceptance passes.
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
+The accepted experimental `ubuntu_24_04_x86_64_node` Linux Node candidate targets a source-development path that is not yet operable, defines no distribution artifact, and is not supported; see [`platforms/linux-node.md`](platforms/linux-node.md).
 
-The approved macOS native distribution design remains `Orchard.app` inside a DMG.
+The approved macOS native distribution design remains `Orchard.app` inside a DMG, and its distribution is paused by the committed `packaging/distribution-control`.
 `SPEC.md` §11 owns the source-availability, supported public binary, and licensing contract for that profile.
 
 A Controller Host is the machine that runs a Controller release.
@@ -134,7 +136,7 @@ Core design rules from `SPEC.md`:
 - worker runtimes are local subprocesses, not public services;
 - Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling, and request state.
 
-The current app-installed multi-Mac first cut remains transitional.
+The existing app-installed multi-Mac rehearsal first cut remains transitional.
 It still uses one manually distributed shared cookie and explicit Controller target entries until the enrolled production Peer Grant path is implemented and passes release-install acceptance.
 The source-development shared-cookie model remains separately documented and does not establish production Node identity or authorization.
 
@@ -255,8 +257,8 @@ The loaded-model binding inside the envelope is still deferred in source (field 
 ### Persistence and coordination
 
 Postgres is the sole persistence and coordination layer. In the target product,
-managed Postgres is one supported topology; in the current app-installed flow,
-controller-bearing installs require operator-provided external Postgres and the
+managed Postgres is one supported topology; in existing app-installed rehearsal
+installations and in source development, controller-bearing installs require operator-provided external Postgres and the
 managed Postgres helper remains a guard only.
 
 Terminal inference-turn steps persist `finish_reason` for every observed `Completed` event.
