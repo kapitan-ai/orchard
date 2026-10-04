@@ -25,7 +25,7 @@ expect() {
   shift
   "$@" >"$TMP_ROOT/stdout" 2>"$TMP_ROOT/stderr" || actual=$?
   if [[ "$actual" != "$expected" ]]; then
-    tail -40 "$TMP_ROOT/stdout" "$TMP_ROOT/stderr" >&2
+    tail -n 40 -- "$TMP_ROOT/stdout" "$TMP_ROOT/stderr" >&2 || true
     fail "expected status $expected, got $actual"
   fi
 }
