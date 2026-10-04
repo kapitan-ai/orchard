@@ -82,6 +82,9 @@ Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun cla
 
 ## Bootstrap failure diagnostics
 
+When changing the bootstrap version, update every observer `BOOTSTRAP_VERSION`
+input and the bootstrap diagnostic fixtures in the same reviewed change.
+
 Each mise-action step has a separate failure-only observer. It emits a bounded
 allowlist of requested mise version, failed action boundary, unknown internal
 failure stage, unknown HTTP status and unknown observed retries. The configured
@@ -109,6 +112,11 @@ lane's original result. Reporter failure cannot manufacture setup success.
 `scripts/ci/test-mise-bootstrap-diagnostics.sh` checks redaction, malformed input,
 controlled error propagation and the workflow guards without causing a real
 download outage. It runs in the existing classifier contract-test step.
+The installer fixtures prove local fail-fast and redaction, not real GitHub
+runner execution. Per-job workflow checks enforce the unchanged bootstrap
+inputs and adjacent failure-only observers; actual CI qualifies the runner path.
+A failure to fetch the action itself during job setup precedes these steps and
+cannot produce this observer report.
 
 ## Standard Commands
 

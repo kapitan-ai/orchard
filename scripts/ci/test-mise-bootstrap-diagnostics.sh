@@ -58,8 +58,9 @@ reject failure '2026.999.2'
 reject $'failure\nsecret' 2026.9.2
 
 # Controlled action failures exit before tests under fail-fast shell semantics.
-# The observer is a separate step, just as in Actions; its success or failure
-# does not change the failed action status. No installer or network is invoked.
+# These are installer stand-ins, not a GitHub runner simulation. They prove
+# fail-fast before tests and that the observer output never copies raw errors.
+# The separate per-job workflow contract below protects runner scheduling.
 cat > "$FIXTURE/install" <<'INSTALL'
 #!/usr/bin/env bash
 printf 'private fixture error, token and URL must not be copied\n' >&2
@@ -73,64 +74,88 @@ for original in 22 1 127; do
   [[ "$status" == "$original" && ! -e "$FIXTURE/tests-ran" ]] || fail 'original failure or fail-fast changed'
   "$REPORT" failure 2026.9.2 > "$FIXTURE/actual"
   cmp "$FIXTURE/expected" "$FIXTURE/actual" || fail 'failure fixture changed report'
-  [[ "$status" == "$original" ]] || fail 'observer masked the original failure'
-  pass
-
-  reporter_status=0
-  "$REPORT" failure invalid > "$FIXTURE/stdout" 2> "$FIXTURE/stderr" || reporter_status=$?
-  [[ "$reporter_status" == 64 && "$status" == "$original" && ! -e "$FIXTURE/tests-ran" ]] ||
-    fail 'reporter failure changed the original failure'
   pass
 done
 
-# Closing the output stream can break a reporter; the install failure remains.
-status=22
+# A reporter write failure must remain a failure for its continue-on-error step.
 reporter_status=0
 "$REPORT" failure 2026.9.2 >&- 2> "$FIXTURE/stderr" || reporter_status=$?
-[[ "$reporter_status" != 0 && "$status" == 22 ]] || fail 'write failure masked original error'
+[[ "$reporter_status" != 0 ]] || fail 'reporter hid a write failure'
 pass
 
 # Assert the actual workflow scheduling boundary: only the diagnostic has
 # continue-on-error, no bootstrap arguments/retries change, and cancellation
 # suppresses observation. These are runner conditions, not installer wrappers.
-awk '
+check_workflow() {
+  awk '
   function check_step() {
     if (bootstrap) {
-      installs++
-      if (id != "mise-bootstrap" || version != "2026.9.2" || !cache || coe || guard || run) bad = 1
+      installs[job]++
+      expected = "      - name: Install pinned toolchain\n" \
+        "        id: mise-bootstrap\n" \
+        "        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0\n" \
+        "        with:\n          version: 2026.9.2\n          cache: " \
+        (job == "openspec-validation" ? "true" : "false") "\n"
+      if (stanza != expected) bad = 1
     }
     if (diagnostic) {
-      reports++
-      if (!coe || !guard || !outcome || report_version != "2026.9.2" || !run) bad = 1
+      reports[job]++
+      expected = "      - name: Diagnose toolchain bootstrap failure\n" \
+        "        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == '\''failure'\'' }}\n" \
+        "        continue-on-error: true\n        env:\n" \
+        "          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}\n" \
+        "          BOOTSTRAP_VERSION: \"2026.9.2\"\n" \
+        "        run: scripts/ci/mise-bootstrap-diagnostics.sh \"$BOOTSTRAP_OUTCOME\" \"$BOOTSTRAP_VERSION\"\n"
+      if (stanza != expected || previous != "bootstrap") bad = 1
     }
+    previous = bootstrap ? "bootstrap" : "other"
+  }
+  /^  [a-zA-Z0-9_-]+:$/ {
+    check_step()
+    job = $1; sub(/:$/, "", job)
+    bootstrap = diagnostic = 0; stanza = previous = ""
   }
   /^      - / {
     check_step()
-    bootstrap = diagnostic = coe = guard = cache = run = outcome = 0
-    id = version = report_version = ""
+    bootstrap = diagnostic = 0; stanza = ""
     diagnostic = ($0 == "      - name: Diagnose toolchain bootstrap failure")
   }
-  /^        uses: jdx\/mise-action@/ {
-    bootstrap = 1
-    if ($2 != "jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c") bad = 1
+  /^        uses: jdx\/mise-action@/ { bootstrap = 1 }
+  NF { stanza = stanza $0 "\n" }
+  END {
+    check_step()
+    count = split("linux-portable provider-conformance macos-host mlx-validation packaging-validation app-distribution-validation openspec-validation", jobs, " ")
+    for (i = 1; i <= count; i++) if (installs[jobs[i]] != 1 || reports[jobs[i]] != 1) bad = 1
+    for (name in installs) if (installs[name] != 1 || reports[name] != 1) bad = 1
+    for (name in reports) if (installs[name] != 1 || reports[name] != 1) bad = 1
+    exit bad
   }
-  /^        id:/ { id = $2 }
-  /^          version:/ { version = $2 }
-  /^          cache: (true|false)$/ { cache = 1 }
-  /^        continue-on-error:/ { coe = ($2 == "true") }
-  /^        if:/ {
-    guard = ($0 == "        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == '\''failure'\'' }}")
-  }
-  /^          BOOTSTRAP_OUTCOME:/ {
-    outcome = ($0 == "          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}")
-  }
-  /^          BOOTSTRAP_VERSION:/ { report_version = $2; gsub(/"/, "", report_version) }
-  /^        run:/ {
-    run = ($0 == "        run: scripts/ci/mise-bootstrap-diagnostics.sh \"$BOOTSTRAP_OUTCOME\" \"$BOOTSTRAP_VERSION\"")
-  }
-  END { check_step(); exit bad || installs != 7 || reports != 7 }
-' "$WORKFLOW" || fail 'workflow changed bootstrap or diagnostic conditions'
+  ' "$1"
+}
+
+check_workflow "$WORKFLOW" || fail 'workflow changed per-job bootstrap or diagnostic conditions'
 pass
+
+reject_workflow() {
+  if check_workflow "$FIXTURE/mutated.yml"; then fail "$1 escaped the workflow contract"; fi
+  pass
+}
+
+sed 's/          cache: true/          cache: false/' "$WORKFLOW" > "$FIXTURE/mutated.yml"
+reject_workflow 'changed openspec cache input'
+sed '/          version: 2026.9.2/a\
+          install: false
+' "$WORKFLOW" > "$FIXTURE/mutated.yml"
+reject_workflow 'extra installer input'
+sed '/        id: mise-bootstrap/a\
+        if: always()
+' "$WORKFLOW" > "$FIXTURE/mutated.yml"
+reject_workflow 'changed installer condition'
+sed 's/!cancelled()/always()/g' "$WORKFLOW" > "$FIXTURE/mutated.yml"
+reject_workflow 'cancellation guard removed'
+awk '/^      - name: Diagnose toolchain bootstrap failure/ && !inserted++ { print "      - name: Intervening step"; print "        run: true" } { print }' \
+  "$WORKFLOW" > "$FIXTURE/mutated.yml"
+reject_workflow 'observer separated from its bootstrap'
 
 grep -Fq '          scripts/ci/test-mise-bootstrap-diagnostics.sh' "$WORKFLOW" || fail 'regressions missing from classifier lane'
 pass
