@@ -518,6 +518,11 @@ jobs:
       - name: Install OpenSpec dependencies
         run: make setup-openspec
 
+      - name: Validate mise-action pins and regression fixtures
+        run: |
+          mise exec -- npm run check:mise-action-pins
+          mise exec -- npm run test:mise-action-pins
+
       - name: Validate OpenSpec
         env:
           OPENSPEC_TELEMETRY: "0"

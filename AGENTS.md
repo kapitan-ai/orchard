@@ -206,6 +206,11 @@ When changing Console UI, keep `docs/DESIGN.md` and the implementation in sync. 
 
 ## Agent Contribution Workflow
 
+Follow the [delivery runbook](docs/delivery-runbook.md) for scope, ownership,
+independent final-head review and readiness evidence. It grants no automatic
+merge authority; only Najib merges, directly or through an agent acting through
+his account with explicit approval for the exact head.
+
 When contributing code, agents MUST run the applicable quality workflow from the umbrella root and report what passed, failed, or is not yet wired for the current milestone.
 
 ### Elixir workflow
