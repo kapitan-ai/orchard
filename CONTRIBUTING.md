@@ -97,6 +97,10 @@ subordinate to `SPEC.md`.
 
 ## Validation
 
+Use the [delivery runbook](docs/delivery-runbook.md) for scoped implementation,
+independent review and the compact readiness handoff. Merge authority remains
+with Najib under the repository access and merging rules above.
+
 Run the relevant validation workflow from `AGENTS.md` and report exact commands
 and outcomes in the PR. For bug fixes, include a regression test when practical.
 

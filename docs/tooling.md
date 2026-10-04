@@ -37,6 +37,20 @@ Required CI bootstraps mise `2026.9.2` through explicit `version` inputs in `.gi
 This bootstrap pin is separate from the runtime and developer-tool pins in `mise.toml`.
 Update every mise-action invocation together only after the matching platform release assets and signed checksums are published.
 
+The approved immutable action SHA and required bootstrap sites live in
+[`../.github/mise-action-pin.json`](../.github/mise-action-pin.json). Update that
+record only as part of a reviewed pin change with upstream provenance; workflow
+invocations are consumers, never the authority for their own consistency check.
+`mise exec -- npm run check:mise-action-pins` parses workflow YAML and checks all
+actual mise-action steps in workflow files, including dormant jobs, against that record. It also
+requires one invocation in each retained bootstrap job. The OpenSpec validation
+lane runs this check and `mise exec -- npm run test:mise-action-pins` after the
+existing root npm install. Its failure fails the existing required aggregate.
+The check uses the direct pinned `yaml` dependency already present at the same
+version in the root lockfile; comments and shell strings are not invocations.
+It does not scan local composite actions; none currently exist. Moving a required
+bootstrap into one fails the retained-site check and needs a reviewed update.
+
 The pinned toolchain currently covers:
 
 | Tool | Pin | Purpose |
@@ -202,6 +216,8 @@ scripts/test-provider-neutral-conformance.sh
 scripts/ci/test-classify-required-validation-paths.sh
 scripts/ci/test-required-validation-gate.sh
 scripts/ci/test-linux-portable-validation-report.sh
+mise exec -- npm run check:mise-action-pins
+mise exec -- npm run test:mise-action-pins
 ```
 
 `scripts/test-linux-portable-core.sh` runs the Linux portable lane's tests, coverage, tokenizer checks, and non-accelerator Worker Runtime checks; it excludes the `integration`, `macos`, `mlx_smoke`, and `mlx_benchmark` tags and refuses to run on Darwin.
@@ -320,7 +336,8 @@ mise exec -- mix proto.gen.worker
 Orchard has a minimal first-party npm workflow for repository-local OpenSpec
 validation and the Phoenix asset CLI binaries used by source dev. The root npm
 dependencies are the pinned OpenSpec CLI plus pinned `esbuild`, `tailwindcss`,
-and `@tailwindcss/cli` versions in `package.json` / `package-lock.json`.
+`@tailwindcss/cli`, and the `yaml` parser for the CI action-pin check in
+`package.json` / `package-lock.json`.
 
 The root `.npmrc` sets `save-exact=true`; keep Node tool dependencies exact and
 commit the resulting `package-lock.json` changes.
