@@ -39,8 +39,20 @@ struct host_facts {
   const char *systemd_package, *server_package;
 };
 
-/* Closed distro provenance, not a general version comparison. Unknown future
- * package families require review; numeric minima alone never admit a host. */
+static int kernel_release(const char *release, unsigned *major, unsigned *minor,
+                          unsigned *abi) {
+  return matches(release,
+    "^[1-9][0-9]{0,2}[.](0|[1-9][0-9]{0,2})[.]0-[1-9][0-9]{0,8}-generic$") &&
+    sscanf(release, "%u.%u.0-%u-generic", major, minor, abi) == 3 &&
+    (*major > 6 || (*major == 6 && *minor >= 8));
+}
+
+static void kernel_source_name(char *out, size_t size, unsigned major, unsigned minor) {
+  if (major == 6 && minor == 8) snprintf(out, size, "linux-signed");
+  else snprintf(out, size, "linux-signed-hwe-%u.%u", major, minor);
+}
+
+/* Numeric minima never admit a host without release-bound distro provenance. */
 static int valid_host_facts(const struct host_facts *f) {
   const char *const fields[] = {f->id, f->release, f->codename, f->arch, f->kernel,
     f->signature, f->kernel_version, f->kernel_source, f->libc, f->libc_package,
@@ -52,24 +64,24 @@ static int valid_host_facts(const struct host_facts *f) {
       strcmp(f->libc, "2.39") ||
       !matches(f->libc_package, "^2[.]39-0ubuntu8([.][0-9]+)?$") ||
       !matches(f->systemd_package, "^255[.]4-1ubuntu8([.][0-9]+)?$") ||
-      !matches(f->server_package, "^1[.]539([.][0-9]+)?$") ||
-      !matches(f->kernel, "^6[.](8|11|14|17)[.]0-[1-9][0-9]{0,8}-generic$")) return 0;
-  unsigned minor, abi;
-  if (sscanf(f->kernel, "6.%u.0-%u-generic", &minor, &abi) != 2) return 0;
+      !matches(f->server_package, "^1[.]539([.][0-9]+)?$")) return 0;
+  unsigned major, minor, abi;
+  if (!kernel_release(f->kernel, &major, &minor, &abi)) return 0;
   char source[80], version[160], signature[600];
-  if (minor == 8) {
-    snprintf(source, sizeof(source), "linux-signed");
+  kernel_source_name(source, sizeof(source), major, minor);
+  if (major == 6 && minor == 8) {
     snprintf(version, sizeof(version), "^6[.]8[.]0-%u[.][0-9]+$", abi);
   } else {
-    snprintf(source, sizeof(source), "linux-signed-hwe-6.%u", minor);
     snprintf(version, sizeof(version),
-             "^6[.]%u[.]0-%u[.][0-9]+~24[.]04[.][0-9]+$", minor, abi);
+             "^%u[.]%u[.]0-%u[.][0-9]+~24[.]04[.][0-9]+$", major, minor, abi);
   }
   if (strcmp(f->kernel_source, source) || !matches(f->kernel_version, version)) return 0;
   snprintf(signature, sizeof(signature), "Ubuntu %s-generic ", f->kernel_version);
   size_t n = strlen(signature);
+  char upstream[80];
+  snprintf(upstream, sizeof(upstream), "^%u[.]%u[.][0-9]+\n$", major, minor);
   return !strncmp(f->signature, signature, n) &&
-         matches(f->signature + n, "^6[.][0-9]+[.][0-9]+\n$");
+         matches(f->signature + n, upstream);
 }
 
 #ifdef ORCHARD_NODE_ROOT_GUARDIAN_TEST
@@ -78,6 +90,16 @@ static int test_host_validator(void) {
     "6.8.0-90-generic", "Ubuntu 6.8.0-90.91-generic 6.8.12\n",
     "6.8.0-90.91", "linux-signed", "2.39", "2.39-0ubuntu8.6",
     "255.4-1ubuntu8.10", "1.539.2"};
+  if (!valid_host_facts(&good)) return 1;
+  good.kernel = "6.20.0-9-generic";
+  good.kernel_version = "6.20.0-9.9~24.04.3";
+  good.kernel_source = "linux-signed-hwe-6.20";
+  good.signature = "Ubuntu 6.20.0-9.9~24.04.3-generic 6.20.1\n";
+  if (!valid_host_facts(&good)) return 1;
+  good.kernel = "7.0.0-9-generic";
+  good.kernel_version = "7.0.0-9.9~24.04.5";
+  good.kernel_source = "linux-signed-hwe-7.0";
+  good.signature = "Ubuntu 7.0.0-9.9~24.04.5-generic 7.0.1\n";
   if (!valid_host_facts(&good)) return 1;
   /* Every required fact independently rejects missing/malformed evidence. */
   for (unsigned i = 0; i < 12; i++) {
@@ -407,13 +429,11 @@ static int check_host(void) {
       !os_field(os, "VERSION_ID", release, sizeof(release)) ||
       !os_field(os, "VERSION_CODENAME", codename, sizeof(codename)) ||
       !read_at(AT_FDCWD, "/proc/version_signature", signature, sizeof(signature))) return 0;
-  if (!matches(u.release, "^6[.](8|11|14|17)[.]0-[1-9][0-9]{0,8}-generic$")) return 0;
-  unsigned minor = 0;
-  if (sscanf(u.release, "6.%u", &minor) != 1) return 0;
+  unsigned major = 0, minor = 0, abi = 0;
+  if (!kernel_release(u.release, &major, &minor, &abi)) return 0;
   char kernel_pkg[180], kernel_source[80];
   snprintf(kernel_pkg, sizeof(kernel_pkg), "linux-image-%s", u.release);
-  if (minor == 8) strcpy(kernel_source, "linux-signed");
-  else snprintf(kernel_source, sizeof(kernel_source), "linux-signed-hwe-6.%u", minor);
+  kernel_source_name(kernel_source, sizeof(kernel_source), major, minor);
   char *const query[] = {"/usr/bin/dpkg-query", "-W",
     "-f=${binary:Package}\t${Status}\t${Version}\t${source:Package}\t${source:Version}\n",
     kernel_pkg, "libc6:amd64", "systemd", "ubuntu-server", NULL};

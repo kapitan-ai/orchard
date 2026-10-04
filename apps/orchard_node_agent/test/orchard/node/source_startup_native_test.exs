@@ -22,6 +22,14 @@ defmodule Orchard.Node.SourceStartupNativeTest do
     {output, status} =
       System.cmd(command, arguments, stderr_to_stdout: true)
 
+    if linux? and status == 77 and System.get_env("GITHUB_ACTIONS") != "true" do
+      assert output =~ "SKIP: test root needs local ext/XFS"
+    else
+      assert_native_result(linux?, status, output)
+    end
+  end
+
+  defp assert_native_result(linux?, status, output) do
     if linux? do
       assert status == 0, output
       assert output =~ "PASS: Linux relocated-root process fixtures"

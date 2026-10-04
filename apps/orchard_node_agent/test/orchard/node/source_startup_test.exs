@@ -26,6 +26,10 @@ defmodule Orchard.Node.SourceStartupTest do
   @root "/tmp/orchard-source-startup-policy"
   @uuid "a6e1994b-0bb2-45bc-8be2-cc8573d5b463"
 
+  defmodule Filesystem do
+    def lstat(_path), do: {:ok, %{type: :directory, uid: 1000, mode: 0o40700}}
+  end
+
   defmodule LaunchVerifier do
     def preflight(options) do
       send(self(), {:launch_configuration_read, options})
@@ -41,7 +45,14 @@ defmodule Orchard.Node.SourceStartupTest do
       {"", 0}
     end
 
-    config = [profile: @profile, source_role: :node_agent, helper_path: "/helper", runner: runner]
+    config = [
+      profile: @profile,
+      source_role: :node_agent,
+      helper_path: "/helper",
+      runner: runner,
+      filesystem: Filesystem
+    ]
+
     runtime = [node_id: nil, node_identity_path: nil, node_identity_root: @root]
 
     grants = [
@@ -172,6 +183,38 @@ defmodule Orchard.Node.SourceStartupTest do
         ] do
       Process.put(:source_startup_identity, identity)
       assert_raise Error, ~r/registered_identity_required/, fn -> verify(context) end
+    end
+  end
+
+  test "symlinked credential generations refuse before registered identity reads", context do
+    root =
+      Path.join(System.tmp_dir!(), "orchard-guard-layout-#{System.unique_integer([:positive])}")
+
+    outside = root <> "-outside"
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    File.mkdir!(outside)
+    File.ln_s!(outside, Path.join(root, "generations"))
+
+    try do
+      config = Keyword.put(context.config, :filesystem, File)
+      runtime = Keyword.put(context.runtime, :node_identity_root, root)
+      grants = Keyword.put(context.grants, :identity_root, root)
+      environment = Map.put(context.environment, "ORCHARD_NODE_IDENTITY_ROOT", root)
+
+      assert_raise Error, ~r/registered_identity_layout_invalid/, fn ->
+        verify(context,
+          config: config,
+          runtime: runtime,
+          grants: grants,
+          environment: environment
+        )
+      end
+
+      refute_received :registered_root_read
+    after
+      File.rm_rf!(root)
+      File.rm_rf!(outside)
     end
   end
 

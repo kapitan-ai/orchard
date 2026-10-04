@@ -24,7 +24,10 @@ expect() {
   local expected="$1" actual=0
   shift
   "$@" >"$TMP_ROOT/stdout" 2>"$TMP_ROOT/stderr" || actual=$?
-  [[ "$actual" == "$expected" ]] || fail "expected status $expected, got $actual"
+  if [[ "$actual" != "$expected" ]]; then
+    tail -40 "$TMP_ROOT/stdout" "$TMP_ROOT/stderr" >&2
+    fail "expected status $expected, got $actual"
+  fi
 }
 bounded() { timeout --signal=KILL 10 "$@"; }
 await_file() {
@@ -90,6 +93,7 @@ expect 64 "$PRODUCTION" --test-parsers
 expect 64 "$PRODUCTION" --test-parent-race
 ROOT="$TMP_ROOT/identity"
 mkdir -m 0700 "$ROOT"
+mkdir -m 0700 "$ROOT/generations" "$ROOT/generations/g"
 printf 'registered-tree-sentinel\n' >"$ROOT/sentinel"
 export HELPER ROOT TMP_ROOT
 
@@ -222,28 +226,33 @@ expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
 # Real source/Application composition. Only the identity and launch readers are
 # synthetic; the adapter uses its production System.cmd kernel-verifier runner.
 export ORCHARD_NODE_PLATFORM_PROFILE=ubuntu_24_04_x86_64_node
-export MIX_ENV=dev ORCHARD_NODE_IDENTITY_ROOT="$ROOT" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
-export ORCHARD_BEAM_NODE_NAME=orchard_node_agent_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.20
-export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST=/fixture-launch.json
+export ORCHARD_NODE_IDENTITY_ROOT="$ROOT"
 export ORCHARD_SOURCE_DEV_ROLE=node_agent ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR=/fixture-descriptor
 export FIXTURE_IDENTITY_READ="$TMP_ROOT/identity-read"
 FIXTURE_SCRIPT="$REPO_ROOT/scripts/support/linux-node-source-guard-fixture.exs"
-export FIXTURE_SCRIPT
+FIXTURE_VM="$TMP_ROOT/fixture-vm"
+export FIXTURE_SCRIPT REPO_ROOT ELIXIR
+cat > "$FIXTURE_VM" <<'STUB'
+#!/usr/bin/env bash
+exec "$ELIXIR" --erl '+S 2:2' -pa "$REPO_ROOT/_build/test/lib/*/ebin" "$FIXTURE_SCRIPT"
+STUB
+chmod +x "$FIXTURE_VM"
+export FIXTURE_VM
 rm -f "$FIXTURE_IDENTITY_READ"
 expect 0 bounded env FIXTURE_MODE=application "$HELPER" --run "$ROOT" -- \
-  mix run --no-start --no-compile "$FIXTURE_SCRIPT"
+  "$FIXTURE_VM"
 [[ -s "$FIXTURE_IDENTITY_READ" ]] || fail 'Application did not reach registered identity'
 rm -f "$FIXTURE_IDENTITY_READ"
 # shellcheck disable=SC2016
 expect 0 bounded env FIXTURE_MODE=preflight "$HELPER" --run "$ROOT" -- /bin/bash -c \
-  'mix run --no-start --no-compile "$FIXTURE_SCRIPT"; status=$?; exit "$status"'
+  '"$FIXTURE_VM"; status=$?; exit "$status"'
 [[ -s "$FIXTURE_IDENTITY_READ" ]] || fail 'preflight did not reach registered identity'
 start_owner
 rm -f "$FIXTURE_IDENTITY_READ"
 expect 0 bounded env FIXTURE_MODE=refuse ORCHARD_NODE_ROOT_GUARD="$MARKER" \
-  mix run --no-start --no-compile "$FIXTURE_SCRIPT"
+  "$FIXTURE_VM"
 expect 0 bounded env FIXTURE_MODE=refuse_preflight ORCHARD_NODE_ROOT_GUARD="$MARKER" \
-  mix run --no-start --no-compile "$FIXTURE_SCRIPT"
+  "$FIXTURE_VM"
 finish_owner TERM 143
 
 # Actual launcher stages and exec ordering with synthetic downstream bootstrap.

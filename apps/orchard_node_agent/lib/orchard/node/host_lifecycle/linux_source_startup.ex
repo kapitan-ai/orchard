@@ -8,6 +8,8 @@ defmodule Orchard.Node.HostLifecycle.LinuxSourceStartup do
 
   alias Orchard.Node.{RuntimeTLS, SourceStartup.Error}
 
+  import Bitwise, only: [band: 2]
+
   @credential_fields [:certfile, :keyfile, :cacertfile, :controller_certfile]
 
   @doc """
@@ -23,6 +25,7 @@ defmodule Orchard.Node.HostLifecycle.LinuxSourceStartup do
       subject_pid: subject_pid,
       verification_mode: Keyword.get(config, :verification_mode, :application),
       helper_path: config[:helper_path],
+      filesystem: Keyword.get(config, :filesystem, File),
       runner: Keyword.get(config, :runner, &System.cmd/3)
     }
 
@@ -51,7 +54,7 @@ defmodule Orchard.Node.HostLifecycle.LinuxSourceStartup do
 
     if is_binary(guard.helper_path) and is_function(guard.runner, 3) do
       case run_verifier(guard) do
-        {_output, 0} -> :ok
+        {_output, 0} -> verify_credential_ancestry!(guard)
         _other -> raise Error, reason: :guardian_unproven
       end
     else
@@ -111,6 +114,17 @@ defmodule Orchard.Node.HostLifecycle.LinuxSourceStartup do
     root_path?(guard.root) and environment["ORCHARD_NODE_IDENTITY_ROOT"] == guard.root and
       environment["ORCHARD_NODE_ROOT_GUARD"] == guard.marker and
       runtime[:node_identity_root] == guard.root and grants[:identity_root] == guard.root
+  end
+
+  defp verify_credential_ancestry!(guard) do
+    with {:ok, %{type: :directory, uid: owner}} <- guard.filesystem.lstat(guard.root),
+         {:ok, %{type: :directory, uid: ^owner, mode: mode}} <-
+           guard.filesystem.lstat(Path.join(guard.root, "generations")),
+         true <- band(mode, 0o7777) == 0o700 do
+      :ok
+    else
+      _other -> raise Error, reason: :registered_identity_layout_invalid
+    end
   end
 
   defp root_path?(root),
