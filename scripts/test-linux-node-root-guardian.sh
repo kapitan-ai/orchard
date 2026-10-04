@@ -31,10 +31,14 @@ expect() {
 }
 bounded() { timeout --signal=KILL 10 "$@"; }
 await_file() {
-  local i
+  local i logfile
   for ((i=0; i<200; i++)); do
     [[ -s "$1" ]] && return 0
     sleep 0.025
+  done
+  for logfile in "$TMP_ROOT"/*-out "$TMP_ROOT"/*-error; do
+    [[ -f "$logfile" ]] || continue
+    tail -n 40 -- "$logfile" >&2 || true
   done
   fail 'child readiness timeout'
 }
@@ -292,6 +296,10 @@ STUB
 chmod +x "$TMP_ROOT/tools/mix" "$TMP_ROOT/tools/iex"
 export ELIXIR LAUNCH_CALLS="$TMP_ROOT/launch-calls" LAUNCH_READY="$TMP_ROOT/launch-ready" \
   LAUNCH_MARKER="$TMP_ROOT/launch-marker"
+# Configure an inert executable explicitly: the relocated launcher fixture has
+# no native Worker checkout and never starts a Worker or model provider.
+export ORCHARD_WORKER_EXECUTABLE=/bin/false ORCHARD_WORKER_EFFECTIVE_EXECUTABLE=/bin/false \
+  ORCHARD_WORKER_SOCKET_DIR="$TMP_ROOT/worker-sockets"
 PATH="$TMP_ROOT/tools:$PATH" "$LAUNCH_REPO/bin/dev-node-agent" \
   >"$TMP_ROOT/launcher-out" 2>"$TMP_ROOT/launcher-error" &
 GUARDIAN=$!
