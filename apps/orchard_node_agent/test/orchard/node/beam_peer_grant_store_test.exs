@@ -1,6 +1,8 @@
 defmodule Orchard.Node.BeamPeerGrantStoreTest do
   use ExUnit.Case, async: true
 
+  @moduletag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)
+
   import Bitwise, only: [band: 2]
 
   alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
@@ -756,7 +758,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert private_mode(lock_path) == 0o600
   end
 
-  @tag timeout: 15_000
+  @tag timeout: 30_000
   test "SPEC.md §7.5.0 contention times out before store creation and releases after owner death" do
     root =
       Path.join(

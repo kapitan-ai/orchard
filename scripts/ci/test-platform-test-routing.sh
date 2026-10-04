@@ -91,11 +91,12 @@ grep -Fq 'mix test --cover --exclude macos' <<<"$linux_cover_plan" ||
   fail 'Linux coverage plan did not exclude macOS-tagged tests'
 
 peer_grant_case="$(grep -B 2 -F 'Node retrieves and stores a grant over a real mTLS control stream' "$PEER_GRANT_TEST")"
-grep -Fq '@tag :macos' <<<"$peer_grant_case" &&
-  fail 'portable peer-grant bootstrap was excluded from Linux validation'
+grep -Fq '@tag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)' <<<"$peer_grant_case" ||
+  fail 'peer-grant bootstrap must run in both the Darwin host and Linux portable lanes'
 
-grep -Fq '@moduletag :macos' "$ROOT/apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs" &&
-  fail 'portable peer-grant store cases were excluded from Linux validation'
+grep -Fq '@moduletag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)' \
+  "$ROOT/apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs" ||
+  fail 'peer-grant store cases must run in both the Darwin host and Linux portable lanes'
 
 for fixture in "${PORTABLE_HELPER_FIXTURES[@]}"; do
   stat_probe="$(grep -F 'stat -c' "$fixture" | grep -F 'stat -f' | head -n 1)"
