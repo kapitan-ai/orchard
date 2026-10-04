@@ -11,7 +11,7 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
 Source development is currently supported on Apple Silicon macOS.
 The accepted Linux Controller profile is a Milestone 8 target, not an operational setup described by this guide.
-The accepted experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target. That profile documents the explicit source startup guard and its helper build; full Linux Node setup remains blocked by the Peer Grant store-lock portability dependency and is not yet qualified.
+The accepted experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target. That profile documents the explicit source startup guard, its helper build and the portable Peer Grant store lock; full Linux Node setup is not yet qualified, with candidate-host, systemd, controlled cross-host mesh and credential-lifecycle evidence still outstanding.
 Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions remain the macOS implementation baseline and migration inputs rather than portable Orchard control-plane core requirements.
 
 ## Prerequisites

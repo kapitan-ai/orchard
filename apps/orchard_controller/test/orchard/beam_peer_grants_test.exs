@@ -1004,7 +1004,7 @@ defmodule Orchard.BeamPeerGrantsTest do
              )
   end
 
-  @tag :macos
+  @tag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)
   test "SPEC.md §7.5.0 Node retrieves and stores a grant over a real mTLS control stream", %{
     root: root,
     trust_root: trust_root,

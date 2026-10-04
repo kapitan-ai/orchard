@@ -11,7 +11,7 @@
 
 ## 2. Source-development Node path and Linux adapter
 
-The source-only startup guard makes bounded implementation progress on 2.2 and 2.3: explicit candidate selection, closed host-fact refusal, registered-root identity binding and a foreground directory-lock guardian with relocated-root tests. These tasks remain unchecked pending candidate-host evidence. The operation-scoped Peer Grant store's `/usr/bin/lockf` dependency still blocks positive Linux Agent boot; this slice does not implement systemd supervision, source qualification, credential-management locking or native Worker release.
+The source-only startup guard makes bounded implementation progress on 2.2 and 2.3: explicit candidate selection, closed host-fact refusal, registered-root identity binding and a foreground directory-lock guardian with relocated-root tests. The operation-scoped Peer Grant store now selects fixed-path Linux `flock` or macOS `lockf`, with portable store and model-free mTLS bootstrap regressions, removing that known Linux dependency blocker. Tasks 2.1–2.5 remain unchecked pending candidate-host evidence; this progress does not implement systemd supervision, source qualification, new credential lifecycle behavior or native Worker release.
 
 - [ ] 2.1 Make the Node-only source-development path operable on a matrix host with the pinned toolchain, and verify it runs no Controller, Console, or database role
 - [ ] 2.2 Implement closed-matrix preflight, and verify unqualified hosts, including Ubuntu 26.04 LTS, fail before identity, service-manager, or enrollment mutation
