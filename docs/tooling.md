@@ -94,6 +94,44 @@ Both builders stage the fault-injecting `orchard-transport-publish-test` only wi
 Payload assembly invokes the same builder before producing the packaged CLI release.
 Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
 
+## Bootstrap failure diagnostics
+
+When changing the bootstrap version, update every observer `BOOTSTRAP_VERSION`
+input and the bootstrap diagnostic fixtures in the same reviewed change.
+
+Each mise-action step has a separate failure-only observer. It emits a bounded
+allowlist of requested mise version, failed action boundary, unknown internal
+failure stage, unknown HTTP status and unknown observed retries. The configured
+download retry limit (five retries after the first attempt) and delay (2000 ms)
+come from the [pinned action source](https://github.com/jdx/mise-action/blob/c2a87611a18de5b3828c5652fe268e992400cb5c/src/index.ts).
+These policy values do not prove the failing operation reached a download or
+exhausted those retries. Reconcile this source binding when updating the action.
+
+The pinned action runs binary download and verification before tool installation.
+A curl exit 22 in its release-asset download fails before Orchard tests, but
+does not reveal the exact HTTP status. The action exposes no failure-stage,
+HTTP-status or observed-retry output; the observer cannot distinguish a binary
+download failure from checksum, cache, environment or tool-install failures.
+It does not scrape raw logs, probe URLs, dump environment variables or record
+tokens, signed URLs, private hosts or local paths. It does not replace or wrap
+the installer, change commands, arguments, pins, cache settings, retries or
+backoff. Future richer diagnostics need an upstream structured output or a
+separately approved change; absence stays unknown.
+
+The action retains its original failure outcome. The observer uses
+`!cancelled()` with that failure outcome, has `continue-on-error` itself, and
+never runs on success, skips or cancellation. Later success-conditioned steps
+still stop after a failed bootstrap, and the aggregate still requires the
+lane's original result. Reporter failure cannot manufacture setup success.
+`scripts/ci/test-mise-bootstrap-diagnostics.sh` checks redaction, malformed input,
+local fail-fast and the workflow guards without causing a real
+download outage. It runs in the existing classifier contract-test step.
+The installer fixtures prove local fail-fast and redaction, not real GitHub
+runner execution. Per-job workflow checks enforce the unchanged bootstrap
+inputs and adjacent failure-only observers; actual CI qualifies the runner path.
+A failure to fetch the action itself during job setup precedes these steps and
+cannot produce this observer report.
+
 ## Standard Commands
 
 Either activate mise in your shell or prefix commands with `mise exec --`.
