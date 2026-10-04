@@ -110,7 +110,7 @@ never runs on success, skips or cancellation. Later success-conditioned steps
 still stop after a failed bootstrap, and the aggregate still requires the
 lane's original result. Reporter failure cannot manufacture setup success.
 `scripts/ci/test-mise-bootstrap-diagnostics.sh` checks redaction, malformed input,
-controlled error propagation and the workflow guards without causing a real
+local fail-fast and the workflow guards without causing a real
 download outage. It runs in the existing classifier contract-test step.
 The installer fixtures prove local fail-fast and redaction, not real GitHub
 runner execution. Per-job workflow checks enforce the unchanged bootstrap

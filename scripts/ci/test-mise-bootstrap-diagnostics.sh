@@ -120,8 +120,8 @@ check_workflow() {
     bootstrap = diagnostic = 0; stanza = ""
     diagnostic = ($0 == "      - name: Diagnose toolchain bootstrap failure")
   }
-  /^        uses: jdx\/mise-action@/ { bootstrap = 1 }
-  NF { stanza = stanza $0 "\n" }
+  /^        uses: jdx\/mise-action@|^      - uses: jdx\/mise-action@/ { bootstrap = 1 }
+  NF && $0 !~ /^[ \t]*#/ { stanza = stanza $0 "\n" }
   END {
     check_step()
     count = split("linux-portable provider-conformance macos-host mlx-validation packaging-validation app-distribution-validation openspec-validation", jobs, " ")
@@ -156,6 +156,20 @@ reject_workflow 'cancellation guard removed'
 awk '/^      - name: Diagnose toolchain bootstrap failure/ && !inserted++ { print "      - name: Intervening step"; print "        run: true" } { print }' \
   "$WORKFLOW" > "$FIXTURE/mutated.yml"
 reject_workflow 'observer separated from its bootstrap'
+
+cat "$WORKFLOW" > "$FIXTURE/mutated.yml"
+cat >> "$FIXTURE/mutated.yml" <<'EXTRA'
+  eighth-job:
+    steps:
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
+EXTRA
+reject_workflow 'new inline bootstrap without an observer'
+
+sed '/        run: scripts\/ci\/mise-bootstrap-diagnostics.sh/a\
+      # A comment after the observer has no scheduling effect.
+' "$WORKFLOW" > "$FIXTURE/mutated.yml"
+check_workflow "$FIXTURE/mutated.yml" || fail 'ordinary comment changed the workflow contract'
+pass
 
 grep -Fq '          scripts/ci/test-mise-bootstrap-diagnostics.sh' "$WORKFLOW" || fail 'regressions missing from classifier lane'
 pass
