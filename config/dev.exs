@@ -150,6 +150,16 @@ dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 source_dev_role =
   Orchard.Config.SourceDevBeam.source_dev_role(System.get_env("ORCHARD_SOURCE_DEV_ROLE"))
 
+node_platform_profile = System.get_env("ORCHARD_NODE_PLATFORM_PROFILE")
+
+unless node_platform_profile in [nil, "ubuntu_24_04_x86_64_node"] do
+  raise "Unknown experimental Node source platform profile"
+end
+
+if node_platform_profile && source_dev_role != :node_agent do
+  raise "Experimental Node profile requires the Node-only source role"
+end
+
 source_postgres_port =
   case source_dev_role do
     :node_agent -> Orchard.Config.SourcePostgres.port!(nil)
@@ -592,6 +602,12 @@ config :orchard_node_agent, :host_inventory,
   provider_opts: [accelerators: host_inventory_accelerators]
 
 config :orchard_node_agent,
+  source_startup: [
+    profile: node_platform_profile,
+    source_role: source_dev_role,
+    helper_path:
+      Path.join([repo_root, ".local", "linux-node-root-guardian", "orchard-node-root-guardian"])
+  ],
   beam_peer_grants:
     if(node_peer_grant_enabled?,
       do: [
@@ -609,6 +625,8 @@ config :orchard_node_agent,
     Keyword.merge(
       node_runtime_defaults,
       node_identity_root: dev_node_identity_root,
+      node_identity_path:
+        if(node_platform_profile, do: nil, else: node_runtime_defaults[:node_identity_path]),
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:

@@ -34,7 +34,17 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifier do
   end
 
   @spec verify(keyword()) :: :ok | {:error, atom()}
-  def verify(opts) when is_list(opts) do
+  def verify(opts) when is_list(opts), do: verify_launch(opts, :running_vm)
+
+  @doc """
+  Checks stored identity, grant and TLS launch configuration without starting
+  Distribution or publishing an artifact. Running VM evidence is checked by
+  `verify/1` after the final launch.
+  """
+  @spec preflight(keyword()) :: :ok | {:error, atom()}
+  def preflight(opts) when is_list(opts), do: verify_launch(opts, :configuration)
+
+  defp verify_launch(opts, mode) do
     manifest_path = Keyword.get(opts, :manifest_path)
     identity_root = Keyword.get(opts, :identity_root)
     descriptor_path = Keyword.get(opts, :descriptor_path)
@@ -56,7 +66,7 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifier do
          {:ok, grant} <- grant_store.load(identity_root, identity, node_beam_name),
          :ok <- grant_store.ensure_current(grant),
          true <- exact_scope?(manifest, grant, descriptor, identity, node_beam_name),
-         :ok <- distribution_launch.verify_vm(manifest, vm_opts(opts)),
+         :ok <- verify_vm(mode, distribution_launch, manifest, opts),
          :ok <-
            distribution_tls.verify_options(
              value(manifest, :optfile_path),
@@ -73,6 +83,11 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifier do
   catch
     _kind, _reason -> {:error, :beam_distribution_launch_contract_invalid}
   end
+
+  defp verify_vm(:configuration, _distribution_launch, _manifest, _opts), do: :ok
+
+  defp verify_vm(:running_vm, distribution_launch, manifest, opts),
+    do: distribution_launch.verify_vm(manifest, vm_opts(opts))
 
   @impl true
   def init(opts) do
