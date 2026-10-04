@@ -2,6 +2,10 @@ import Config
 
 require Logger
 
+if config_env() != :dev and not is_nil(System.get_env("ORCHARD_NODE_PLATFORM_PROFILE")) do
+  raise "Experimental Node platform profile is source-development only"
+end
+
 config :orchard_controller,
        :local_node_identity_root,
        System.get_env("ORCHARD_LOCAL_NODE_IDENTITY_ROOT")
