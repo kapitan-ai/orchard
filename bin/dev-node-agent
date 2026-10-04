@@ -21,6 +21,10 @@ command -v mix >/dev/null || { echo "error: mix not found on PATH" >&2; exit 1; 
 export MIX_ENV=dev
 export ORCHARD_SOURCE_DEV_ROLE=node_agent
 
+source "$REPO_ROOT/bin/lib/source-node-startup.sh"
+orchard_source_node_startup "$REPO_ROOT" node_agent "${1:-}"
+orchard_source_node_preflight "$REPO_ROOT"
+
 # Resolve dev runtime port (default 50071, avoids packaged BEAM on 50061).
 # Supports both env var names for parity with config/runtime.exs.
 node_port="${ORCHARD_NODE_AGENT_LISTEN_PORT:-}"
@@ -46,10 +50,12 @@ source "$REPO_ROOT/bin/lib/source-dev-beam.sh"
 source "$REPO_ROOT/bin/lib/source-dev-worker-cleanup.sh"
 orchard_source_dev_configure_worker_runtime "$REPO_ROOT"
 orchard_source_dev_beam_bootstrap node_agent "$REPO_ROOT"
-orchard_source_dev_cleanup_workers \
-  "$REPO_ROOT" \
-  "$ORCHARD_WORKER_EXECUTABLE" \
-  "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE"
+if [[ -z "${ORCHARD_NODE_PLATFORM_PROFILE+x}" ]]; then
+  orchard_source_dev_cleanup_workers \
+    "$REPO_ROOT" \
+    "$ORCHARD_WORKER_EXECUTABLE" \
+    "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE"
+fi
 
 # Start only the source-dev node-agent app. The sub-app mix.exs reuses the
 # umbrella config path, but does not boot the Phoenix/controller application.
