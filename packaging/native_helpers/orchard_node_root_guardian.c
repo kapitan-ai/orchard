@@ -704,6 +704,23 @@ static int test_parent_race(void) {
 }
 #endif
 
+static int relay_signal(int signal, int code) {
+  return signal == SIGTERM || signal == SIGHUP ||
+    ((signal == SIGINT || signal == SIGQUIT) && code <= 0);
+}
+
+#ifdef ORCHARD_NODE_ROOT_GUARDIAN_TEST
+static int test_signal_policy(void) {
+  const int directed[] = {SI_USER, SI_QUEUE, SI_TKILL};
+  for (size_t i = 0; i < sizeof(directed) / sizeof(directed[0]); i++) {
+    if (!relay_signal(SIGINT, directed[i]) || !relay_signal(SIGQUIT, directed[i])) return 1;
+  }
+  return !relay_signal(SIGTERM, SI_KERNEL) || !relay_signal(SIGHUP, SI_KERNEL) ||
+    relay_signal(SIGINT, SI_KERNEL) || relay_signal(SIGQUIT, SI_KERNEL) ||
+    relay_signal(SIGCHLD, SI_USER) || relay_signal(SIGUSR1, SI_USER);
+}
+#endif
+
 static int run(const char *root, char **command) {
   struct stat identity;
   int fd = open_root(root, &identity);
@@ -720,16 +737,22 @@ static int run(const char *root, char **command) {
   if (sigprocmask(SIG_BLOCK, &signals, &old)) { close(fd); return refuse(70, "signal_failed"); }
   /* Reset inherited SIGCHLD=SIG_IGN before forking, so waitpid remains valid. */
   struct sigaction action;
+  struct sigaction original[sizeof(watched) / sizeof(watched[0])];
   memset(&action, 0, sizeof(action)); action.sa_handler = SIG_DFL;
   sigemptyset(&action.sa_mask);
   for (size_t i = 0; i < sizeof(watched) / sizeof(watched[0]); i++) {
-    if (sigaction(watched[i], &action, NULL)) { close(fd); return refuse(70, "signal_failed"); }
+    if (sigaction(watched[i], &action, &original[i])) {
+      close(fd); return refuse(70, "signal_failed");
+    }
   }
   pid_t parent = getpid(), child = fork();
   if (child < 0) { close(fd); return refuse(70, "fork_failed"); }
   if (!child) {
     close(fd);
     if (!link_parent(parent)) _exit(70);
+    for (size_t i = 0; i < sizeof(watched) / sizeof(watched[0]); i++) {
+      if (sigaction(watched[i], &original[i], NULL)) _exit(70);
+    }
     char marker[160];
     snprintf(marker, sizeof(marker), "v1:%ld:%ld:%u:%u:%llu", (long)parent, (long)getpid(),
              major(identity.st_dev), minor(identity.st_dev), (unsigned long long)identity.st_ino);
@@ -745,8 +768,10 @@ static int run(const char *root, char **command) {
     pid_t result = waitpid(child, &status, WNOHANG);
     if (result == child) break;
     if (result < 0 && errno != EINTR) { close(fd); return refuse(70, "wait_failed"); }
-    int signal = sigwaitinfo(&signals, NULL);
-    if (signal == SIGTERM || signal == SIGHUP) (void)kill(child, signal);
+    siginfo_t info;
+    int signal = sigwaitinfo(&signals, &info);
+    /* Terminal INT/QUIT already reach the child in the foreground group. */
+    if (relay_signal(signal, signal < 0 ? 0 : info.si_code)) (void)kill(child, signal);
     else if (signal < 0 && errno != EINTR) {
       (void)kill(child, SIGKILL);
       while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
@@ -763,6 +788,7 @@ int main(int argc, char **argv) {
 #ifdef ORCHARD_NODE_ROOT_GUARDIAN_TEST
   if (argc == 2 && !strcmp(argv[1], "--test-host-validator")) return test_host_validator();
 #ifdef __linux__
+  if (argc == 2 && !strcmp(argv[1], "--test-signal-policy")) return test_signal_policy();
   if (argc == 2 && !strcmp(argv[1], "--test-parsers")) return test_parsers();
   if (argc == 2 && !strcmp(argv[1], "--test-parent-race")) return test_parent_race();
 #endif

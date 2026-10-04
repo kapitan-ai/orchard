@@ -2,6 +2,7 @@
 # Relocated-root fixtures do NOT qualify host/user/trust, Agent boot or Worker
 # cessation/resource release. The fixture binary bypasses only host facts.
 set -euo pipefail
+ulimit -c 0
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [[ $# == 0 ]] || { printf 'Usage: %s\n' "$0" >&2; exit 64; }
@@ -92,9 +93,11 @@ bash "$REPO_ROOT/scripts/build-linux-node-root-guardian.sh" --output "$TMP_ROOT/
 expect 0 "$HELPER" --test-host-validator
 expect 0 bounded "$HELPER" --test-parsers
 expect 0 bounded "$HELPER" --test-parent-race
+expect 0 bounded "$HELPER" --test-signal-policy
 expect 64 "$PRODUCTION" --test-host-validator
 expect 64 "$PRODUCTION" --test-parsers
 expect 64 "$PRODUCTION" --test-parent-race
+expect 64 "$PRODUCTION" --test-signal-policy
 ROOT="$TMP_ROOT/identity"
 mkdir -m 0700 "$ROOT"
 mkdir -m 0700 "$ROOT/generations" "$ROOT/generations/g"
@@ -122,7 +125,7 @@ start_owner() {
   rm -f "$TMP_ROOT/ready" "$TMP_ROOT/marker"
   # Inspect the subject's environment, PID and FDs.
   # shellcheck disable=SC2016
-  "$HELPER" --run "$ROOT" -- /bin/bash -c '
+  env --default-signal=TERM,HUP,INT,QUIT "$@" "$HELPER" --run "$ROOT" -- /bin/bash -c '
     set -eu
     "$HELPER" --verify "$ROOT" "$ORCHARD_NODE_ROOT_GUARD" "$$"
     [[ "$ORCHARD_NODE_IDENTITY_ROOT" == "$ROOT" ]]
@@ -205,7 +208,39 @@ expect 127 bounded "$HELPER" --run "$ROOT" -- "$TMP_ROOT/missing-command"
 expect 126 bounded "$HELPER" --run "$ROOT" -- "$ROOT/sentinel"
 expect 143 bounded "$HELPER" --run "$ROOT" -- /bin/sh -c 'kill -TERM $$'
 start_owner; finish_owner HUP 129
+start_owner; finish_owner INT 130
+expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
+start_owner; finish_owner QUIT 131
+expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
 start_owner; finish_owner KILL 137
+expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
+
+start_owner --ignore-signal=INT
+kill -INT "$GUARDIAN"
+expect 0 bounded "$HELPER" --verify "$ROOT" "$MARKER" "$SUBJECT"
+expect 75 bounded "$HELPER" --run "$ROOT" -- /bin/true
+finish_owner TERM 143
+expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
+
+# A handled interrupt is relayed without granting premature root release.
+rm -f "$TMP_ROOT/ready" "$TMP_ROOT/marker" "$TMP_ROOT/handled-int"
+# shellcheck disable=SC2016
+env --default-signal=TERM,HUP,INT,QUIT "$HELPER" --run "$ROOT" -- /bin/bash -c '
+  set -eu
+  trap '\''printf "INT\n" >"$TMP_ROOT/handled-int"'\'' INT
+  printf "%s\n" "$ORCHARD_NODE_ROOT_GUARD" >"$TMP_ROOT/marker"
+  printf "%s\n" "$$" >"$TMP_ROOT/ready"
+  while :; do /bin/sleep 0.05; done
+' >"$TMP_ROOT/owner-out" 2>"$TMP_ROOT/owner-error" &
+GUARDIAN=$!
+await_file "$TMP_ROOT/ready"
+SUBJECT="$(cat "$TMP_ROOT/ready")"
+MARKER="$(cat "$TMP_ROOT/marker")"
+kill -INT "$GUARDIAN"
+await_file "$TMP_ROOT/handled-int"
+expect 0 bounded "$HELPER" --verify "$ROOT" "$MARKER" "$SUBJECT"
+expect 75 bounded "$HELPER" --run "$ROOT" -- /bin/true
+finish_owner TERM 143
 expect 0 bounded "$HELPER" --run "$ROOT" -- /bin/true
 
 # The launcher-to-BEAM exec chain must retain the child PID and parent-death
