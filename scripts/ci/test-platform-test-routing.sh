@@ -91,8 +91,11 @@ grep -Fq 'mix test --cover --exclude macos' <<<"$linux_cover_plan" ||
   fail 'Linux coverage plan did not exclude macOS-tagged tests'
 
 peer_grant_case="$(grep -B 2 -F 'Node retrieves and stores a grant over a real mTLS control stream' "$PEER_GRANT_TEST")"
-grep -Fq '@tag :macos' <<<"$peer_grant_case" ||
-  fail 'Darwin lockf-backed peer-grant case was not tagged for macOS routing'
+grep -Fq '@tag :macos' <<<"$peer_grant_case" &&
+  fail 'portable peer-grant bootstrap was excluded from Linux validation'
+
+grep -Fq '@moduletag :macos' "$ROOT/apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs" &&
+  fail 'portable peer-grant store cases were excluded from Linux validation'
 
 for fixture in "${PORTABLE_HELPER_FIXTURES[@]}"; do
   stat_probe="$(grep -F 'stat -c' "$fixture" | grep -F 'stat -f' | head -n 1)"
@@ -119,7 +122,11 @@ host_stub_marker="$host_stub_dir/mise-called"
 trap 'rm -rf "$host_stub_dir"' EXIT
 
 printf '#!/bin/sh\nprintf "FreeBSD\\n"\n' >"$host_stub_dir/uname"
-printf '#!/bin/sh\ntouch "$ORCHARD_TEST_MISE_MARKER"\nexit 99\n' >"$host_stub_dir/mise"
+cat >"$host_stub_dir/mise" <<'STUB'
+#!/bin/sh
+touch "$ORCHARD_TEST_MISE_MARKER"
+exit 99
+STUB
 chmod +x "$host_stub_dir/uname" "$host_stub_dir/mise"
 
 host_guard_status=0
