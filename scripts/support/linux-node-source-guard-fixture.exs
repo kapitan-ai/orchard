@@ -50,6 +50,8 @@ Application.put_env(:orchard_node_agent, :beam_peer_grants,
 
 case System.fetch_env!("FIXTURE_MODE") do
   "application" ->
+    Process.flag(:trap_exit, true)
+
     {:error, {:shutdown, {:failed_to_start_child, _, :fixture_stop_before_runtime}}} =
       Orchard.NodeAgent.Application.start(:normal, [])
 
