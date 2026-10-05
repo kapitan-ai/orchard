@@ -18,8 +18,8 @@ mlx = [
   "mlx>=0.31.2",
   "mlx-lm==0.31.3",
   # Issue #98 pins the audited 15-commit / 35-file delta from v0.31.3.
-  # Keep the Transformers 5.13 compatibility matrix as a separate lock change.
-  "transformers>=5.7,<5.13",
+  # This revision includes the tokenizer-registration fix required since Transformers 5.13.
+  "transformers==5.14.1",
   "numpy>=1.26.0",
 ]
 
