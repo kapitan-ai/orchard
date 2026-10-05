@@ -13,6 +13,11 @@ from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
+from orchard_worker_mlx.native_bonsai import (
+    load_native_bonsai,
+    selects_native_bonsai,
+    validate_native_pack,
+)
 from orchard_worker_mlx.prefix_cache import (
     KVPrefixCache,
     PrefixCache,
@@ -537,6 +542,7 @@ class MLXDeps:
     make_prompt_cache: Callable[[Any], Any] | None = None
     can_trim_prompt_cache: Callable[[Any], bool] | None = None
     make_sampler: Callable[..., Any] | None = None
+    load_bonsai_model: Callable[[Path], tuple[Any, Any]] | None = None
 
 
 def _import_required_mlx_runtime_modules() -> tuple:
@@ -629,15 +635,16 @@ def _default_mlx_deps() -> MLXDeps:
         tokenizer_dir = Path(tokenizer_path).parent
         try:
             params = inspect.signature(mlx_lm_load_tokenizer).parameters
-            if "tokenizer_config_extra" in params or any(
+            accepts_config = "tokenizer_config_extra" in params or any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            ):
-                return mlx_lm_load_tokenizer(
-                    tokenizer_dir,
-                    tokenizer_config_extra={"trust_remote_code": False},
-                )
+            )
         except (TypeError, ValueError):
-            pass
+            accepts_config = True
+        if accepts_config:
+            return mlx_lm_load_tokenizer(
+                tokenizer_dir,
+                tokenizer_config_extra={"trust_remote_code": False},
+            )
         return mlx_lm_load_tokenizer(tokenizer_dir)
 
     return MLXDeps(
@@ -651,6 +658,7 @@ def _default_mlx_deps() -> MLXDeps:
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
         make_sampler=_make_sampler,
+        load_bonsai_model=load_native_bonsai,
     )
 
 
@@ -765,6 +773,7 @@ class LoadedModelSession:
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
     session_started_unix_ms: int = 0
+    reset_request_state: Callable[[], None] | None = None
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
@@ -1392,6 +1401,20 @@ def load_session(
         )
 
     _reject_model_file_config(entrypoint_path)
+    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
+    try:
+        native_bonsai = selects_native_bonsai(entrypoint_path)
+        if native_bonsai:
+            if effective_generation_config.mode != "stream" or effective_config.mode != "disabled":
+                raise ValueError(
+                    "native Bonsai requires stream generation and disabled prefix cache"
+                )
+            validate_native_pack(entrypoint_path)
+    except (OSError, ValueError) as exc:
+        raise ModelLoaderError(
+            "model_load_failed", f"model input validation failed: {exc}"
+        ) from exc
 
     # --- load MLX model and tokenizer ---
     logger.info("load_session loading model and tokenizer")
@@ -1402,17 +1425,20 @@ def load_session(
     tokenizer = None
     model_config = None
     try:
-        model, model_config = deps.load_model(
-            entrypoint_path,
-            lazy=True,
-            strict=False,
-        )
+        if native_bonsai:
+            if deps.load_bonsai_model is None:
+                raise ModelLoaderError("model_load_failed", "native Bonsai dependency unavailable")
+            model, model_config = deps.load_bonsai_model(entrypoint_path)
+        else:
+            model, model_config = deps.load_model(
+                entrypoint_path,
+                lazy=True,
+                strict=False,
+            )
         deps.eval_fn(model)
         deps.clear_cache()
 
         tokenizer = deps.load_tokenizer(tokenizer_path)
-    except ModelLoaderError:
-        raise
     except Exception as exc:
         # Best-effort cleanup of partial allocations.
         model = None
@@ -1423,6 +1449,8 @@ def load_session(
             pass
         gc.collect()
 
+        if isinstance(exc, ModelLoaderError):
+            raise
         if "mlx_lm" in type(exc).__module__ if hasattr(type(exc), "__module__") else False:
             raise ModelLoaderError(
                 "model_load_failed",
@@ -1451,8 +1479,6 @@ def load_session(
     _safe_clear_cache(deps.clear_cache)
 
     # --- prefix cache eligibility probe (fail-open) ---
-    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
-    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
     effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status = _compute_memory_budget_status(
         manifest,
@@ -1494,6 +1520,7 @@ def load_session(
         memory_budget_status=memory_budget_status,
         session_started_unix_ms=int(time.time() * 1000),
         tool_calling=tool_calling,
+        reset_request_state=model.reset_request_state if native_bonsai else None,
     )
 
 
@@ -1518,6 +1545,7 @@ def unload_session(
     session.model_config = None
     session.prefix_cache = None
     session.prefix_cache_fingerprints.clear()
+    session.reset_request_state = None
     session.clear_cache = None
 
     try:

@@ -41,6 +41,52 @@ The worker `GetStatus` path reports overlapping `Generate` calls and effective w
 The node-agent publishes aggregate capacity through cluster `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`, plus loaded-placement capacity through `StatusResponse.runtime_model_placements`.
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement keeps its own reported capacity.
 
+## Native Bonsai source-evaluation candidate
+
+The optional `bonsai` extra pins released mlx-vlm 0.7.2 at
+`a74c7de90a344a2c2c7334acb4e48b57a40480e2`. It supplies the native
+`prism_hadamard_qwen35` constructor beneath the held MLX-LM generator. Ordinary
+bundles do not import this optional package. Its declared transitive graph adds
+image, audio and server libraries; Orchard does not start their services.
+
+```bash
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx --extra bonsai
+```
+
+This initial path is limited to the complete schema2/grouped/2-bit affine pack
+with 402 block-1024 packed modules, 64 language layers, and complete language and
+vision tensors. The reference artifact is
+`prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` at
+`fcba37d2117a7077eac6b613b2668d14d9779edd`; model.safetensors is
+8,595,477,990 bytes with SHA256
+`130de5925082c168b7866b2e91b52e44abbafc99017e3ca352b77b5b55a269ed`.
+Normal Node-owned artifact verification and immutable bundle admission remain
+required; this metadata is not a substitute for them. Artifact runtime Python
+is inert. Safetensors headers, shard ownership, packed widths, installed source
+provenance and complete strict-loaded tensor inventory are checked separately.
+
+For this evaluation select `ORCHARD_WORKER_GENERATION_MODE=stream` and
+`ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled` in the Node Agent environment
+(direct CLI equivalents: `--generation-mode stream --prefix-cache-mode disabled`).
+Batch or persistent-cache settings fail before native allocation. The existing
+Node Agent launches and supervises the direct-exec Worker; Controller dispatch
+continues through Node Agent. Both language and vision weights are materialized
+and retained, although only language generation is admitted and vision is
+unqualified. Every request gets fresh KV and reset position state.
+
+Native numerical/load reference evidence does not qualify this Worker path.
+The reference OpenCode attempt was incomplete after missing required tool
+arguments. A useful coding workflow requires an actual pinned coding agent to
+complete repository read/edit/test/iteration, execute its surviving regressions,
+pass independent held-out checks, and settle managed cancellation/reuse. Do not
+infer those gates from constructor or model-free test success.
+MLX-LM prefill is not instantaneously preemptible; cancellation acknowledgement,
+public terminal and native settlement are distinct. Managed prefill/decode
+cancellation, parity of position handling, EOS/history/parser fidelity,
+crash/reload and resource cleanup remain exact-tuple qualification gates.
+The configured model context and publisher context are not measured operational
+or profile qualification. Source distribution remains paused.
+
 ## Model-free regression evidence
 
 Issue #409 keeps compatibility and lifecycle regression evidence separate from

@@ -38,6 +38,106 @@ from orchard_worker_mlx.model_loader import (
 )
 from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
 
+
+@pytest.mark.parametrize("generation,prefix", [("batch", "disabled"), ("stream", "kv")])
+def test_native_bonsai_rejects_incompatible_settings_before_allocation(
+    writable_bundle, generation, prefix
+):
+    """SPEC §6.4: unsupported modes never reach either constructor."""
+    weights = writable_bundle / "weights"
+    (weights / "config.json").write_text(json.dumps({"model_type": "prism_hadamard_qwen35"}))
+    deps = _make_fake_deps()
+    ordinary = MagicMock(wraps=deps.load_model)
+    native = MagicMock()
+    deps = replace(deps, load_model=ordinary, load_bonsai_model=native)
+    with pytest.raises(ModelLoaderError, match="requires stream"):
+        load_session(
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
+            generation_config=GenerationRuntimeConfig(mode=generation),
+            prefix_cache_config=PrefixCacheLoadConfig(mode=prefix),
+        )
+    ordinary.assert_not_called()
+    native.assert_not_called()
+
+
+def test_native_bonsai_routes_without_affine_fallback_and_carries_resolved_eos(
+    writable_bundle, monkeypatch
+):
+    """Routing seam is model-free; pack validation is exercised separately."""
+    import orchard_worker_mlx.model_loader as ml
+
+    weights = writable_bundle / "weights"
+    (weights / "config.json").write_text(json.dumps({"model_type": "prism_hadamard_qwen35"}))
+    monkeypatch.setattr(ml, "validate_native_pack", lambda _: None)
+    deps = _make_fake_deps(tokenizer_eos_token_id=7)
+    model, _ = deps.load_model(weights)
+    ordinary = MagicMock(wraps=deps.load_model)
+    native = MagicMock(return_value=(model, {"eos_token_id": [8, 9]}))
+    deps = replace(deps, load_model=ordinary, load_bonsai_model=native)
+    kwargs = dict(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        generation_config=GenerationRuntimeConfig(mode="stream"),
+        prefix_cache_config=PrefixCacheLoadConfig(mode="disabled"),
+    )
+    session = load_session(**kwargs)
+    native.assert_called_once_with(weights)
+    ordinary.assert_not_called()
+    assert set(session.eos_token_ids) == {7, 8, 9}
+    assert session.prefix_cache is None
+    assert session.reset_request_state == model.reset_request_state
+    deps.clear_cache.reset_mock()
+    native.side_effect = ModelLoaderError("model_load_failed", "native failure")
+    with pytest.raises(ModelLoaderError, match="native failure"):
+        load_session(**kwargs)
+    ordinary.assert_not_called()
+    deps.clear_cache.assert_called_once()
+    unload_session(session)
+    assert session.reset_request_state is None
+
+
+def test_ordinary_bundle_does_not_use_native_constructor(fixture_bundle):
+    native = MagicMock(side_effect=AssertionError("optional dependency must stay inert"))
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(fixture_bundle),
+        deps=replace(_make_fake_deps(), load_bonsai_model=native),
+    )
+    assert session.reset_request_state is None
+    native.assert_not_called()
+
+
+def test_tokenizer_value_error_never_retries_without_disabled_trust(monkeypatch):
+    """Trust kwargs cannot disappear after an upstream ValueError."""
+    import orchard_worker_mlx.model_loader as ml
+
+    tokenizer = MagicMock(side_effect=ValueError("rejected tokenizer code"))
+    monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", types.SimpleNamespace())
+    monkeypatch.setattr(
+        ml,
+        "_import_required_mlx_runtime_modules",
+        lambda: (
+            types.SimpleNamespace(eval=lambda _: None, clear_cache=lambda: None),
+            MagicMock(),
+            MagicMock(),
+            tokenizer,
+        ),
+    )
+    with pytest.raises(ValueError, match="rejected tokenizer code"):
+        _default_mlx_deps().load_tokenizer("/bundle/tokenizer.json")
+    tokenizer.assert_called_once_with(
+        Path("/bundle"), tokenizer_config_extra={"trust_remote_code": False}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture paths
 

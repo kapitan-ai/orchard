@@ -80,3 +80,19 @@ def test_lock_keeps_transformers_at_the_approved_hashed_registry_version() -> No
     )
     assert all(wheel["hash"].startswith("sha256:") for wheel in package["wheels"])
     assert all(wheel["size"] > 0 for wheel in package["wheels"])
+
+
+def test_native_extra_is_separate_and_exact_git_pinned() -> None:
+    from orchard_worker_mlx.native_bonsai import NATIVE_REVISION, NATIVE_VERSION
+
+    project = _read_toml(_PYPROJECT)
+    assert project["project"]["optional-dependencies"]["bonsai"] == [f"mlx-vlm=={NATIVE_VERSION}"]
+    assert project["tool"]["uv"]["sources"]["mlx-vlm"] == {
+        "git": "https://github.com/Blaizzy/mlx-vlm.git",
+        "rev": NATIVE_REVISION,
+    }
+    (package,) = _packages_named(_read_toml(_LOCKFILE), "mlx-vlm")
+    assert package["version"] == NATIVE_VERSION
+    assert package["source"]["git"].endswith(f"#{NATIVE_REVISION}")
+    (safetensors,) = _packages_named(_read_toml(_LOCKFILE), "safetensors")
+    assert safetensors["version"] == "0.8.0"

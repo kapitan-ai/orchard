@@ -2052,6 +2052,20 @@ Portable model policy MUST NOT rewrite artifact format as a runtime-provider nam
 The current `format`, `adapter`, `min_agent_capability`, MLX manifest values other than the explicitly deprecated top-level `sha256`, database constraints, and accepted model bundles remain valid migration inputs.
 They SHALL NOT be removed, reinterpreted, or made non-authoritative until additive replacements, backward decoding, data migration, and scheduler cutover pass separate review and acceptance.
 
+The `mlx_lm` adapter MAY construct a registered model through a separately pinned,
+reviewed installed native implementation while retaining MLX-LM generation and the
+existing Worker protocol. This does not permit imports from model-bundle Python,
+remote code, or an unreviewed architecture fallback. The initial
+`prism_hadamard_qwen35` schema2 construction profile is a source-development
+evaluation candidate: complete language and vision weights MUST load strictly,
+but only text is admitted. It MUST require stream generation with concurrency one
+and disabled persistent prefix reuse; incompatible settings MUST fail before
+native allocation. Native request position state and KV state MUST NOT carry
+between requests. Construction does not establish a supported model, operational
+context, coding workflow, cancellation latency or production qualification.
+Existing artifact verification, tool admission, Node Agent lifecycle custody and
+native-execution resolution requirements remain authoritative.
+
 Offline-importable model bundle SHALL be a tarball or directory with manifest:
 
 ```json

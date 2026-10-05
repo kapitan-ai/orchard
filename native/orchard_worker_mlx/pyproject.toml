@@ -14,6 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+bonsai = ["mlx-vlm==0.7.2"]
 mlx = [
   "mlx>=0.31.2",
   "mlx-lm==0.31.3",
@@ -24,6 +25,7 @@ mlx = [
 ]
 
 [tool.uv.sources]
+mlx-vlm = { git = "https://github.com/Blaizzy/mlx-vlm.git", rev = "a74c7de90a344a2c2c7334acb4e48b57a40480e2" }
 mlx-lm = { git = "https://github.com/ml-explore/mlx-lm.git", rev = "ab1806e8f5d6aa035973af194a1b9198ab4754dc" }
 
 [project.scripts]

@@ -2005,6 +2005,13 @@ def _synchronize_then_clear_session_cache(
         except Exception:
             pass
 
+    reset_fn = getattr(session, "reset_request_state", None)
+    if callable(reset_fn):
+        try:
+            reset_fn()
+        except Exception:
+            pass
+
     clear_fn = getattr(session, "clear_cache", None)
     if callable(clear_fn):
         try:
