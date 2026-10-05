@@ -321,6 +321,25 @@ def test_failed_native_settlement_requires_new_worker_even_after_unload(finish_f
     replacement.finish_generation()
 
 
+def test_settlement_failure_during_batch_close_survives_unload() -> None:
+    """A late close-time fault must be latched before discarding the loaded session."""
+    session = _make_fake_session()
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    runtime = MagicMock()
+    runtime.close.side_effect = lambda: setattr(session, "native_settlement_failed", True)
+    backend._batch_runtime = runtime
+    backend.unload_model()
+    runtime.close.assert_called_once()
+    assert backend.status()["loaded"] is False
+    assert backend.health()["ready"] is False
+    assert backend.health()["code"] == "native_settlement_failed"
+    with pytest.raises(BackendError) as failure:
+        backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    assert failure.value.code == "native_settlement_failed"
+    assert failure.value.retryable is False
+
+
 def test_public_terminal_before_failed_settlement_does_not_permit_next_request() -> None:
     """SPEC §6.4: keep one terminal while refusing admission after failed GPU settlement."""
     from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2

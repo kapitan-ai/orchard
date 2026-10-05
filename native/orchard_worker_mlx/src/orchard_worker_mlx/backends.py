@@ -650,6 +650,7 @@ class MLXBackend:
                     ) from exc
 
             with self._lock:
+                self._native_settlement_failed_locked()
                 if self._session is session:
                     self._session = None
                     self._batch_runtime = None
