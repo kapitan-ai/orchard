@@ -92,7 +92,9 @@ ORCHARD_MLX_LIFECYCLE_BUNDLE="<existing-bundle>" \
 
 The child sets Hugging Face and Transformers offline flags; these are not an OS
 network sandbox. Its runtime pin checks deliberately restrict the evidence to
-MLX 0.32.2, Transformers 5.12.1, and the MLX-LM revision below.
+MLX 0.32.2, Transformers 5.14.1, and the MLX-LM revision below.
+Prior results with Transformers 5.12.1 do not qualify this dependency tuple;
+the updated harness requires a fresh opt-in run before claiming real-runtime evidence.
 It rejects Python optimization (`-O`, `-OO`, or inherited `PYTHONOPTIMIZE`)
 before importing MLX, so qualification assertions cannot silently disappear.
 With the opt-in variable absent, ordinary native validation does not load a model.
@@ -127,7 +129,10 @@ claim, and must not be committed.
 The `mlx` extra pins MLX-LM commit `ab1806e8f5d6aa035973af194a1b9198ab4754dc`.
 The reviewed source range contains 15 commits and 35 changed files after the `v0.31.3` tag.
 The dependency still reports version `0.31.3`, so the full Git revision and committed uv lock are the runtime provenance authority.
-Transformers remains constrained to `>=5.7,<5.13` until its broader compatibility matrix is accepted separately.
+Transformers is pinned to `5.14.1`. The audited MLX-LM revision includes the tokenizer-registration fix for the import failure introduced by Transformers 5.13 (issues #57 and #98).
+Its minimum Safetensors requirement raises that lock entry to `0.8.0`; the other locked dependency versions remain unchanged.
+This pin permits review of the native Bonsai dependency path; it does not add an mlx-vlm adapter or qualify a Bonsai artifact, coding workflow, cancellation, or safe resource reuse.
+Dependency-refresh validation must install the exact locked `mlx` extra and exercise the import and remote-code guards described in `docs/tooling.md`; dev-only tests skip those guards.
 
 Orchard rejects model configurations containing `model_file` before upstream loading.
 Against the pinned commit the production loader passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.

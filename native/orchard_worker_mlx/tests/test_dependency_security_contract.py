@@ -20,13 +20,13 @@ def _packages_named(lock: dict, name: str) -> list[dict]:
     return [package for package in lock["package"] if package["name"] == name]
 
 
-def test_mlx_extra_uses_the_approved_source_and_transformers_range() -> None:
+def test_mlx_extra_uses_the_approved_source_and_transformers_version() -> None:
     project = _read_toml(_PYPROJECT)
 
     assert project["project"]["optional-dependencies"]["mlx"] == [
         "mlx>=0.31.2",
         "mlx-lm==0.31.3",
-        "transformers>=5.7,<5.13",
+        "transformers==5.14.1",
         "numpy>=1.26.0",
     ]
     assert "protobuf>=6.33.5" in project["project"]["dependencies"]
@@ -59,19 +59,17 @@ def test_lock_resolves_the_approved_mlx_lm_commit() -> None:
     assert {
         "name": "transformers",
         "marker": "extra == 'mlx'",
-        "specifier": ">=5.7,<5.13",
+        "specifier": "==5.14.1",
     } in requirements
 
 
-def test_lock_keeps_transformers_in_the_approved_hashed_registry_range() -> None:
+def test_lock_keeps_transformers_at_the_approved_hashed_registry_version() -> None:
     lock = _read_toml(_LOCKFILE)
     packages = _packages_named(lock, "transformers")
 
     assert len(packages) == 1
     package = packages[0]
-    major, minor, *_ = (int(part) for part in package["version"].split("."))
-    assert major == 5
-    assert 7 <= minor < 13
+    assert package["version"] == "5.14.1"
     assert package["source"]["registry"] == "https://pypi.org/simple"
     assert package["sdist"]["url"].startswith("https://files.pythonhosted.org/")
     assert package["sdist"]["hash"].startswith("sha256:")
