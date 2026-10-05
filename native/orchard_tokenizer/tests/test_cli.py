@@ -1939,8 +1939,9 @@ def test_segmented_render_and_count_requires_explicit_tokenizer_config(
     assert response["error"]["category"] == "missing_assets"
 
 
+@pytest.mark.parametrize("parser_type", ["glm47", "qwen3_coder"])
 def test_preflight_tool_capability_recognizes_a_known_parser_and_safe_history(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, parser_type: str
 ) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
@@ -1953,7 +1954,7 @@ def test_preflight_tool_capability_recognizes_a_known_parser_and_safe_history(
         encoding="utf-8",
     )
 
-    assert main(["--request-json", json.dumps(tool_capability_payload(bundle, "glm47"))]) == 0
+    assert main(["--request-json", json.dumps(tool_capability_payload(bundle, parser_type))]) == 0
 
     response = json.loads(capsys.readouterr().out)
     assert assert_single_success_result(response) == {
