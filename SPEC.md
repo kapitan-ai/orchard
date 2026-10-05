@@ -2057,7 +2057,8 @@ reviewed installed native implementation while retaining MLX-LM generation and t
 existing Worker protocol. This does not permit imports from model-bundle Python,
 remote code, or an unreviewed architecture fallback. The initial
 `prism_hadamard_qwen35` schema2 construction profile is a source-development
-evaluation candidate: complete language and vision weights MUST load strictly,
+evaluation candidate using mlx-vlm 0.7.2 at
+`a74c7de90a344a2c2c7334acb4e48b57a40480e2`: complete language and vision weights MUST load strictly,
 but only text is admitted. It MUST require stream generation with concurrency one
 and disabled persistent prefix reuse; incompatible settings MUST fail before
 native allocation. Native request position state and KV state MUST NOT carry
@@ -2065,6 +2066,10 @@ between requests. Construction does not establish a supported model, operational
 context, coding workflow, cancellation latency or production qualification.
 Existing artifact verification, tool admission, Node Agent lifecycle custody and
 native-execution resolution requirements remain authoritative.
+Hadamard-marked packs MUST NOT enter ordinary affine loading when their
+architecture label is incompatible. Runtime construction evidence MUST identify
+the installed native implementation version and source revision alongside the
+retained generation adapter.
 
 Offline-importable model bundle SHALL be a tarball or directory with manifest:
 

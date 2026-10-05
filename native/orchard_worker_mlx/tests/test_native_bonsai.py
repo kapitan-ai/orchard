@@ -51,8 +51,8 @@ def pack(tmp_path):
         tensors[f"{prefix}.weight"] = ("U32", [1, 64])
         tensors[f"{prefix}.scales"] = ("F16", [1, 8])
         tensors[f"{prefix}.biases"] = ("F16", [1, 8])
-        tensors[f"{prefix}.signs"] = ("F16", [1024])
-    tensors.update({f"vision_tower.synthetic{i}": ("BF16", [1]) for i in range(333)})
+        tensors[f"{prefix}.signs"] = ("F32", [1024])
+    tensors.update({f"vision_tower.synthetic{i}": ("F16", [1]) for i in range(333)})
     tensors.update({f"language_model.synthetic{i}": ("F32", [1]) for i in range(449)})
     write_weights(tmp_path / "model.safetensors", tensors)
     return tmp_path
@@ -63,6 +63,26 @@ def test_complete_pack_admitted_without_native_import(pack, monkeypatch):
     assert bonsai.selects_native_bonsai(pack)
     assert len(bonsai.validate_native_pack(pack)["modules"]) == 402
     assert (pack / "model.safetensors").read_bytes() == before
+
+
+def test_mislabeled_hadamard_pack_cannot_fall_back_to_affine(pack):
+    config = config_fixture()
+    config["model_type"] = "qwen3_5"
+    (pack / "config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="requires the registered native"):
+        bonsai.selects_native_bonsai(pack)
+
+
+def test_ordinary_selection_preserves_upstream_config_parsing(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text('{"model_type":"other","model_type":"qwen3_5","tensor_namespace":"ordinary"}')
+    assert not bonsai.selects_native_bonsai(tmp_path)
+    config.rename(tmp_path / "target")
+    config.symlink_to(tmp_path / "target")
+    assert not bonsai.selects_native_bonsai(tmp_path)
+    config.unlink()
+    config.write_text("invalid JSON")
+    assert not bonsai.selects_native_bonsai(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -196,13 +216,23 @@ def test_missing_vision_and_wrong_sign_width_rejected(pack):
     tensors = bonsai._tensor_header(pack / "model.safetensors")
     shapes = {name: (tensor["dtype"], tensor["shape"]) for name, tensor in tensors.items()}
     sign = next(name for name in shapes if name.endswith(".signs"))
-    shapes[sign] = ("F16", [512])
+    shapes[sign] = ("F32", [512])
     write_weights(pack / "model.safetensors", shapes)
     with pytest.raises(ValueError, match="signs"):
         bonsai.validate_native_pack(pack)
     shapes.pop("vision_tower.synthetic0")
     write_weights(pack / "model.safetensors", shapes)
     with pytest.raises(ValueError, match="complete language and vision"):
+        bonsai.validate_native_pack(pack)
+
+
+def test_wrong_sign_dtype_rejected(pack):
+    tensors = bonsai._tensor_header(pack / "model.safetensors")
+    shapes = {name: (tensor["dtype"], tensor["shape"]) for name, tensor in tensors.items()}
+    sign = next(name for name in shapes if name.endswith(".signs"))
+    shapes[sign] = ("F16", shapes[sign][1])
+    write_weights(pack / "model.safetensors", shapes)
+    with pytest.raises(ValueError, match="signs"):
         bonsai.validate_native_pack(pack)
 
 

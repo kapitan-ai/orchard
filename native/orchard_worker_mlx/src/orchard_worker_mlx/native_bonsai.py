@@ -46,9 +46,27 @@ def _read_json(path: Path) -> dict[str, Any]:
 def selects_native_bonsai(entrypoint: Path) -> bool:
     """Inspect architecture without importing optional native dependencies."""
     config = entrypoint / "config.json"
-    if not config.exists():
+    if not config.is_file():
         return False
-    return _read_json(config).get("model_type") == MODEL_TYPE
+    try:
+        value = json.loads(config.read_bytes())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    selected = value.get("model_type") == MODEL_TYPE
+    hadamard_marked = (
+        "hadamard_config" in value
+        or value.get("tensor_namespace") == "mlx-vlm-qwen3_5"
+        or (
+            "gdn_activation_layout" in value
+            and value.get("schema_version") == 2
+            and bool(value.get("modules"))
+        )
+    )
+    if not selected and hadamard_marked:
+        raise ValueError("Hadamard metadata requires the registered native architecture")
+    return selected
 
 
 def _validate_config(config: dict[str, Any]) -> None:
@@ -221,13 +239,13 @@ def validate_native_pack(entrypoint: Path) -> dict[str, Any]:
         width = packed_width * 16
         if width % 1024:
             raise ValueError("invalid native Hadamard width")
-        for suffix, expected_shape in (
-            ("scales", [rows, width // 128]),
-            ("biases", [rows, width // 128]),
-            ("signs", [width]),
+        for suffix, expected_shape, expected_dtype in (
+            ("scales", [rows, width // 128], "F16"),
+            ("biases", [rows, width // 128], "F16"),
+            ("signs", [width], "F32"),
         ):
             tensor = inventory.get(f"{prefix}.{suffix}", {})
-            if tensor.get("dtype") != "F16" or tensor.get("shape") != expected_shape:
+            if tensor.get("dtype") != expected_dtype or tensor.get("shape") != expected_shape:
                 raise ValueError(f"invalid native packed {suffix}")
     return config
 

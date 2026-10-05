@@ -4,7 +4,10 @@
 
 Under SPEC.md §§3.4 and 6.4, the Worker SHALL reuse a pinned reviewed native implementation for the schema2 `prism_hadamard_qwen35` model beneath the existing MLX-LM generator. It MUST reject executable model declarations, unsupported pack layouts, offload/drafter overrides, invalid packed module metadata and escaping or missing declared shards before native construction. It SHALL load complete weights strictly and MUST NOT fall back to ordinary affine loading after a native failure.
 
+Hadamard-marked configurations with an incompatible architecture label MUST fail before ordinary affine construction. Runtime load evidence SHALL record the native package version/source revision and retained generation adapter.
+
 #### Scenario: Valid native pack
+
 - **WHEN** an admitted immutable local bundle selects the supported schema2 architecture and explicit experimental settings
 - **THEN** the Worker constructs it through the exact reviewed installed native implementation with strict weights
 - **AND** bundle Python remains inert

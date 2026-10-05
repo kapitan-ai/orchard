@@ -48,6 +48,11 @@ The optional `bonsai` extra pins released mlx-vlm 0.7.2 at
 `prism_hadamard_qwen35` constructor beneath the held MLX-LM generator. Ordinary
 bundles do not import this optional package. Its declared transitive graph adds
 image, audio and server libraries; Orchard does not start their services.
+Selecting the native package also installs its process-wide AutoProcessor patch,
+environment defaults, generation stream and exit cleanup hook; it does not patch
+MLX-LM or AutoTokenizer. The owned load log records native version/commit and the
+retained generation adapter. A Hadamard-marked pack with a different architecture
+label is rejected before ordinary loading.
 
 ```bash
 mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx --extra bonsai

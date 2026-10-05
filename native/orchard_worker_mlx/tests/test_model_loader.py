@@ -64,7 +64,7 @@ def test_native_bonsai_rejects_incompatible_settings_before_allocation(
 
 
 def test_native_bonsai_routes_without_affine_fallback_and_carries_resolved_eos(
-    writable_bundle, monkeypatch
+    writable_bundle, monkeypatch, caplog
 ):
     """Routing seam is model-free; pack validation is exercised separately."""
     import orchard_worker_mlx.model_loader as ml
@@ -85,12 +85,17 @@ def test_native_bonsai_routes_without_affine_fallback_and_carries_resolved_eos(
         generation_config=GenerationRuntimeConfig(mode="stream"),
         prefix_cache_config=PrefixCacheLoadConfig(mode="disabled"),
     )
-    session = load_session(**kwargs)
+    with caplog.at_level("INFO"):
+        session = load_session(**kwargs)
     native.assert_called_once_with(weights)
     ordinary.assert_not_called()
     assert set(session.eos_token_ids) == {7, 8, 9}
     assert session.prefix_cache is None
     assert session.reset_request_state == model.reset_request_state
+    assert "native_package=mlx-vlm" in caplog.text
+    assert "native_version=0.7.2" in caplog.text
+    assert "native_revision=a74c7de90a344a2c2c7334acb4e48b57a40480e2" in caplog.text
+    assert "generation_adapter=mlx_lm" in caplog.text
     deps.clear_cache.reset_mock()
     native.side_effect = ModelLoaderError("model_load_failed", "native failure")
     with pytest.raises(ModelLoaderError, match="native failure"):

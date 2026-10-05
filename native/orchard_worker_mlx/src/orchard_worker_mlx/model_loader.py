@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from orchard_worker_mlx.native_bonsai import (
+    MODEL_TYPE as NATIVE_BONSAI_MODEL_TYPE,
+)
+from orchard_worker_mlx.native_bonsai import (
+    NATIVE_REVISION,
+    NATIVE_VERSION,
     load_native_bonsai,
     selects_native_bonsai,
     validate_native_pack,
@@ -1429,6 +1434,14 @@ def load_session(
             if deps.load_bonsai_model is None:
                 raise ModelLoaderError("model_load_failed", "native Bonsai dependency unavailable")
             model, model_config = deps.load_bonsai_model(entrypoint_path)
+            logger.info(
+                "native model construction model_type=%s native_package=mlx-vlm "
+                "native_version=%s native_revision=%s generation_adapter=mlx_lm "
+                "generation_mode=stream prefix_cache_mode=disabled",
+                NATIVE_BONSAI_MODEL_TYPE,
+                NATIVE_VERSION,
+                NATIVE_REVISION,
+            )
         else:
             model, model_config = deps.load_model(
                 entrypoint_path,
