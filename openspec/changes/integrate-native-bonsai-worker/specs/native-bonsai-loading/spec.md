@@ -29,6 +29,12 @@ Under SPEC.md §7.2, native Bonsai evaluation SHALL retain Node Agent lifecycle 
 - **THEN** native execution resolves through existing owned cleanup or the placement remains unavailable until Node Agent custody confirms resolution
 - **AND** subsequent admission cannot infer native release from a cancel acknowledgment or public terminal alone
 
+#### Scenario: Native synchronization fails after a public terminal
+- **WHEN** request-boundary MLX synchronization fails after a terminal was emitted
+- **THEN** cleanup continues without duplicating that terminal
+- **AND** Worker health and subsequent admission fail closed with `native_settlement_failed`
+- **AND** same-process unload or reload cannot clear the failure; Node Agent must restart the Worker before reuse
+
 ### Requirement: Separate Model and Workflow Evidence
 
 Under SPEC.md §§6.4 and 7.2.9, construction and local fixtures SHALL NOT establish a model/runtime support claim. An exact client/model workflow receipt MUST identify native dependency, artifact, tokenizer/template/parser, reasoning, effective settings, Orchard revision and managed path. It MUST include real client-owned repository read/edit/test/iteration, independent checks and cancellation/reuse evidence before claiming that bounded workflow works.

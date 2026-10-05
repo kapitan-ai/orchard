@@ -285,9 +285,30 @@ def test_request_finalization_synchronizes_before_position_reset_and_cache_clear
     )
     _synchronize_then_clear_session_cache(session, lambda: order.append("sync"))
     assert order == ["sync", "reset", "clear"]
-    session.reset_request_state = Mock(side_effect=ValueError("reset failure"))
+
+
+def test_failed_synchronize_poisoned_session_still_runs_reset_and_clear(caplog):
+    order = []
+    session = SimpleNamespace(
+        native_settlement_failed=False,
+        reset_request_state=lambda: order.append("reset"),
+        clear_cache=lambda: order.append("clear"),
+    )
     _synchronize_then_clear_session_cache(session, Mock(side_effect=ValueError("sync failure")))
-    assert order[-1] == "clear"
+    assert session.native_settlement_failed is True
+    assert order == ["reset", "clear"]
+    assert "native settlement failed; Worker restart required" in caplog.text
+
+
+def test_failed_reset_and_cache_cleanup_are_logged_without_poisoning_session(caplog):
+    session = SimpleNamespace(native_settlement_failed=False)
+    session.reset_request_state = Mock(side_effect=ValueError("reset failure"))
+    session.clear_cache = Mock(side_effect=ValueError("clear failure"))
+    _synchronize_then_clear_session_cache(session, lambda: None)
+    session.clear_cache.assert_called_once()
+    assert session.native_settlement_failed is False
+    assert "request state reset failed" in caplog.text
+    assert "request cache cleanup failed" in caplog.text
 
 
 def test_native_loading_is_local_strict_and_preserves_inventory(pack, monkeypatch):

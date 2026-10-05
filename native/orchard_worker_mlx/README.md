@@ -89,6 +89,12 @@ MLX-LM prefill is not instantaneously preemptible; cancellation acknowledgement,
 public terminal and native settlement are distinct. Managed prefill/decode
 cancellation, parity of position handling, EOS/history/parser fidelity,
 crash/reload and resource cleanup remain exact-tuple qualification gates.
+A failed request-boundary MLX synchronization records `native_settlement_failed`,
+continues best-effort cleanup and makes Worker health and subsequent admission
+fail closed. Unloading or reloading in the same process cannot clear this state;
+Node Agent must restart the Worker. A terminal already sent is not duplicated.
+Position-reset and cache-clear failures are logged; fresh uncached native cache
+construction resets positions before each subsequent request.
 The configured model context and publisher context are not measured operational
 or profile qualification. Source distribution remains paused.
 

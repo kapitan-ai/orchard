@@ -371,6 +371,7 @@ class MLXBackend:
         self._active_request_count = 0
         self._unloading = False
         self._lock = threading.Lock()
+        self._native_settlement_failed = False
 
         # --- one-shot health probe, cached forever ---
         has_injected_seams = (
@@ -436,11 +437,31 @@ class MLXBackend:
             return status
 
     def health(self) -> BackendHealth:
+        with self._lock:
+            if self._native_settlement_failed_locked():
+                return BackendHealth(
+                    ready=False,
+                    code="native_settlement_failed",
+                    message="native settlement failed; Node Agent must restart the Worker",
+                )
         return BackendHealth(
             ready=self._health["ready"],
             code=self._health["code"],
             message=self._health["message"],
         )
+
+    def _native_settlement_failed_locked(self) -> bool:
+        if getattr(self._session, "native_settlement_failed", False) is True:
+            self._native_settlement_failed = True
+        return self._native_settlement_failed
+
+    def _require_native_settlement_locked(self) -> None:
+        if self._native_settlement_failed_locked():
+            raise BackendError(
+                "native_settlement_failed",
+                "native settlement failed; Node Agent must restart the Worker",
+                False,
+            )
 
     def prefix_cache_status(self) -> BackendPrefixCacheStatus:
         with self._lock:
@@ -524,6 +545,7 @@ class MLXBackend:
 
         logger.info("mlx load_model model_id=%s version=%s", model_id, version)
         with self._lock:
+            self._require_native_settlement_locked()
             if self._unloading:
                 raise BackendError(
                     "model_unloading",
@@ -596,6 +618,7 @@ class MLXBackend:
     def unload_model(self) -> None:
         logger.info("mlx unload_model")
         with self._lock:
+            self._native_settlement_failed_locked()
             if self._unloading:
                 raise BackendError(
                     "model_unloading",
@@ -644,6 +667,7 @@ class MLXBackend:
 
     def start_generation(self) -> None:
         with self._lock:
+            self._require_native_settlement_locked()
             if self._unloading:
                 raise BackendError(
                     "model_unloading",
@@ -658,6 +682,7 @@ class MLXBackend:
 
     def finish_generation(self) -> None:
         with self._lock:
+            self._native_settlement_failed_locked()
             self._active_request_count = max(0, self._active_request_count - 1)
 
     def record_fingerprint(self, fingerprint: str) -> None:
@@ -773,6 +798,7 @@ class MLXBackend:
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         with self._lock:
+            self._require_native_settlement_locked()
             session = self._session
             batch_runtime = self._batch_runtime
         if session is None:

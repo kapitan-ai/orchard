@@ -285,6 +285,86 @@ def test_mlx_backend_initial_status_unloaded() -> None:
     assert status["active_request_count"] == 0
 
 
+@pytest.mark.parametrize("finish_first", [False, True])
+def test_failed_native_settlement_requires_new_worker_even_after_unload(finish_first) -> None:
+    """SPEC §6.4 execution resolution: public completion cannot authorize unsafe reuse."""
+    from orchard_worker_mlx.generation import _synchronize_then_clear_session_cache
+
+    session = _make_fake_session()
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    if finish_first:
+        backend.start_generation()
+    _synchronize_then_clear_session_cache(
+        session, MagicMock(side_effect=RuntimeError("device failure"))
+    )
+    if finish_first:
+        backend.finish_generation()
+    # Unload before inspecting health also must not erase the sticky failure.
+    backend.unload_model()
+    assert backend.status()["active_request_count"] == 0
+    assert backend.health()["ready"] is False
+    assert backend.health()["code"] == "native_settlement_failed"
+    for attempt in (
+        backend.start_generation,
+        lambda: list(backend.generate(MagicMock(), threading.Event())),
+        lambda: backend.load_model(model_id="m", version="v", model_path="/fake/path"),
+    ):
+        with pytest.raises(BackendError) as failure:
+            attempt()
+        assert failure.value.code == "native_settlement_failed"
+        assert failure.value.retryable is False
+    replacement = _make_mlx_backend(loader_session=_make_fake_session())
+    replacement.load_model(model_id="m", version="v", model_path="/fake/path")
+    assert replacement.health()["ready"] is True
+    replacement.start_generation()
+    replacement.finish_generation()
+
+
+def test_public_terminal_before_failed_settlement_does_not_permit_next_request() -> None:
+    """SPEC §6.4: keep one terminal while refusing admission after failed GPU settlement."""
+    from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
+    from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
+    from orchard_worker_mlx.generation import _synchronize_then_clear_session_cache
+    from orchard_worker_mlx.service import WorkerRuntimeServicer
+
+    session = _make_fake_session()
+
+    def runner(loaded, request, cancel_event):
+        try:
+            yield {
+                "kind": "completed",
+                "finish_reason": "FINISH_REASON_STOP",
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            }
+        finally:
+            _synchronize_then_clear_session_cache(
+                loaded, MagicMock(side_effect=RuntimeError("device failure"))
+            )
+
+    backend = MLXBackend(
+        session_loader=lambda **kwargs: session,
+        session_unloader=lambda loaded: None,
+        generation_runner=runner,
+    )
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    servicer = WorkerRuntimeServicer(backend, memory_sampler=lambda: None)
+    first = list(
+        servicer.Generate(runtime_pb2.ExecuteInferenceRequest(request_id="first"), MagicMock())
+    )
+    assert [event.WhichOneof("event") for event in first] == ["completed"]
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), MagicMock())
+    assert status.active_request_count == 0
+    assert status.ready is False
+    assert status.health_code == "native_settlement_failed"
+    second = list(
+        servicer.Generate(runtime_pb2.ExecuteInferenceRequest(request_id="next"), MagicMock())
+    )
+    assert [event.WhichOneof("event") for event in second] == ["failed"]
+    assert second[0].failed.code == "native_settlement_failed"
+    assert second[0].failed.retryable is False
+
+
 def test_mlx_backend_load_success() -> None:
     from orchard_worker_mlx.model_loader import MemoryBudgetStatus
 
