@@ -70,6 +70,7 @@ defmodule Orchard.Portal.KeysLiveTest do
     assert html =~ "portal-secret-value"
     refute html =~ "data-secret="
     assert html =~ "this Workspace has no active authorized Model"
+    assert has_element?(view, "#portal-secret-modal form[phx-auto-recover=ignore]")
 
     view
     |> element("#portal-secret-modal form")
@@ -182,6 +183,8 @@ defmodule Orchard.Portal.KeysLiveTest do
 
     {:ok, view, _html} = live(authed(conn, token), "/portal/portal-keys/keys")
     view |> element("#portal-revoke-#{minted.api_key.id}") |> render_click()
+
+    assert has_element?(view, "#portal-revoke-modal form[phx-auto-recover=ignore]")
 
     minted.api_key
     |> Ecto.Changeset.change(portal_user_id: nil)
