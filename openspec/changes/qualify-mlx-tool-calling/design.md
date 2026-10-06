@@ -45,7 +45,8 @@ Decode history arguments into objects before baseline rendering and caller-strin
 Protect recursive argument keys and string values with the existing segmentation machinery, retain scalar types, and preserve the fail-closed dual-render check.
 Malformed or non-object arguments fail as invalid input without exposing their contents.
 This normalization belongs to the Controller-side tokenizer, independently of the worker's model-output parser.
-Legacy non-segmented rendering is unchanged.
+Legacy non-segmented rendering uses the same validated history normalization and retains explicit tool-call, tool-result and prior-reasoning fields for the selected template.
+It does not split delimiter-like assistant content or activate negotiated reasoning controls.
 Exactly empty strings remain unmarked because they carry zero caller bytes.
 All nonempty strings retain ordinary markers around every byte, including leading and trailing whitespace.
 A string subtype applies strip, lstrip, and rstrip to the original caller value and retags every nonempty result; only empty results lose their markers.
@@ -58,6 +59,10 @@ The filter registry and callable dispatcher reject other string transformations 
 An AST adaptation routes string slices, iteration, and assignment/loop unpacking through checked operations while retaining whole-value list and mapping traversal.
 Tracked string results also reject direct Python slicing and iteration, including after macro capture and serialization.
 These checks run on every tagged request even when preflight is cached; the mandatory dual-render check independently rejects semantic divergence.
+Audited trim filters and strip/lstrip/rstrip calls additionally support strings produced by macro capture and concatenation.
+The renderer walks the authoritative marker registry, computes trim boundaries on the unmarked combined text, and reconstructs retained segments with their original caller marker identities.
+This explicitly replaces the previous fail-closed rule for coerced trims only; arbitrary string indexing, slicing, iteration, unsupported transforms, malformed spans and protected trim character sets remain rejected.
+No retained caller bytes become template-authored, and a trimmed occurrence cannot declassify another use of the same leaf.
 Exactly empty trims and ignored whole leaves remain valid without globally declassifying another use of their original values.
 Marker-transform rejections identify a stable operation without caller text; sentinel rejections carry artifact-preflight scope and sentinel identity, but do not expand the existing manifest-reason or negative-cache admission vocabulary.
 Legacy non-segmented rendering receives no active marker registry and retains the ordinary template dialect.

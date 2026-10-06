@@ -287,7 +287,7 @@ def test_mlx_backend_initial_status_unloaded() -> None:
 
 @pytest.mark.parametrize("finish_first", [False, True])
 def test_failed_native_settlement_requires_new_worker_even_after_unload(finish_first) -> None:
-    """SPEC §6.4 execution resolution: public completion cannot authorize unsafe reuse."""
+    """SPEC §4.10: public completion cannot authorize unsafe Worker reuse."""
     from orchard_worker_mlx.generation import _synchronize_then_clear_session_cache
 
     session = _make_fake_session()
@@ -341,7 +341,7 @@ def test_settlement_failure_during_batch_close_survives_unload() -> None:
 
 
 def test_public_terminal_before_failed_settlement_does_not_permit_next_request() -> None:
-    """SPEC §6.4: keep one terminal while refusing admission after failed GPU settlement."""
+    """Keep one terminal while refusing admission after failed native settlement."""
     from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
     from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
     from orchard_worker_mlx.generation import _synchronize_then_clear_session_cache

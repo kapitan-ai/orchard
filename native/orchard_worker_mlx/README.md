@@ -19,6 +19,13 @@ this service directly.
 
 See `../../docs/architecture.md` for the broader runtime map.
 
+If request-boundary MLX synchronization fails, the Worker reports not-ready with
+`native_settlement_failed` and refuses further generation or loading in that
+process, including after model unload. The Node Agent must replace the Worker
+before reuse. A public terminal event does not prove native settlement; cache
+cleanup still runs after a synchronization failure. This applies to ordinary MLX
+models as well as specialized loaders and does not establish device-drain latency.
+
 ## Backend modes
 
 The standalone CLI supports `--backend stub` and `--backend mlx`. The CLI
