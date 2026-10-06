@@ -18,7 +18,14 @@ defmodule Orchard.Models.ModelRenderAssets do
   end
 
   defp bundle_root(model, :discovery), do: Models.artifact_local_path(model)
-  defp bundle_root(model, :preparation), do: {:ok, local_path(model.artifact_uri)}
+
+  defp bundle_root(model, :preparation) do
+    case Models.artifact_local_path(model) do
+      {:ok, path} -> {:ok, path}
+      # Existing preparation also accepts legacy catalog paths that discovery does not advertise.
+      {:error, _reason} -> {:ok, local_path(model.artifact_uri)}
+    end
+  end
 
   defp parse_manifest(bundle_root, :preparation),
     do: ManifestParser.parse_from_bundle(bundle_root)

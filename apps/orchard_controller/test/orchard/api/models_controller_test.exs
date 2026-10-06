@@ -4,13 +4,30 @@ defmodule Orchard.API.ModelsControllerTest do
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.API.Router
+  alias Orchard.CanonicalRequest
   alias Orchard.Governance
+  alias Orchard.Inference.ChatOrchestrator
   alias Orchard.Inference.ReasoningEffort
+  alias Orchard.Inference.ResponsesOrchestrator
   alias Orchard.Models.Access
   alias Orchard.Models.ModelRenderAssets
 
   @artifact "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9"
   @template "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+
+  defmodule PathProvingTokenizer do
+    def tokenize(request, opts) do
+      send(self(), {:tokenizer_bundle_root, Keyword.fetch!(opts, :bundle_root)})
+
+      {:ok,
+       %{
+         rendered_prompt: "model-free path fixture",
+         input_token_count: 7,
+         reasoning: CanonicalRequest.Reasoning.to_wire(request.reasoning),
+         applied_template_arguments: ReasoningEffort.arguments(request.reasoning)
+       }}
+    end
+  end
 
   setup do
     previous = Application.fetch_env!(:orchard_controller, :inference)
@@ -222,6 +239,57 @@ defmodule Orchard.API.ModelsControllerTest do
       assert_unavailable(request_models(token))
       File.rm!(manifest_path)
       assert_unavailable(request_models(token))
+    end
+
+    test "SPEC §7.2.3 discovered encoded bundles prepare through both APIs", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-encoded-preparation")
+      bundle = Path.join(ctx.bundle_root, "bundle with # space % and é")
+      File.mkdir!(bundle)
+      model = registered_model(bundle)
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      assert "medium" in visible["orchard_reasoning_effort"]["supported_values"]
+
+      # Full preparation still rejects invalid sidecar evidence that discovery does not read.
+      assert {:error, _reason} = ModelRenderAssets.load(model, :preparation)
+      File.rm!(Path.join(bundle, "tool_capability_evidence.json"))
+      assert {:ok, opts} = ModelRenderAssets.load(model, :preparation)
+      assert Keyword.fetch!(opts, :bundle_root) == bundle
+
+      inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.put(inference, :tokenizer_client_impl, PathProvingTokenizer)
+      )
+
+      chat = %{
+        "model" => visible["id"],
+        "messages" => [%{"role" => "user", "content" => "hello"}],
+        "max_tokens" => 9,
+        "reasoning_effort" => "medium"
+      }
+
+      responses = %{
+        "model" => visible["id"],
+        "input" => "hello",
+        "max_output_tokens" => 9,
+        "reasoning" => %{"effort" => "medium"}
+      }
+
+      requests = [{ChatOrchestrator, chat}, {ResponsesOrchestrator, responses}]
+
+      for {orchestrator, params} <- requests do
+        assert {:ok, request, prepared_model} =
+                 orchestrator.prepare(params, tenant_id: tenant.id)
+
+        assert prepared_model.id == model.id
+        assert request.reasoning.effective_contract.native_effort == "medium"
+        assert_receive {:tokenizer_bundle_root, ^bundle}
+      end
+
+      assert Orchard.Repo.aggregate(Orchard.Requests.Request, :count) == 0
     end
 
     test "SPEC §6 discovery rejects non-file, outside-root and symlinked artifact paths", ctx do
