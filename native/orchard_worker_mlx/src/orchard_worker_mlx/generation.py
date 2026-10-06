@@ -716,6 +716,10 @@ class BatchGeneratorRuntime:
             max_tokens = 1
 
         with self._cv:
+            if getattr(self._session, "native_settlement_failed", False) is True:
+                raise BackendError(
+                    "native_settlement_failed", "native generation settlement failed", False
+                )
             if self._closed:
                 raise BackendError("generation_failed", "batch runtime is closed", False)
 
