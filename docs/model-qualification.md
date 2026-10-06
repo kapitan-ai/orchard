@@ -135,7 +135,11 @@ Typical cells include:
 
 Record the prompt class, input and output token limits, context window exercised, sample count, concurrency, topology, and acceptance rule for each cell.
 Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 establishes.
-Qualified reasoning-effort selection is a separate capability cell: a record that names canonical `low`, `medium`, or `high` must identify the exact artifact/template renderer mapping and the exact negotiated tuple for each tier.
+Qualified reasoning-effort selection is a separate capability cell. Identify the exact artifact/template renderer mapping and whether the cell uses rendered-input `enabled + legacy_blended` or separately negotiated `enabled + final_only` under `SPEC.md` §2.8 and §3.2.2a. Rendered-input identifiers and native arguments are those registered for the exact artifact; they are not limited to the negotiated low/medium/high vocabulary.
+
+For a rendered-input cell, record the requested public identifier, resolved native argument, registered default, authoritative render/count proof and loaded dispatch identity. Static acceptance and post-run CPU replay must be distinguished from live proof. This selects thinking at render time; it does not establish final-only separation, a reasoning-token budget, separately measured thinking tokens or semantic quality. A support claim needs its own predeclared assertions and operating envelope.
+
+The following complete-tuple advertisement, loaded-worker preparation and non-empty private reasoning rules apply to the separately negotiated final-only contract. They are not prerequisites or implied outcomes of the rendered-input legacy-blended route.
 
 Static renderer acceptance proves only that exact mapping.
 Runtime conformance separately proves fresh complete-tuple advertisement and loaded-worker acceptance before invocation; semantic qualification separately proves predeclared tier assertions and final-only separation; and an approved scoped support claim separately decides what may be represented as offered.

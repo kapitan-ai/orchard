@@ -7,6 +7,22 @@ single-node; multi-node source-dev testing is supported via env vars
 Read [`architecture.md`](architecture.md) first if you need repo/runtime boundary
 orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
+For an attended, preloaded single-developer coding workflow, see the
+[Qwen3.8 medium OpenCode source pilot](pilots/opencode-qwen3-medium.md).
+Its artifact identity, trust boundary, client settings and qualification limits
+are explicit; it does not select a global model default.
+
+Source development accepts these positive-integer millisecond overrides before
+startup. Unset values retain the shared defaults; invalid values fail startup.
+The request deadline still follows [ADR 0022](decisions/0022-request-deadline-ceiling-and-proxy-timeouts.md).
+
+| Variable | Default | Scope |
+| --- | ---: | --- |
+| `ORCHARD_REQUEST_TIMEOUT_MS` | 120000 | Controller generation budget |
+| `ORCHARD_MAX_REQUEST_DEADLINE_MS` | 360000 | Controller absolute request ceiling |
+| `ORCHARD_WORKER_READY_TIMEOUT_MS` | 5000 | NodeAgent Worker readiness phase |
+| `ORCHARD_WORKER_LOAD_TIMEOUT_MS` | 120000 | NodeAgent Worker model-load phase |
+
 ## Supported development platform
 
 Source development is currently supported on Apple Silicon macOS.

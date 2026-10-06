@@ -42,6 +42,16 @@ env_bool = fn env_name, default ->
   end
 end
 
+env_positive_int = fn env_name, default ->
+  value = env_int.(env_name, default)
+
+  if value < 1 do
+    raise "environment variable #{env_name} must be >= 1, got: #{value}"
+  end
+
+  value
+end
+
 env_optional_string = fn env_name ->
   case System.get_env(env_name) do
     nil ->
@@ -531,6 +541,16 @@ config :orchard_controller,
     Keyword.merge(
       Keyword.merge(
         controller_inference_defaults,
+        request_timeout_ms:
+          env_positive_int.(
+            "ORCHARD_REQUEST_TIMEOUT_MS",
+            Keyword.fetch!(controller_inference_defaults, :request_timeout_ms)
+          ),
+        max_request_deadline_ms:
+          env_positive_int.(
+            "ORCHARD_MAX_REQUEST_DEADLINE_MS",
+            Keyword.fetch!(controller_inference_defaults, :max_request_deadline_ms)
+          ),
         runtime_client_target: dev_runtime_client_target,
         runtime_client_targets: dev_runtime_targets,
         allow_static_runtime_target_fallback: true,
@@ -624,6 +644,16 @@ config :orchard_node_agent,
   runtime:
     Keyword.merge(
       node_runtime_defaults,
+      worker_ready_timeout_ms:
+        env_positive_int.(
+          "ORCHARD_WORKER_READY_TIMEOUT_MS",
+          Keyword.fetch!(node_runtime_defaults, :worker_ready_timeout_ms)
+        ),
+      worker_load_timeout_ms:
+        env_positive_int.(
+          "ORCHARD_WORKER_LOAD_TIMEOUT_MS",
+          Keyword.fetch!(node_runtime_defaults, :worker_load_timeout_ms)
+        ),
       node_identity_root: dev_node_identity_root,
       node_identity_path:
         if(node_platform_profile, do: nil, else: node_runtime_defaults[:node_identity_path]),
