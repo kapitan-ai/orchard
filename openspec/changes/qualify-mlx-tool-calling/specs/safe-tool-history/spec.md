@@ -8,7 +8,7 @@ Recursive argument keys and string values SHALL remain caller-authored material 
 Legacy rendering SHALL forward only each message's `role`, normalized `content`, valid `tool_calls`, and string `tool_call_id` and `name` values.
 Within each tool call it SHALL forward only `id`, `type`, and the function `name` and `arguments`.
 It SHALL NOT forward `reasoning_content`, `reasoning`, or other unlisted message, tool-call, or function fields.
-Invalid tool-call entries SHALL fail as invalid input without echoing their contents.
+Legacy rendering SHALL reject invalid tool-call entries as invalid input without echoing their contents.
 Omitted-control legacy content SHALL remain byte-preserved; delimiter-like text SHALL NOT be heuristically reconstructed into a typed reasoning channel under `SPEC.md` §7.2.8–§7.2.9.
 
 #### Scenario: Legacy rendering excludes unlisted history fields
