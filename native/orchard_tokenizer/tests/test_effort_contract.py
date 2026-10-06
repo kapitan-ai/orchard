@@ -35,7 +35,8 @@ def effort_payload(tmp_path, monkeypatch):
         "render_contract_version": "1",
         "generation_argument": {"key": "enable_thinking", "value": True},
         "effort_argument": "reasoning_effort",
-        "efforts": {"low": "low", "medium": "medium", "high": "xhigh"},
+        "default_effort": "xhigh",
+        "efforts": {"low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"},
     }
     monkeypatch.setattr(effort_contracts, "_PROFILES", (profile,))
     tokenizer = (
@@ -79,7 +80,9 @@ def select(payload, tier):
     return payload
 
 
-@pytest.mark.parametrize("tier,native", [("low", "low"), ("medium", "medium"), ("high", "xhigh")])
+@pytest.mark.parametrize(
+    "tier,native", [("low", "low"), ("medium", "medium"), ("high", "xhigh"), ("xhigh", "xhigh")]
+)
 def test_exact_native_argument_render_and_real_count(effort_payload, tier, native):
     payload = select(effort_payload, tier)
     result = execute_contract(payload)
@@ -171,7 +174,7 @@ def test_native_proof_and_template_bytes_cannot_drift(effort_payload):
         execute_contract(effort_payload)
 
 
-@pytest.mark.parametrize("tier", [None, "none", "minimal", "xhigh", "MEDIUM", 1, {}, []])
+@pytest.mark.parametrize("tier", [None, "none", "minimal", "max", "MEDIUM", 1, {}, []])
 def test_invalid_tier_is_never_remapped(effort_payload, tier):
     effort_payload["request"]["reasoning"]["reasoning_effort"] = tier
     with pytest.raises(TokenizerCliError):
@@ -191,7 +194,7 @@ def test_registry_refuses_unregistered_or_missing_native_level(effort_payload, m
     assets = effort_payload["assets"]
     assert (
         effort_contracts.resolve(
-            assets["model_artifact_digest"], assets["chat_template_digest"], "xhigh"
+            assets["model_artifact_digest"], assets["chat_template_digest"], "max"
         )
         is None
     )
@@ -254,8 +257,9 @@ def test_complete_registry_validation_rejects_malformed_entries(effort_payload):
         {**profile, "generation_argument": {"key": "enable_thinking", "value": False}},
         {**profile, "generation_argument": {"key": "enable_thinking", "value": "true"}},
         {**profile, "generation_argument": {**profile["generation_argument"], "extra": True}},
-        {**profile, "efforts": {"medium": "medium", "high": "xhigh"}},
-        {**profile, "efforts": {**profile["efforts"], "xhigh": "xhigh"}},
+        {**profile, "efforts": {}},
+        {**profile, "efforts": {**profile["efforts"], "MAX": "max"}},
+        {**profile, "default_effort": "max"},
         {**profile, "efforts": {**profile["efforts"], "low": " "}},
         {**profile, "efforts": {**profile["efforts"], "medium": None}},
         None,
@@ -266,3 +270,133 @@ def test_complete_registry_validation_rejects_malformed_entries(effort_payload):
     for invalid in [None, {}, {"profiles": None}, {"profiles": [], "extra": True}]:
         with pytest.raises(ValueError, match="invalid rendered effort registry"):
             effort_contracts.validate_profiles(invalid)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"minimal": "minimal", "max": "max"},
+        {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
+    ],
+)
+def test_extensible_subsets_resolve_render_and_count_without_collapsing_levels(
+    effort_payload, monkeypatch, values
+):
+    profile = deepcopy(effort_contracts._PROFILES[0])
+    profile.update(efforts=values, default_effort="max")
+    assert effort_contracts.validate_profiles({"profiles": [profile]}) == (profile,)
+    monkeypatch.setattr(effort_contracts, "_PROFILES", (profile,))
+    prompts = set()
+    for value, native in values.items():
+        payload = select(effort_payload, value)
+        result = execute_contract(payload)
+        assert result["reasoning"]["reasoning_effort"] == value
+        assert result["applied_template_arguments"]["reasoning_effort"] == native
+        assert result["rendered_prompt"].startswith(f"effort={native};")
+        assert result["input_token_count"] > 0
+        prompts.add(result["rendered_prompt"])
+    assert len(prompts) == len(values)
+    assert (
+        effort_contracts.resolve(
+            profile["model_artifact_digest"], profile["chat_template_digest"], "unregistered"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("forbidden", ["none", "off", "disabled", "false", "MAX", "a" * 33])
+def test_registry_rejects_enablement_values_and_malformed_identifiers(effort_payload, forbidden):
+    profile = deepcopy(effort_contracts._PROFILES[0])
+    profile["efforts"][forbidden] = forbidden
+    with pytest.raises(ValueError, match="invalid rendered effort registry"):
+        effort_contracts.validate_profiles({"profiles": [profile]})
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_alias(
+    tmp_path, monkeypatch, with_history
+):
+    # Exact vendor template, minimal fixture tokenizer: CPU render evidence only.
+    fixture_root = (
+        Path(__file__).resolve().parents[3] / "apps/orchard_controller/test/fixtures/tokenizer"
+    )
+    template = fixture_root / "qwen3_8_effort/chat_template.jinja"
+    production = Path(__file__).resolve().parents[1] / "src/orchard_tokenizer/effort_profiles.json"
+    import json
+
+    profile = json.loads(production.read_text())["profiles"][0]
+    assert hashlib.sha256(template.read_bytes()).hexdigest() == profile["chat_template_digest"]
+    monkeypatch.setattr(effort_contracts, "_PROFILES", (profile,))
+    config = tmp_path / "tokenizer_config.json"
+    config.write_text("{}")
+    items = [{"role": "user", "content": "Inspect a.py."}]
+    tools = []
+    if with_history:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "inspect",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"file": {"type": "string"}},
+                        "required": ["file"],
+                    },
+                },
+            }
+        ]
+        items += [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_one",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": '{"file":"a.py"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "source_ok", "tool_call_id": "call_one", "name": "inspect"},
+            {"role": "user", "content": "Continue."},
+        ]
+    payload = {
+        "contract_version": 5,
+        "command": "render_and_count_effort",
+        "assets": {
+            "tokenizer_kind": "huggingface_tokenizer_json",
+            "tokenizer_path": str(fixture_root / "minimal_hf/tokenizer.json"),
+            "tokenizer_config_path": str(config),
+            "chat_template_path": str(template),
+            "model_artifact_digest": profile["model_artifact_digest"],
+            "chat_template_digest": profile["chat_template_digest"],
+        },
+        "request": {
+            "input_items": items,
+            "tools": tools,
+            "tool_choice": None,
+            "reasoning": {
+                "generation_policy": "enabled",
+                "projection": "legacy_blended",
+                "reasoning_effort": "xhigh",
+                "source": "explicit_public",
+                "effective_contract": effort_contracts.resolve(
+                    profile["model_artifact_digest"], profile["chat_template_digest"], "xhigh"
+                )[0],
+            },
+        },
+    }
+    default = execute_contract(select(payload, profile["default_effort"]))
+    alias = execute_contract(select(payload, "high"))
+    omitted = deepcopy(payload)
+    omitted.update(contract_version=2, command="render_and_count")
+    del omitted["request"]["reasoning"]
+    legacy = execute_contract(omitted)
+    assert default["rendered_prompt"] == alias["rendered_prompt"] == legacy["rendered_prompt"]
+    assert default["input_token_count"] == alias["input_token_count"] == legacy["input_token_count"]
+    assert default["reasoning"]["reasoning_effort"] != alias["reasoning"]["reasoning_effort"]
+    assert default["applied_template_arguments"] == alias["applied_template_arguments"]
+    if with_history:
+        assert "<function=inspect>" in default["rendered_prompt"]
+        assert "<parameter=file>" in default["rendered_prompt"]
+        assert "source_ok" in default["rendered_prompt"]

@@ -15,6 +15,7 @@ _PROFILE_KEYS = {
     "generation_argument",
     "effort_argument",
     "efforts",
+    "default_effort",
 }
 
 
@@ -47,9 +48,16 @@ def _valid_arguments(profile: dict[str, Any]) -> bool:
 def _valid_efforts(efforts: Any) -> bool:
     return (
         isinstance(efforts, dict)
-        and set(efforts) == {"low", "medium", "high"}
+        and bool(efforts)
+        and all(valid_value(key) for key in efforts)
+        and not {"none", "off", "disabled", "false"}.intersection(efforts)
         and all(isinstance(value, str) and value.strip() for value in efforts.values())
     )
+
+
+def valid_value(value: Any) -> bool:
+    """Bound public syntax without inventing a universal model vocabulary."""
+    return _matches(value, r"[a-z][a-z0-9_]{0,31}")
 
 
 def validate_profiles(registry: Any) -> tuple[dict[str, Any], ...]:
@@ -68,6 +76,8 @@ def validate_profiles(registry: Any) -> tuple[dict[str, Any], ...]:
             or not _valid_identity(profile)
             or not _valid_arguments(profile)
             or not _valid_efforts(profile["efforts"])
+            or not valid_value(profile["default_effort"])
+            or profile["default_effort"] not in profile["efforts"]
         ):
             raise ValueError("invalid rendered effort registry")
         identity = (profile["model_artifact_digest"], profile["chat_template_digest"])
@@ -85,7 +95,7 @@ _PROFILES = validate_profiles(
 def resolve(
     artifact: str, template: str, tier: str
 ) -> tuple[dict[str, str], dict[str, Any]] | None:
-    if tier not in {"low", "medium", "high"}:
+    if not valid_value(tier):
         return None
     try:
         profiles = validate_profiles({"profiles": list(_PROFILES)})

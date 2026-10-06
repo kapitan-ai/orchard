@@ -83,14 +83,33 @@ defmodule Orchard.Inference.RequestLocalEffortPreparationTest do
   # The proving seam is synthetic; real rendering/counting is tested in the helper.
   # Preparation alone never persists a Request or invokes a Worker.
   test "SPEC §3.4 preparation binds each API control before applying count and reserve", ctx do
-    for endpoint <- [:chat_completions, :responses], tier <- ["low", "medium", "high"] do
+    for endpoint <- [:chat_completions, :responses], tier <- ["low", "medium", "high", "xhigh"] do
       assert {:ok, request, model} = prepare(ctx, endpoint, tier, 9)
       assert model.id == ctx.model.id
       assert request.input_token_count == 7
       assert request.sampling.max_output_tokens == 9
-      assert request.reasoning.reasoning_effort == String.to_existing_atom(tier)
+      assert CanonicalRequest.Reasoning.to_wire(request.reasoning)["reasoning_effort"] == tier
       assert request.reasoning.effective_contract.model_artifact_digest == @artifact
       assert request.reasoning.projection == :legacy_blended
+    end
+
+    assert Repo.aggregate(Request, :count) == 0
+  end
+
+  test "SPEC §7.2.3 unsupported registered-model values fail before a Request write", ctx do
+    for endpoint <- [:chat_completions, :responses], value <- ["max", "minimal", "none"] do
+      assert {:error, {:validation, {:unsupported_reasoning_control, _field}}} =
+               prepare(ctx, endpoint, value, 9)
+    end
+
+    assert Repo.aggregate(Request, :count) == 0
+  end
+
+  test "SPEC §5.2 model authorization precedes effort capability probing", ctx do
+    Orchard.Models.Access.revoke_model_access(ctx.tenant, ctx.model)
+
+    for endpoint <- [:chat_completions, :responses], value <- ["medium", "max"] do
+      assert {:error, :model_not_authorized} = prepare(ctx, endpoint, value, 9)
     end
 
     assert Repo.aggregate(Request, :count) == 0

@@ -72,7 +72,7 @@ defmodule Orchard.CanonicalRequest do
 
     @type generation_policy :: :model_default | :disabled | :enabled
     @type projection :: :legacy_blended | :final_only | :reasoning_structured
-    @type reasoning_effort :: nil | :low | :medium | :high
+    @type reasoning_effort :: nil | :low | :medium | :high | String.t()
     @type source :: :omitted_public | :explicit_public | :console_default | :console_explicit
 
     @type legacy_contract :: %{required(:mode) => :legacy}
@@ -129,9 +129,24 @@ defmodule Orchard.CanonicalRequest do
     defp effort_to_wire(nil), do: nil
     defp effort_to_wire(effort) when effort in [:low, :medium, :high], do: Atom.to_string(effort)
 
-    defp effort_to_wire(effort) do
+    defp effort_to_wire(effort) when is_binary(effort) do
+      if valid_rendered_effort?(effort), do: effort, else: invalid_effort!(effort)
+    end
+
+    defp effort_to_wire(effort), do: invalid_effort!(effort)
+
+    @doc "Validates an extensible rendered effort identifier without creating atoms."
+    @spec valid_rendered_effort?(term()) :: boolean()
+    def valid_rendered_effort?(effort) when effort in [:low, :medium, :high], do: true
+
+    def valid_rendered_effort?(effort) when is_binary(effort),
+      do: String.match?(effort, ~r/\A[a-z][a-z0-9_]{0,31}\z/)
+
+    def valid_rendered_effort?(_effort), do: false
+
+    defp invalid_effort!(effort) do
       raise ArgumentError,
-            "#{inspect(__MODULE__)} reasoning_effort must be nil, :low, :medium, or :high, got: #{inspect(effort)}"
+            "#{inspect(__MODULE__)} reasoning_effort must be nil, :low, :medium, or :high, or a bounded rendered identifier, got: #{inspect(effort)}"
     end
 
     defp wire_value(value) when is_atom(value), do: Atom.to_string(value)
@@ -511,7 +526,7 @@ defmodule Orchard.CanonicalRequest do
        )
        when generation_policy in [:model_default, :disabled, :enabled] and
               projection in [:legacy_blended, :final_only, :reasoning_structured] and
-              reasoning_effort in [nil, :low, :medium, :high] and
+              (reasoning_effort in [nil, :low, :medium, :high] or is_binary(reasoning_effort)) and
               source in [:omitted_public, :explicit_public, :console_default, :console_explicit] do
     validate_reasoning_combination!(
       generation_policy,
@@ -563,7 +578,7 @@ defmodule Orchard.CanonicalRequest do
          :explicit_public,
          %{mode: :rendered} = contract
        )
-       when reasoning_effort in [:low, :medium, :high] do
+       when reasoning_effort in [:low, :medium, :high] or is_binary(reasoning_effort) do
     expected_keys = [
       :mode,
       :model_artifact_digest,
@@ -573,7 +588,8 @@ defmodule Orchard.CanonicalRequest do
       :native_effort
     ]
 
-    if Enum.sort(Map.keys(contract)) == Enum.sort(expected_keys) and
+    if Reasoning.valid_rendered_effort?(reasoning_effort) and
+         Enum.sort(Map.keys(contract)) == Enum.sort(expected_keys) and
          Enum.all?(expected_keys -- [:mode], &valid_contract_identity?(Map.get(contract, &1))) do
       :ok
     else

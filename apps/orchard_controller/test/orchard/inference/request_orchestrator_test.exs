@@ -782,6 +782,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
 
     if test_pid = Process.whereis(:request_orchestrator_test_pid) do
       send(test_pid, {:runtime_execute_called, request.request_id})
+      send(test_pid, {:runtime_execute_input, request})
     end
 
     case Process.get({__MODULE__, :timeout_fixture}) do
@@ -1171,6 +1172,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
+  alias Orchard.Inference.ReasoningEffort
   alias Orchard.Inference.RequestDeadline
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
@@ -3877,6 +3879,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     model = create_active_model!(bundle, "request-orchestrator-alternate-success")
     canonical = canonical_request("request-orchestrator-alternate-success", stream?: false)
+
+    {:ok, reasoning} =
+      ReasoningEffort.resolve(
+        "xhigh",
+        "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9",
+        "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      )
+
+    # Prepared-input fixture and stub runtime; no model invocation or native-count claim.
+    canonical = CanonicalRequest.new(Map.put(Map.from_struct(canonical), :reasoning, reasoning))
     owner = self()
     public_id = canonical.public_id
 
@@ -3893,6 +3905,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert_receive {:runtime_execute_called, ^public_id}
     assert_receive {:runtime_execute_called, ^public_id}
     refute_receive {:runtime_execute_called, ^public_id}, 0
+    assert_receive {:runtime_execute_input, first_input}
+    assert_receive {:runtime_execute_input, second_input}
+    assert first_input.rendered_prompt_utf8 == canonical.rendered_prompt
+    assert second_input.rendered_prompt_utf8 == first_input.rendered_prompt_utf8
+    assert first_input.input_tokens == second_input.input_tokens
+    assert first_input.params == second_input.params
 
     assert_receive {:scheduler_opts, [exclude_node_ids: []]}
     assert_receive {:scheduler_opts, [exclude_node_ids: [excluded_node_id]]}
@@ -3903,6 +3921,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :completed
+    assert request.canonical_request["reasoning"] == CanonicalRequest.Reasoning.to_wire(reasoning)
     assert request.node_id == nodes.second.node_id
     assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 1
 

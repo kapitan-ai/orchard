@@ -6,6 +6,7 @@ defmodule Orchard.Inference.ReasoningEffort do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference
   alias Orchard.Inference.EffortProfiles
+  alias Orchard.Models.ModelRenderAssets
   alias Orchard.Tokenizer.Client
 
   @profiles_path Path.expand(
@@ -16,7 +17,7 @@ defmodule Orchard.Inference.ReasoningEffort do
   @profiles EffortProfiles.load!(@profiles_path)
   @tiers %{"low" => :low, "medium" => :medium, "high" => :high}
 
-  @type tier :: :low | :medium | :high
+  @type tier :: :low | :medium | :high | String.t()
   @type validation_error ::
           {:error, :unsupported_parameter | :unsupported_reasoning_control, String.t()}
           | {:error, :invalid_value, String.t(), String.t()}
@@ -66,14 +67,15 @@ defmodule Orchard.Inference.ReasoningEffort do
   end
 
   defp tier(value, field) when is_binary(value) do
-    case Map.fetch(@tiers, value) do
-      {:ok, tier} -> {:ok, tier}
-      :error -> {:error, :unsupported_reasoning_control, field}
-    end
+    if EffortProfiles.valid_value?(value),
+      do: {:ok, Map.get(@tiers, value, value)},
+      else:
+        {:error, :invalid_value, field,
+         "must be a lowercase effort identifier of at most 32 bytes"}
   end
 
   defp tier(_value, field),
-    do: {:error, :invalid_value, field, "must be low, medium, or high"}
+    do: {:error, :invalid_value, field, "must be a supported model effort identifier"}
 
   # Validated controls remain outside the unprepared skeleton until the selected
   # model's trusted manifest is available. No requested/unbound contract is stored.
@@ -90,18 +92,15 @@ defmodule Orchard.Inference.ReasoningEffort do
 
   @spec resolve(tier(), term(), term()) ::
           {:ok, CanonicalRequest.Reasoning.t()} | {:error, :unsupported_reasoning_control}
-  def resolve(tier, artifact_digest, template_digest) when tier in [:low, :medium, :high] do
-    with profile when is_map(profile) <-
-           Enum.find(@profiles, fn profile ->
-             profile["model_artifact_digest"] == artifact_digest and
-               profile["chat_template_digest"] == template_digest
-           end),
-         native when is_binary(native) <- profile["efforts"][Atom.to_string(tier)] do
+  def resolve(tier, artifact_digest, template_digest)
+      when is_binary(tier) or tier in [:low, :medium, :high] do
+    with profile when is_map(profile) <- profile(artifact_digest, template_digest),
+         native when is_binary(native) <- profile["efforts"][public_value(tier)] do
       {:ok,
        %CanonicalRequest.Reasoning{
          generation_policy: :enabled,
          projection: :legacy_blended,
-         reasoning_effort: tier,
+         reasoning_effort: Map.get(@tiers, public_value(tier), tier),
          source: :explicit_public,
          effective_contract: %{
            mode: :rendered,
@@ -120,13 +119,58 @@ defmodule Orchard.Inference.ReasoningEffort do
   def resolve(_tier, _artifact_digest, _template_digest),
     do: {:error, :unsupported_reasoning_control}
 
-  defp bind_tier(request, tier, opts) do
-    manifest = Keyword.get(opts, :manifest)
-    template_digest = manifest && manifest.chat_template && manifest.chat_template.sha256
+  @doc "Returns available effort controls for an already tenant-visible Catalog model."
+  @spec capabilities(Orchard.Models.Model.t()) :: map()
+  def capabilities(model) do
+    with true <- available_route?(),
+         {:ok, opts} <- ModelRenderAssets.load(model, :discovery),
+         profile when is_map(profile) <-
+           profile(Keyword.fetch!(opts, :bundle_sha256), template_digest(opts)) do
+      default = profile["default_effort"]
 
-    with true <- Client.mode() == :port,
-         true <- Inference.tokenizer_safe_mode() == :off,
-         {:ok, reasoning} <- resolve(tier, Keyword.get(opts, :bundle_sha256), template_digest) do
+      %{
+        status: "available",
+        supported_values: profile["efforts"] |> Map.keys() |> Enum.sort(),
+        native_mapping: profile["efforts"],
+        default: default,
+        omission: %{
+          behavior: "preserve_model_default",
+          native_effort: profile["efforts"][default]
+        }
+      }
+    else
+      _unavailable ->
+        %{
+          status: "unavailable",
+          supported_values: [],
+          native_mapping: %{},
+          default: nil,
+          omission: %{behavior: "preserve_model_default", native_effort: nil}
+        }
+    end
+  end
+
+  defp profile(artifact_digest, template_digest) do
+    Enum.find(@profiles, fn profile ->
+      profile["model_artifact_digest"] == artifact_digest and
+        profile["chat_template_digest"] == template_digest
+    end)
+  end
+
+  defp public_value(tier) when is_binary(tier), do: tier
+  defp public_value(tier), do: Atom.to_string(tier)
+
+  defp template_digest(opts) do
+    manifest = Keyword.get(opts, :manifest)
+    manifest && manifest.chat_template && manifest.chat_template.sha256
+  end
+
+  defp available_route?, do: Client.mode() == :port and Inference.tokenizer_safe_mode() == :off
+
+  defp bind_tier(request, tier, opts) do
+    with true <- available_route?(),
+         {:ok, reasoning} <-
+           resolve(tier, Keyword.get(opts, :bundle_sha256), template_digest(opts)) do
       {:ok, CanonicalRequest.new(Map.put(Map.from_struct(request), :reasoning, reasoning))}
     else
       _unsupported ->
@@ -139,11 +183,7 @@ defmodule Orchard.Inference.ReasoningEffort do
 
   @spec arguments(CanonicalRequest.Reasoning.t()) :: map()
   def arguments(%CanonicalRequest.Reasoning{effective_contract: contract}) do
-    profile =
-      Enum.find(@profiles, fn profile ->
-        profile["model_artifact_digest"] == contract.model_artifact_digest and
-          profile["chat_template_digest"] == contract.chat_template_digest
-      end)
+    profile = profile(contract.model_artifact_digest, contract.chat_template_digest)
 
     %{
       profile["generation_argument"]["key"] => profile["generation_argument"]["value"],

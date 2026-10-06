@@ -3,7 +3,7 @@ defmodule Orchard.Inference.EffortProfiles do
   Validates the closed source-owned registry before effort mappings are used.
   """
 
-  @profile_keys ~w(chat_template_digest effort_argument efforts generation_argument model_artifact_digest render_contract render_contract_version)
+  @profile_keys ~w(chat_template_digest default_effort effort_argument efforts generation_argument model_artifact_digest render_contract render_contract_version)
   @digest ~r/\A[0-9a-f]{64}\z/
   @identifier ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @version ~r/\A[1-9][0-9]*\z/
@@ -29,7 +29,9 @@ defmodule Orchard.Inference.EffortProfiles do
     with true <- Enum.sort(Map.keys(profile)) == @profile_keys,
          true <- valid_identity?(profile),
          true <- valid_arguments?(profile),
-         true <- valid_efforts?(profile["efforts"]) do
+         true <- valid_efforts?(profile["efforts"]),
+         true <- valid_value?(profile["default_effort"]),
+         true <- Map.has_key?(profile["efforts"], profile["default_effort"]) do
       :ok
     else
       _invalid -> invalid!()
@@ -56,11 +58,16 @@ defmodule Orchard.Inference.EffortProfiles do
   defp valid_arguments?(_profile), do: false
 
   defp valid_efforts?(efforts) when is_map(efforts) do
-    Enum.sort(Map.keys(efforts)) == ~w(high low medium) and
+    map_size(efforts) > 0 and Enum.all?(Map.keys(efforts), &valid_value?/1) and
+      Enum.all?(Map.keys(efforts), &(&1 not in ~w(none off disabled false))) and
       Enum.all?(Map.values(efforts), &(is_binary(&1) and String.trim(&1) != ""))
   end
 
   defp valid_efforts?(_efforts), do: false
+
+  @doc "Validates the bounded public identifier syntax, independently of model support."
+  @spec valid_value?(term()) :: boolean()
+  def valid_value?(value), do: matches?(value, ~r/\A[a-z][a-z0-9_]{0,31}\z/)
 
   defp matches?(value, regex), do: is_binary(value) and Regex.match?(regex, value)
   defp invalid!, do: raise(ArgumentError, "invalid rendered effort registry")

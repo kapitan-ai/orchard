@@ -5,7 +5,35 @@ defmodule Orchard.API.ModelsControllerTest do
 
   alias Orchard.API.Router
   alias Orchard.Governance
+  alias Orchard.Inference.ReasoningEffort
   alias Orchard.Models.Access
+  alias Orchard.Models.ModelRenderAssets
+
+  @artifact "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9"
+  @template "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+
+  setup do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+    root = Path.join(System.tmp_dir!(), unique_slug("effort-discovery"))
+    File.mkdir!(root)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(previous,
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :off,
+        tokenizer_executable: "/nonexistent/discovery-must-not-start-a-helper"
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, previous)
+      File.rm_rf!(root)
+    end)
+
+    %{bundle_root: root}
+  end
 
   describe "GET /v1/models" do
     @describetag :db
@@ -95,6 +123,131 @@ defmodule Orchard.API.ModelsControllerTest do
       assert model_ids(request_models(direct_token)) == expected
       assert model_ids(request_models(service_token)) == expected
     end
+
+    test "SPEC §7.2.3 discovery and binding share exact values, native mappings and default",
+         ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-visible")
+      model = registered_model(ctx.bundle_root)
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      effort = visible["orchard_reasoning_effort"]
+
+      assert effort == %{
+               "status" => "available",
+               "supported_values" => ["high", "low", "medium", "xhigh"],
+               "native_mapping" => %{
+                 "low" => "low",
+                 "medium" => "medium",
+                 "high" => "xhigh",
+                 "xhigh" => "xhigh"
+               },
+               "default" => "xhigh",
+               "omission" => %{"behavior" => "preserve_model_default", "native_effort" => "xhigh"}
+             }
+
+      File.rm!(Path.join(ctx.bundle_root, "tool_capability_evidence.json"))
+      {:ok, opts} = ModelRenderAssets.load(model)
+      manifest = Keyword.fetch!(opts, :manifest)
+
+      for value <- effort["supported_values"] do
+        assert {:ok, reasoning} =
+                 ReasoningEffort.resolve(
+                   value,
+                   model.artifact_sha256,
+                   manifest.chat_template.sha256
+                 )
+
+        assert reasoning.effective_contract.native_effort == effort["native_mapping"][value]
+      end
+
+      assert {:error, :unsupported_reasoning_control} =
+               ReasoningEffort.resolve(
+                 "max",
+                 model.artifact_sha256,
+                 manifest.chat_template.sha256
+               )
+
+      refute Map.has_key?(visible, "artifact_uri")
+      refute Map.has_key?(visible, "artifact_sha256")
+      refute Map.has_key?(effort, "model_artifact_digest")
+
+      %{token: other_token} = create_direct_token!("effort-hidden")
+      assert model_ids(request_models(other_token)) == []
+      Access.disable_model_access(tenant, model)
+      assert model_ids(request_models(token)) == []
+    end
+
+    test "SPEC §7.2.3 unavailable proof or routes never fabricate effort support", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-unavailable")
+      model = registered_model(ctx.bundle_root)
+      grant_model_access!(tenant, model)
+
+      previous = Application.fetch_env!(:orchard_controller, :inference)
+
+      for overrides <- [
+            tokenizer_mode: :fake,
+            tokenizer_safe_mode: :on,
+            tokenizer_safe_mode: :reject
+          ] do
+        Application.put_env(:orchard_controller, :inference, Keyword.merge(previous, [overrides]))
+        assert_unavailable(request_models(token))
+      end
+
+      Application.put_env(:orchard_controller, :inference, previous)
+
+      manifest_path = Path.join(ctx.bundle_root, "manifest.json")
+      original = File.read!(manifest_path)
+      manifest = Jason.decode!(original)
+
+      File.write!(
+        manifest_path,
+        Jason.encode!(put_in(manifest["chat_template"]["sha256"], String.duplicate("b", 64)))
+      )
+
+      assert_unavailable(request_models(token))
+      File.write!(manifest_path, Jason.encode!(Map.delete(manifest, "chat_template")))
+      assert_unavailable(request_models(token))
+      File.write!(manifest_path, "not JSON")
+      assert_unavailable(request_models(token))
+      File.rm!(manifest_path)
+      assert_unavailable(request_models(token))
+    end
+  end
+
+  defp registered_model(root) do
+    model =
+      create_model!(%{state: :active, artifact_uri: "file://#{root}", artifact_sha256: @artifact})
+
+    manifest = %{
+      "model_id" => model.model_id,
+      "version" => model.version,
+      "format" => "mlx",
+      "artifact_layout" => "directory",
+      "entrypoint" => "weights/",
+      "capabilities" => ["chat"],
+      "tokenizer" => model.tokenizer,
+      "chat_template" => %{"path" => "chat_template.jinja", "sha256" => @template},
+      "runtime_requirements" => model.runtime_requirements
+    }
+
+    File.write!(Path.join(root, "manifest.json"), Jason.encode!(manifest))
+
+    # An invalid sidecar would fail the preparation preflight; discovery reads no sidecar or helper.
+    File.write!(Path.join(root, "tool_capability_evidence.json"), "not JSON")
+    model
+  end
+
+  defp assert_unavailable(conn) do
+    assert conn.status == 200
+    [visible] = Jason.decode!(conn.resp_body)["data"]
+
+    assert visible["orchard_reasoning_effort"] == %{
+             "status" => "unavailable",
+             "supported_values" => [],
+             "native_mapping" => %{},
+             "default" => nil,
+             "omission" => %{"behavior" => "preserve_model_default", "native_effort" => nil}
+           }
   end
 
   defp request_models(nil) do

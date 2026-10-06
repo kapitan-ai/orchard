@@ -23,6 +23,7 @@ from orchard_tokenizer.catalog import (
     extract_wrapper_tool_markers,
 )
 from orchard_tokenizer.effort_contracts import resolve as resolve_rendered_effort
+from orchard_tokenizer.effort_contracts import valid_value as valid_rendered_effort_value
 from orchard_tokenizer.reasoning_contracts import resolve as resolve_reasoning_contract
 from orchard_tokenizer.safe_segmented import (
     MarkerPair,
@@ -438,7 +439,11 @@ def _execute_render_and_count_effort(payload: dict[str, Any]) -> dict[str, Any]:
     _require_reasoning_enum(reasoning, "generation_policy", {"enabled"})
     _require_reasoning_enum(reasoning, "projection", {"legacy_blended"})
     _require_reasoning_enum(reasoning, "source", {"explicit_public"})
-    tier = _require_reasoning_enum(reasoning, "reasoning_effort", {"low", "medium", "high"})
+    tier = reasoning.get("reasoning_effort")
+    if not valid_rendered_effort_value(tier):
+        raise TokenizerCliError(
+            "unsupported_reasoning_control", "request.reasoning.reasoning_effort is unsupported", 2
+        )
     artifact_digest = _require_sha256_digest(assets, "model_artifact_digest")
     template_digest = _require_sha256_digest(assets, "chat_template_digest")
     resolved = resolve_rendered_effort(artifact_digest, template_digest, tier)

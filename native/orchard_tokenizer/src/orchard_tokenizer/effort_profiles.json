@@ -7,7 +7,8 @@
       "render_contract_version": "1",
       "generation_argument": {"key": "enable_thinking", "value": true},
       "effort_argument": "reasoning_effort",
-      "efforts": {"low": "low", "medium": "medium", "high": "xhigh"}
+      "default_effort": "xhigh",
+      "efforts": {"low": "low", "medium": "medium", "xhigh": "xhigh", "high": "xhigh"}
     }
   ]
 }

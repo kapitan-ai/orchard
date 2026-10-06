@@ -44,14 +44,18 @@ counts the actual rendered input and returns both canonical identity and applied
 arguments for Controller verification. It accepts no caller template overrides.
 This route requires port tokenization with safe mode off; explicit effort is
 rejected on fake or segmented routes rather than degraded. Its first exact
-registration maps low/medium/high to the reviewed Qwen template's
-low/medium/xhigh values. Static fixtures prove rendering and protocol behavior,
+registration maps low/medium/xhigh directly to the reviewed Qwen template's
+native values and retains high as an explicit compatibility alias to xhigh. Static fixtures prove rendering and protocol behavior,
 not model generation, hidden reasoning, a numeric reasoning budget or a support
 claim. The separate negotiated-output registry remains empty.
-The current registry format requires all three canonical mappings and distinct
-generation-enable and effort arguments, with boolean `true` enablement. Templates
-with fewer native levels or another enablement shape need a reviewed registry
-format extension before registration.
+The registry accepts any nonempty set of bounded public identifiers and requires
+an explicit registered `default_effort` with exact-template omission equivalence
+evidence. Identifiers do not imply cross-model semantic equivalence. Distinct
+generation-enable and effort arguments with boolean `true` enablement remain
+required; other enablement shapes need a reviewed contract extension.
+Authorized `/v1/models` entries advertise the exact mappings and informational
+default in `orchard_reasoning_effort`. Omission still applies no explicit control;
+discovery never runs a helper or reads weights, and preparation remains authoritative.
 
 ## Validation
 

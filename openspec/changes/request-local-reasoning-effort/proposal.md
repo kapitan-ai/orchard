@@ -6,7 +6,7 @@ Coding agents need to select a supported effort for each request on the same adm
 
 ## What Changes
 
-- Accept Chat `reasoning_effort` and Responses `reasoning.effort`, with closed low/medium/high values.
+- Accept Chat `reasoning_effort` and Responses `reasoning.effort`, with model-specific registered public identifiers and no fixed three-value ceiling; preserve the existing high compatibility alias and expose native xhigh for the exact first profile.
 - Resolve a rendered input contract after model resolution and before tokenization or persistence. Preserve omitted requests exactly.
 - Bind server-owned arguments to exact artifact/template identities, render/count once, and prove the selected/native values in the helper response.
 - Preserve legacy blended output. Negotiated final-only parsing, privacy and runtime proof remain separate.

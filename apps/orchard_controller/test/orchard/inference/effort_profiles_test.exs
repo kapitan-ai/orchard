@@ -11,7 +11,15 @@ defmodule Orchard.Inference.EffortProfilesTest do
   test "SPEC §3.5 validates the complete production registry before compilation uses it" do
     [profile] = EffortProfiles.load!(@registry_path)
     assert profile["generation_argument"]["value"] == true
-    assert profile["efforts"] == %{"low" => "low", "medium" => "medium", "high" => "xhigh"}
+
+    assert profile["efforts"] == %{
+             "low" => "low",
+             "medium" => "medium",
+             "high" => "xhigh",
+             "xhigh" => "xhigh"
+           }
+
+    assert profile["default_effort"] == "xhigh"
   end
 
   test "colliding arguments cannot attest low while the template defaults to xhigh" do
@@ -48,8 +56,12 @@ defmodule Orchard.Inference.EffortProfilesTest do
       put_in(profile["generation_argument"]["value"], false),
       put_in(profile["generation_argument"]["value"], "true"),
       Map.update!(profile, "generation_argument", &Map.put(&1, "extra", true)),
-      Map.update!(profile, "efforts", &Map.delete(&1, "low")),
-      Map.update!(profile, "efforts", &Map.put(&1, "xhigh", "xhigh")),
+      Map.put(profile, "efforts", %{}),
+      Map.update!(profile, "efforts", &Map.put(&1, "MAX", "max")),
+      Map.put(profile, "default_effort", "max"),
+      Map.put(profile, "default_effort", nil),
+      Map.update!(profile, "efforts", &Map.put(&1, "none", "none")),
+      Map.update!(profile, "efforts", &Map.put(&1, String.duplicate("a", 33), "max")),
       put_in(profile["efforts"]["low"], " "),
       put_in(profile["efforts"]["medium"], nil),
       nil
@@ -65,6 +77,24 @@ defmodule Orchard.Inference.EffortProfilesTest do
       assert_raise ArgumentError, "invalid rendered effort registry", fn ->
         EffortProfiles.validate!(invalid)
       end
+    end
+  end
+
+  test "SPEC §7.2.3 profiles support distinct additional values and supported subsets" do
+    [profile] = EffortProfiles.load!(@registry_path)
+
+    for values <- [
+          %{"minimal" => "minimal", "max" => "max"},
+          %{
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            "xhigh" => "xhigh",
+            "max" => "max"
+          }
+        ] do
+      custom = %{profile | "efforts" => values, "default_effort" => "max"}
+      assert [^custom] = EffortProfiles.validate!(%{"profiles" => [custom]})
     end
   end
 end

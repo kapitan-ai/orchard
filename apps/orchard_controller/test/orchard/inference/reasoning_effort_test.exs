@@ -15,6 +15,7 @@ defmodule Orchard.Inference.ReasoningEffortTest do
 
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, Tokenizer}
+  alias Orchard.Requests.Idempotency
   alias Orchard.Tokenizer.Client
 
   @artifact "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9"
@@ -33,7 +34,7 @@ defmodule Orchard.Inference.ReasoningEffortTest do
   end
 
   test "SPEC §7.2.1 both public JSON shapes select three tiers on one model identity" do
-    for endpoint <- [:chat_completions, :responses], tier <- ["low", "medium", "high"] do
+    for endpoint <- [:chat_completions, :responses], tier <- ["low", "medium", "high", "xhigh"] do
       {validator, normalizer} = modules(endpoint)
       params = endpoint |> params(tier) |> Jason.encode!() |> Jason.decode!()
       assert {:ok, ^params} = validator.validate(params)
@@ -41,7 +42,7 @@ defmodule Orchard.Inference.ReasoningEffortTest do
       assert skeleton.reasoning.effective_contract == %{mode: :legacy}
       assert {:ok, bound} = ReasoningEffort.bind(skeleton, params, options())
       assert bound.model_ref == skeleton.model_ref
-      assert bound.reasoning.reasoning_effort == String.to_existing_atom(tier)
+      assert CanonicalRequest.Reasoning.to_wire(bound.reasoning)["reasoning_effort"] == tier
       assert bound.reasoning.projection == :legacy_blended
       assert bound.reasoning.effective_contract.native_effort == native(tier)
 
@@ -61,6 +62,43 @@ defmodule Orchard.Inference.ReasoningEffortTest do
     end
   end
 
+  test "SPEC §3.4 aliases keep requested identity while selecting identical native controls" do
+    {:ok, high} = bound(:chat_completions, "high")
+    {:ok, xhigh} = bound(:chat_completions, "xhigh")
+    assert high.reasoning.reasoning_effort == :high
+    assert xhigh.reasoning.reasoning_effort == "xhigh"
+    assert high.reasoning.effective_contract == xhigh.reasoning.effective_contract
+    assert ReasoningEffort.arguments(high.reasoning) == ReasoningEffort.arguments(xhigh.reasoning)
+
+    assert CanonicalRequestSerializer.serialize(high)["reasoning"] !=
+             CanonicalRequestSerializer.serialize(xhigh)["reasoning"]
+
+    assert {:ok, same_high} = ReasoningEffort.resolve("high", @artifact, @template)
+    assert same_high == high.reasoning
+
+    for endpoint <- [:chat_completions, :responses] do
+      tenant_id = Ecto.UUID.generate()
+
+      assert {:ok, high_context} =
+               Idempotency.build_context(tenant_id, "same-key", params(endpoint, "high"))
+
+      assert {:ok, xhigh_context} =
+               Idempotency.build_context(tenant_id, "same-key", params(endpoint, "xhigh"))
+
+      assert high_context.body_hash != xhigh_context.body_hash
+    end
+  end
+
+  test "SPEC §3.4 additional rendered values cannot enter the negotiated protocol" do
+    {:ok, request} = bound(:responses, "xhigh")
+    assert CanonicalRequest.Reasoning.to_wire(request.reasoning)["reasoning_effort"] == "xhigh"
+
+    assert_raise ArgumentError, ~r/unsupported reasoning combination/, fn ->
+      reasoning = %{request.reasoning | projection: :final_only}
+      CanonicalRequest.new(Map.put(Map.from_struct(request), :reasoning, reasoning))
+    end
+  end
+
   test "invalid public types and unknown levels never silently select a default" do
     for endpoint <- [:chat_completions, :responses] do
       {validator, _normalizer} = modules(endpoint)
@@ -70,9 +108,19 @@ defmodule Orchard.Inference.ReasoningEffortTest do
                  validator.validate(params(endpoint, invalid, true))
       end
 
-      for unsupported <- ["none", "minimal", "xhigh", "MEDIUM", ""] do
-        assert {:error, :unsupported_reasoning_control, _field} =
+      for unsupported <- ["MEDIUM", "", "xhigh ", String.duplicate("a", 33)] do
+        assert {:error, :invalid_value, _field, _reason} =
                  validator.validate(params(endpoint, unsupported))
+      end
+
+      for unsupported <- ["none", "minimal", "max", "future_effort"] do
+        params = params(endpoint, unsupported)
+        assert {:ok, ^params} = validator.validate(params)
+        {_validator, normalizer} = modules(endpoint)
+        assert {:ok, skeleton} = normalizer.normalize(params)
+
+        assert {:error, {:validation, {:unsupported_reasoning_control, _field}}} =
+                 ReasoningEffort.bind(skeleton, params, options())
       end
     end
   end
@@ -191,7 +239,7 @@ defmodule Orchard.Inference.ReasoningEffortTest do
   end
 
   test "parallel mixed-effort requests retain distinct render and serialized identities" do
-    tiers = Enum.take(Stream.cycle(["low", "medium", "high"]), 48)
+    tiers = Enum.take(Stream.cycle(["low", "medium", "high", "xhigh"]), 48)
 
     results =
       Task.async_stream(tiers, fn tier ->
