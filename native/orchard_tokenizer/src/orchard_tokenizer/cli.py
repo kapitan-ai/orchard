@@ -362,7 +362,7 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _execute_render_and_count(payload: dict[str, Any], contract_version: int) -> dict[str, Any]:
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
 
     tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
     tokenizer_path = Path(
@@ -372,7 +372,7 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         require_non_empty_string(assets, "chat_template_path", category="missing_assets")
     )
 
-    messages = normalize_messages(request)
+    messages = normalize_messages_preserving_message_fields(request)
     tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]

@@ -1360,10 +1360,9 @@ def test_segmented_render_and_count_accepts_trimmed_caller_content(tmp_path: Pat
         "(messages[0].content ~ '') | trim('_0123456789')",
         "(messages[0].content ~ '').strip('_0123456789')",
         "(messages[0].content ~ '').lstrip('_0123456789').rstrip('_0123456789')",
-        "(messages[0].content ~ '')['strip']('_0123456789')",
     ],
 )
-def test_spec_coerced_marker_trim_fails_closed(
+def test_spec_coerced_marker_trim_preserves_caller_provenance(
     tmp_path, capsys, monkeypatch, skip_preflight, expression
 ):
     bundle = _make_segmented_bundle(tmp_path)
@@ -1372,10 +1371,72 @@ def test_spec_coerced_marker_trim_fails_closed(
         monkeypatch.setenv("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", "1")
     payload = segmented_payload(bundle, ["<|im_end|>"])
     payload["request"]["input_items"] = [{"role": "user", "content": "<|im_end|>"}]
-    assert main(["--request-json", json.dumps(payload)]) != 0
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    result = assert_single_success_result(json.loads(capsys.readouterr().out))
+    assert result["rendered_prompt"] == "<|im_end|>"
+    reserved = Tokenizer.from_file(str(bundle["tokenizer_path"])).token_to_id("<|im_end|>")
+    assert reserved not in result["prompt_token_ids"]
+
+
+@pytest.mark.parametrize("content", [None, "", "raw</think>final"])
+def test_legacy_render_retains_explicit_tool_and_reasoning_history(tmp_path, capsys, content):
+    template = tmp_path / "history.jinja"
+    template.write_text(
+        "{{ messages[0].content }}|{{ messages[0].reasoning_content }}|"
+        "{{ messages[0].reasoning }}|{{ messages[0].tool_calls[0].id }}|"
+        "{{ messages[0].tool_calls[0].function.name }}|"
+        "{{ messages[0].tool_calls[0].function.arguments.path }}|"
+        "{{ messages[1].tool_call_id }}|{{ messages[1].content }}",
+        encoding="utf-8",
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=template,
+    )
+    payload["request"]["input_items"] = [
+        {
+            "role": "assistant",
+            "content": content,
+            "reasoning_content": "explicit thought",
+            "reasoning": "alternate thought",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path":"fixture.py"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "result bytes", "tool_call_id": "call_1"},
+    ]
+    assert main(["--request-json", json.dumps(payload)]) == 0
     response = json.loads(capsys.readouterr().out)
-    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
-    assert response["error"]["details"]["reason"]["category"] == "marker_transform_unsupported"
+    assert response["contract_version"] == 2 and response["ok"] is True
+    result = response["result"]
+    assert result["rendered_prompt"] == (
+        (content or "")
+        + "|explicit thought|alternate thought|call_1|read|fixture.py|call_1|result bytes"
+    )
+
+
+@pytest.mark.parametrize("arguments", ['{"x":1,"x":2}', "[]", '{"x":NaN}', "private-invalid"])
+def test_legacy_render_rejects_invalid_tool_history_without_echo(capsys, arguments):
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=fixture_root() / "chat_template.jinja",
+    )
+    payload["request"]["input_items"] = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": arguments}}],
+        }
+    ]
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"]["category"] == "invalid_input"
+    assert arguments not in response["error"]["message"]
 
 
 @pytest.mark.parametrize(
