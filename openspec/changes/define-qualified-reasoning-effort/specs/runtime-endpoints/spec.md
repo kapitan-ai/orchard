@@ -2,7 +2,7 @@
 
 ### Requirement: Selected effort is part of complete negotiated evidence
 
-For negotiated selected-effort Requests, Runtime Endpoint implementations SHALL conform to `SPEC.md` sections 6.4, 7.5.3a, and 13.1 by advertising and proving a selected non-`nil` effort only as part of one complete tuple. The tuple MUST include generation policy, projection, reasoning effort, exact artifact and template digests, render contract and version, parser family and version, runtime contract version, and event-binding version. Separate lists MUST NOT authorize an unadvertised negotiated combination. The separate rendered-input contract in `SPEC.md` section 6.4 proves the selected native arguments during tokenization and does not add negotiated effort evidence or Worker protocol fields.
+For negotiated selected-effort Requests, Runtime Endpoint implementations SHALL conform to `SPEC.md` sections 6.4, 7.5.3a, and 13.1 by advertising and proving a selected non-`nil` effort only as part of one complete tuple. The tuple MUST include generation policy, projection, reasoning effort, exact artifact and template digests, render contract and version, parser family and version, runtime contract version, and event-binding version. Separate lists MUST NOT authorize an unadvertised negotiated combination. The separate rendered-input contract in `SPEC.md` sections 3.4–3.5 (and its section 6.4 advertisement boundary) proves the selected native arguments during tokenization and does not add negotiated effort evidence or Worker protocol fields.
 
 #### Scenario: Observation lists a tier but not its complete tuple
 

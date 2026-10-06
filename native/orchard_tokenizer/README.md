@@ -48,6 +48,10 @@ registration maps low/medium/high to the reviewed Qwen template's
 low/medium/xhigh values. Static fixtures prove rendering and protocol behavior,
 not model generation, hidden reasoning, a numeric reasoning budget or a support
 claim. The separate negotiated-output registry remains empty.
+The current registry format requires all three canonical mappings and distinct
+generation-enable and effort arguments, with boolean `true` enablement. Templates
+with fewer native levels or another enablement shape need a reviewed registry
+format extension before registration.
 
 ## Validation
 

@@ -8,7 +8,7 @@ defmodule Orchard.Inference.EffortProfilesTest do
                    __DIR__
                  )
 
-  test "SPEC §6.4 validates the complete production registry before compilation uses it" do
+  test "SPEC §3.5 validates the complete production registry before compilation uses it" do
     [profile] = EffortProfiles.load!(@registry_path)
     assert profile["generation_argument"]["value"] == true
     assert profile["efforts"] == %{"low" => "low", "medium" => "medium", "high" => "xhigh"}
