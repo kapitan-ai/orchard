@@ -2,12 +2,19 @@
 
 ### Requirement: Safe tool-result continuation
 
-Under `SPEC.md` §3.5, legacy and contract-v3 segmented rendering SHALL retain explicit message history fields and decode assistant tool-call argument JSON strings into objects before rendering and, when applicable, caller-string tagging.
+Under `SPEC.md` §3.5, legacy and contract-v3 segmented rendering SHALL decode assistant tool-call argument JSON strings into objects before rendering and, when applicable, caller-string tagging.
 Malformed, non-object, duplicate-key, and non-finite arguments SHALL fail before inference without echoing their contents.
 Recursive argument keys and string values SHALL remain caller-authored material subject to safe encoding.
-Explicit prior-reasoning fields SHALL be passed through to the selected template without creating a public reasoning input contract.
-This helper behavior SHALL NOT admit public structured prior-reasoning input; the existing Public API rejection contract remains in force.
+Legacy rendering SHALL forward only each message's `role`, normalized `content`, valid `tool_calls`, and string `tool_call_id` and `name` values.
+Within each tool call it SHALL forward only `id`, `type`, and the function `name` and `arguments`.
+It SHALL NOT forward `reasoning_content`, `reasoning`, or other unlisted message, tool-call, or function fields.
 Omitted-control legacy content SHALL remain byte-preserved; delimiter-like text SHALL NOT be heuristically reconstructed into a typed reasoning channel under `SPEC.md` §7.2.8–§7.2.9.
+
+#### Scenario: Legacy rendering excludes unlisted history fields
+
+- **WHEN** a legacy render request carries valid tool-call history together with prior-reasoning or other unlisted message, tool-call, or function fields
+- **THEN** the template receives only the allowlisted fields, normalized argument objects, tool-result IDs, names, and byte-preserved content
+- **AND** reasoning-like delimiter text in assistant content is neither split nor reconstructed
 
 #### Scenario: Mapping-based template renders tool history
 

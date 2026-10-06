@@ -19,6 +19,6 @@
 
 ## 4. History and captured-trim compatibility follow-up
 
-- [x] 4.1 Preserve explicit legacy history fields and normalize argument objects without reconstructing omitted-control reasoning content; add exact CLI regressions.
+- [x] 4.1 Forward only allowlisted legacy history fields after validated argument normalization, excluding prior-reasoning and unknown fields; preserve opaque content; add exact CLI regressions.
 - [x] 4.2 Extend audited trimming to captured/concatenated spans with original marker provenance, including empty and repeated leaves; retain unsupported-transform rejection and mandatory dual-render comparison.
-- [x] 4.3 Run affected native checks, coverage and strict validation, obtain independent final-patch review, and record exact source limits in the PR.
+- [x] 4.3 Run affected native checks, coverage and strict validation, and record exact source limits in the PR. Exact-head independent review and required CI remain PR merge gates.

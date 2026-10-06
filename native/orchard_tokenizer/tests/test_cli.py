@@ -1379,11 +1379,20 @@ def test_spec_coerced_marker_trim_preserves_caller_provenance(
 
 
 @pytest.mark.parametrize("content", [None, "", "raw</think>final"])
-def test_legacy_render_retains_explicit_tool_and_reasoning_history(tmp_path, capsys, content):
+@pytest.mark.parametrize("contract_version", [1, 2, 3])
+def test_legacy_render_forwards_only_allowlisted_history_fields(
+    tmp_path, capsys, content, contract_version
+):
     template = tmp_path / "history.jinja"
     template.write_text(
-        "{{ messages[0].content }}|{{ messages[0].reasoning_content }}|"
-        "{{ messages[0].reasoning }}|{{ messages[0].tool_calls[0].id }}|"
+        "{{ messages[0]|list|sort|join(',') }}|{{ messages[1]|list|sort|join(',') }}|"
+        "{{ messages[0].tool_calls[0]|list|sort|join(',') }}|"
+        "{{ messages[0].tool_calls[0].function|list|sort|join(',') }}|"
+        "{% if messages[0].reasoning_content is defined or messages[0].reasoning is defined %}"
+        "LEAK{% endif %}"
+        "{% if messages[0].reasoning_content is string %}"
+        "<think>{{ messages[0].reasoning_content }}</think>{% endif %}"
+        "{{ messages[0].content }}|{{ messages[0].name }}|{{ messages[0].tool_calls[0].id }}|"
         "{{ messages[0].tool_calls[0].function.name }}|"
         "{{ messages[0].tool_calls[0].function.arguments.path }}|"
         "{{ messages[1].tool_call_id }}|{{ messages[1].content }}",
@@ -1394,30 +1403,62 @@ def test_legacy_render_retains_explicit_tool_and_reasoning_history(tmp_path, cap
         tokenizer_path=fixture_root() / "tokenizer.json",
         chat_template_path=template,
     )
+    payload["contract_version"] = contract_version
     payload["request"]["input_items"] = [
         {
             "role": "assistant",
             "content": content,
-            "reasoning_content": "explicit thought",
-            "reasoning": "alternate thought",
+            "name": "planner",
+            "reasoning_content": "PRIVATE_RC",
+            "reasoning": "PRIVATE_R",
+            "x_unknown": "PRIVATE_X",
             "tool_calls": [
                 {
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "read", "arguments": '{"path":"fixture.py"}'},
+                    "x_nested": "PRIVATE_N",
+                    "function": {
+                        "name": "read",
+                        "arguments": '{"path":"fixture.py"}',
+                        "x_unknown": "PRIVATE_F",
+                    },
                 }
             ],
         },
-        {"role": "tool", "content": "result bytes", "tool_call_id": "call_1"},
+        {
+            "role": "tool",
+            "content": "result bytes",
+            "tool_call_id": "call_1",
+            "reasoning_content": "PRIVATE_T",
+            "x_unknown": "PRIVATE_Y",
+        },
     ]
     assert main(["--request-json", json.dumps(payload)]) == 0
     response = json.loads(capsys.readouterr().out)
-    assert response["contract_version"] == 2 and response["ok"] is True
-    result = response["result"]
-    assert result["rendered_prompt"] == (
-        (content or "")
-        + "|explicit thought|alternate thought|call_1|read|fixture.py|call_1|result bytes"
+    assert response["contract_version"] == contract_version and response["ok"] is True
+    rendered = response["result"]["rendered_prompt"]
+    assert rendered == (
+        "content,name,role,tool_calls|content,role,tool_call_id|function,id,type|arguments,name|"
+        + (content or "")
+        + "|planner|call_1|read|fixture.py|call_1|result bytes"
     )
+    assert "PRIVATE_" not in rendered and "LEAK" not in rendered and "<think>" not in rendered
+
+
+@pytest.mark.parametrize("call", ["PRIVATE_CALL", {"function": "PRIVATE_FUNCTION"}])
+def test_legacy_render_rejects_malformed_calls_without_echo(capsys, call):
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=fixture_root() / "chat_template.jinja",
+    )
+    payload["request"]["input_items"] = [
+        {"role": "assistant", "content": "opaque text", "tool_calls": [call]}
+    ]
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    output = capsys.readouterr().out
+    assert "PRIVATE_" not in output
+    assert json.loads(output)["error"]["category"] == "invalid_input"
 
 
 @pytest.mark.parametrize("arguments", ['{"x":1,"x":2}', "[]", '{"x":NaN}', "private-invalid"])

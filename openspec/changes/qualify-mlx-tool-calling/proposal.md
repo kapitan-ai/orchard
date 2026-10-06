@@ -12,7 +12,7 @@ For JSON tool wrappers this exposes the function envelope instead of its argumen
 - Document verified model bundle prerequisites and the scope of client compatibility evidence.
 - Normalize JSON-string tool history into argument objects for contract-v3 segmented rendering, recursively protect caller strings, and preserve exactly empty strings without markers.
 - Accept valid assistant function-call history with absent content, preserve whitespace provenance through trimming, and keep request failures out of the artifact incompatibility cache.
-- Preserve explicit history fields and validated argument objects in legacy rendering without heuristically reconstructing reasoning from assistant content.
+- Forward validated tool-call history, tool-result IDs and names in legacy rendering while continuing to exclude prior-reasoning and other message fields, without reconstructing reasoning from assistant content; inherited Controller validation and segmented/negotiated forwarding are unchanged.
 - Extend audited trimming after macro capture and concatenation to reconstruct retained caller spans with their original marker identities; retain unsupported-transform rejection and the mandatory dual-render comparison.
 
 ## Capabilities
