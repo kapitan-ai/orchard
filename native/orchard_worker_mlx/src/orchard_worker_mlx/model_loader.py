@@ -765,6 +765,7 @@ class LoadedModelSession:
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
     session_started_unix_ms: int = 0
+    native_settlement_failed: bool = False
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
