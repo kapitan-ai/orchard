@@ -14,13 +14,15 @@ defmodule Orchard.API.ModelsControllerTest do
 
   setup do
     previous = Application.fetch_env!(:orchard_controller, :inference)
-    root = Path.join(System.tmp_dir!(), unique_slug("effort-discovery"))
-    File.mkdir!(root)
+    artifacts_root = Path.expand(Path.join("tmp", unique_slug("effort-discovery")))
+    root = Path.join(artifacts_root, "bundle")
+    File.mkdir_p!(root)
 
     Application.put_env(
       :orchard_controller,
       :inference,
       Keyword.merge(previous,
+        artifacts_root: artifacts_root,
         tokenizer_mode: :port,
         tokenizer_safe_mode: :off,
         tokenizer_executable: "/nonexistent/discovery-must-not-start-a-helper"
@@ -29,10 +31,10 @@ defmodule Orchard.API.ModelsControllerTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous)
-      File.rm_rf!(root)
+      File.rm_rf!(artifacts_root)
     end)
 
-    %{bundle_root: root}
+    %{bundle_root: root, artifacts_root: artifacts_root}
   end
 
   describe "GET /v1/models" do
@@ -221,11 +223,46 @@ defmodule Orchard.API.ModelsControllerTest do
       File.rm!(manifest_path)
       assert_unavailable(request_models(token))
     end
+
+    test "SPEC §6 discovery rejects non-file, outside-root and symlinked artifact paths", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-paths")
+      bundle = Path.join(ctx.bundle_root, "bundle with # and space")
+      File.mkdir!(bundle)
+      model = registered_model(bundle)
+      original_uri = model.artifact_uri
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      assert visible["orchard_reasoning_effort"]["status"] == "available"
+
+      link = Path.join(ctx.bundle_root, "linked-bundle")
+      File.ln_s!(bundle, link)
+      outside = Path.join(Path.dirname(ctx.artifacts_root), unique_slug("effort-outside"))
+      File.mkdir!(outside)
+      File.cp!(Path.join(bundle, "manifest.json"), Path.join(outside, "manifest.json"))
+      on_exit(fn -> File.rm_rf!(outside) end)
+
+      for uri <- [bundle, "https://example.invalid/model", "file://#{outside}", "file://#{link}"] do
+        model = Orchard.Repo.update!(Ecto.Changeset.change(model, artifact_uri: uri))
+        assert {:error, _reason} = ModelRenderAssets.load(model, :discovery)
+        assert_unavailable(request_models(token))
+      end
+
+      model = Orchard.Repo.update!(Ecto.Changeset.change(model, artifact_uri: original_uri))
+      manifest_path = Path.join(bundle, "manifest.json")
+      File.rm!(manifest_path)
+      File.ln_s!(Path.join(outside, "manifest.json"), manifest_path)
+      assert {:error, _reason} = ModelRenderAssets.load(model, :discovery)
+      assert_unavailable(request_models(token))
+    end
   end
 
   defp registered_model(root) do
     model =
-      create_model!(%{state: :active, artifact_uri: "file://#{root}", artifact_sha256: @artifact})
+      create_model!(%{
+        state: :active,
+        artifact_uri: "file://" <> URI.encode(root, &(&1 == ?/ or URI.char_unreserved?(&1))),
+        artifact_sha256: @artifact
+      })
 
     manifest = %{
       "model_id" => model.model_id,
