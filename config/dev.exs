@@ -536,21 +536,30 @@ dev_runtime_client_target =
     [host: dev_runtime_client_host, port: dev_runtime_port]
   end
 
+request_timeout_ms =
+  env_positive_int.(
+    "ORCHARD_REQUEST_TIMEOUT_MS",
+    Keyword.fetch!(controller_inference_defaults, :request_timeout_ms)
+  )
+
+max_request_deadline_ms =
+  env_positive_int.(
+    "ORCHARD_MAX_REQUEST_DEADLINE_MS",
+    Keyword.fetch!(controller_inference_defaults, :max_request_deadline_ms)
+  )
+
+if request_timeout_ms > max_request_deadline_ms do
+  raise "ORCHARD_REQUEST_TIMEOUT_MS (#{request_timeout_ms}) must be <= " <>
+          "ORCHARD_MAX_REQUEST_DEADLINE_MS (#{max_request_deadline_ms})"
+end
+
 config :orchard_controller,
   inference:
     Keyword.merge(
       Keyword.merge(
         controller_inference_defaults,
-        request_timeout_ms:
-          env_positive_int.(
-            "ORCHARD_REQUEST_TIMEOUT_MS",
-            Keyword.fetch!(controller_inference_defaults, :request_timeout_ms)
-          ),
-        max_request_deadline_ms:
-          env_positive_int.(
-            "ORCHARD_MAX_REQUEST_DEADLINE_MS",
-            Keyword.fetch!(controller_inference_defaults, :max_request_deadline_ms)
-          ),
+        request_timeout_ms: request_timeout_ms,
+        max_request_deadline_ms: max_request_deadline_ms,
         runtime_client_target: dev_runtime_client_target,
         runtime_client_targets: dev_runtime_targets,
         allow_static_runtime_target_fallback: true,

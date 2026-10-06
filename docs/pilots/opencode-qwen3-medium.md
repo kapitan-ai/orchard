@@ -103,10 +103,13 @@ OrchardCLI.main(["models", "access", "grant", "<model-id>@<version>",
   "--tenant", "coding-pilot", "--routing-policy-id", "<returned-policy-id>"])
 ```
 
-Preload through NodeAgent before OpenCode starts. Acquisition120000 + Worker
-readiness30000 + load120000 gives270000ms; allow5000ms RPC headroom, not a
-120000ms timer over the entire pipeline. The same calculation lives in
-`scripts/support/mlx-smoke-budget.sh`. In this all-in-one IEx session:
+Preload through NodeAgent before OpenCode starts. Budgeting acquisition120000,
+Worker readiness30000 and load120000 gives an overall270000ms envelope; allow
+5000ms RPC headroom. The same planning calculation lives in
+`scripts/support/mlx-smoke-budget.sh`. These allowances are not independent
+hard phase caps: an explicit preload deadline forwards its remaining budget to
+Worker load. `ORCHARD_WORKER_LOAD_TIMEOUT_MS` supplies the load fallback when
+there is no explicit deadline. In this all-in-one IEx session:
 
 ```elixir
 model = Orchard.Models.get_model_by_identity("<model-id>", "<version>")

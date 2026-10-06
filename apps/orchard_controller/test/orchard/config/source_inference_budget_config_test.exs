@@ -55,10 +55,29 @@ defmodule Orchard.Config.SourceInferenceBudgetConfigTest do
     end
   end
 
-  test "positive one millisecond is accepted without changing other budgets" do
+  test "positive one millisecond is accepted with a coherent request and ceiling pair" do
     for {env, app, section, key, _default, _selected} <- @budgets do
-      config = read_config!("all_in_one", %{env => "1"})
+      config =
+        read_config!("all_in_one", %{
+          "ORCHARD_REQUEST_TIMEOUT_MS" => "1",
+          "ORCHARD_MAX_REQUEST_DEADLINE_MS" => "1",
+          env => "1"
+        })
+
       assert config |> get_in([app, section]) |> Keyword.fetch!(key) == 1
+    end
+  end
+
+  test "crossed request and ceiling budgets fail before source startup" do
+    for role <- ~w(controller node_agent all_in_one),
+        overrides <- [
+          %{"ORCHARD_REQUEST_TIMEOUT_MS" => "1800000"},
+          %{"ORCHARD_MAX_REQUEST_DEADLINE_MS" => "1"},
+          %{"ORCHARD_REQUEST_TIMEOUT_MS" => "1001", "ORCHARD_MAX_REQUEST_DEADLINE_MS" => "1000"}
+        ] do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_REQUEST_TIMEOUT_MS.*must be <= ORCHARD_MAX_REQUEST_DEADLINE_MS/,
+                   fn -> read_config!(role, overrides) end
     end
   end
 
