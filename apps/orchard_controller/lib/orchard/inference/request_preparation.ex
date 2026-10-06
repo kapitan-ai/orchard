@@ -29,10 +29,13 @@ defmodule Orchard.Inference.RequestPreparation do
          {:ok, canonical} <- resolve_requested_tools(canonical),
          {:ok, canonical} <- attach_execution_snapshot(canonical),
          {:ok, model} <- resolve_model(canonical),
-         {:ok, canonical} <- authorize_model(canonical, model),
+         {:ok, effort} <-
+           wrap_validation_result(ReasoningEffort.requested(params, canonical.endpoint)),
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :explicit),
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model, params),
-         :ok <- enforce_context_window(canonical, model) do
+         :ok <- enforce_context_window(canonical, model),
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted) do
       {:ok, canonical, model}
     end
   end
@@ -154,6 +157,15 @@ defmodule Orchard.Inference.RequestPreparation do
       :ok
     end
   end
+
+  # Explicit controls require authorization before capability probing; omission
+  # retains the existing tooling/tokenization/context error precedence.
+  defp authorize_model(canonical, model, nil, :omitted), do: authorize_model(canonical, model)
+
+  defp authorize_model(canonical, model, effort, :explicit) when not is_nil(effort),
+    do: authorize_model(canonical, model)
+
+  defp authorize_model(canonical, _model, _effort, _phase), do: {:ok, canonical}
 
   defp authorize_model(%CanonicalRequest{} = canonical, model) do
     case Access.authorize(canonical.tenant_id, model.id) do

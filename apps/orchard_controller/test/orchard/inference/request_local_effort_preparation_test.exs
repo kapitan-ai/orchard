@@ -28,6 +28,17 @@ defmodule Orchard.Inference.RequestLocalEffortPreparationTest do
     def tokenize(_request, _opts), do: {:ok, %{rendered_prompt: "fixture", input_token_count: 7}}
   end
 
+  defmodule TrackingTokenizer do
+    def tokenize(request, opts) do
+      send(self(), :tokenizer_called)
+
+      case request.reasoning.effective_contract do
+        %{mode: :legacy} -> DroppingTokenizer.tokenize(request, opts)
+        %{mode: :rendered} -> ProvingTokenizer.tokenize(request, opts)
+      end
+    end
+  end
+
   setup do
     suffix = System.unique_integer([:positive, :monotonic])
     root = Path.join(System.tmp_dir!(), "orchard-effort-prepare-#{suffix}")
@@ -115,6 +126,31 @@ defmodule Orchard.Inference.RequestLocalEffortPreparationTest do
     assert Repo.aggregate(Request, :count) == 0
   end
 
+  test "SPEC §5.2 omitted effort preserves error precedence while explicit effort checks access first",
+       ctx do
+    Orchard.Models.Access.revoke_model_access(ctx.tenant, ctx.model)
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(inference, :tokenizer_client_impl, TrackingTokenizer)
+    )
+
+    for endpoint <- [:chat_completions, :responses] do
+      assert {:error, {:context_overflow, _message}} = prepare(ctx, endpoint, nil, 10)
+      assert_receive :tokenizer_called
+
+      assert {:error, :model_not_authorized} = prepare(ctx, endpoint, "medium", 10)
+      refute_received :tokenizer_called
+
+      assert {:error, :model_not_authorized} = prepare(ctx, endpoint, nil, 9)
+      assert_receive :tokenizer_called
+    end
+
+    assert Repo.aggregate(Request, :count) == 0
+  end
+
   test "SPEC §3.5 actual returned input count plus output reserve rejects overflow", ctx do
     for endpoint <- [:chat_completions, :responses] do
       assert {:error, {:context_overflow, message}} = prepare(ctx, endpoint, "medium", 10)
@@ -142,26 +178,26 @@ defmodule Orchard.Inference.RequestLocalEffortPreparationTest do
   end
 
   defp prepare(ctx, :chat_completions, tier, output) do
-    ChatOrchestrator.prepare(
+    params =
       %{
         "model" => "#{ctx.model.model_id}@v1",
         "messages" => [%{"role" => "user", "content" => "hello"}],
-        "reasoning_effort" => tier,
         "max_tokens" => output
-      },
-      tenant_id: ctx.tenant.id
-    )
+      }
+
+    params = if is_nil(tier), do: params, else: Map.put(params, "reasoning_effort", tier)
+    ChatOrchestrator.prepare(params, tenant_id: ctx.tenant.id)
   end
 
   defp prepare(ctx, :responses, tier, output) do
-    ResponsesOrchestrator.prepare(
+    params =
       %{
         "model" => "#{ctx.model.model_id}@v1",
         "input" => "hello",
-        "reasoning" => %{"effort" => tier},
         "max_output_tokens" => output
-      },
-      tenant_id: ctx.tenant.id
-    )
+      }
+
+    params = if is_nil(tier), do: params, else: Map.put(params, "reasoning", %{"effort" => tier})
+    ResponsesOrchestrator.prepare(params, tenant_id: ctx.tenant.id)
   end
 end

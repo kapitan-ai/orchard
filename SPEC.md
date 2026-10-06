@@ -1565,6 +1565,8 @@ Admission MUST execute in this order:
 10. create request record
 11. attempt schedule or enqueue
 
+For an explicitly selected public reasoning effort under §3.4–3.5, tenant model access (step 7) SHALL be checked after model resolution and before model tooling-capability checks, effort capability resolution or tokenization. Authorization SHALL occur once, retaining its routing-policy snapshot through preparation. Omitted effort SHALL retain the admission order above and its existing error precedence.
+
 For service-account-owned API Tokens, authentication SHALL resolve the owning Service Account as `principal_type = service_account` and the owning Tenant as the effective Tenant before endpoint authorization.
 For tenant-direct API Keys, authentication SHALL resolve `principal_type = tenant`.
 Public inference endpoint authorization for service-account principals SHALL require tenant-scoped `inference_client` access before model resolution, tenant quota admission, or queue admission.
