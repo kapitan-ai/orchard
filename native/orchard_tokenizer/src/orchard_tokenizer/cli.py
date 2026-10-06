@@ -362,7 +362,7 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _execute_render_and_count(payload: dict[str, Any], contract_version: int) -> dict[str, Any]:
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
 
     tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
     tokenizer_path = Path(
@@ -372,7 +372,7 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         require_non_empty_string(assets, "chat_template_path", category="missing_assets")
     )
 
-    messages = normalize_messages(request)
+    messages = _legacy_template_messages(normalize_messages_preserving_message_fields(request))
     tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
@@ -1092,6 +1092,31 @@ def _valid_history_function_call(call: Any) -> bool:
         and bool(function["name"])
         and isinstance(function.get("arguments"), dict)
     )
+
+
+def _legacy_template_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Forward only supported history fields on the ordinary legacy path."""
+    projected: list[dict[str, Any]] = []
+    for message in messages:
+        result = {key: message[key] for key in ("role", "content")}
+        for key in ("name", "tool_call_id"):
+            if isinstance(message.get(key), str):
+                result[key] = message[key]
+        calls = message.get("tool_calls")
+        if calls is not None:
+            if not isinstance(calls, list) or not all(
+                _valid_history_function_call(call) for call in calls
+            ):
+                raise TokenizerCliError("invalid_input", "tool history calls must be valid", 2)
+            result["tool_calls"] = [
+                {
+                    **{key: call[key] for key in ("id", "type") if key in call},
+                    "function": {key: call["function"][key] for key in ("name", "arguments")},
+                }
+                for call in calls
+            ]
+        projected.append(result)
+    return projected
 
 
 def _unique_argument_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

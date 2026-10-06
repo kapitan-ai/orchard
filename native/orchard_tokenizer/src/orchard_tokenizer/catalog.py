@@ -33,6 +33,7 @@ _CONTROL_LITERAL_PATTERN = re.compile(
 
 _WRAPPER_TOOL_MARKERS: dict[str, tuple[str, str]] = {
     "qwen2": ("<tool_call>", "</tool_call>"),
+    "qwen3_coder": ("<tool_call>", "</tool_call>"),
     "hermes": ("<tool_call>", "</tool_call>"),
     "llama_31": ("<tool_call>", "</tool_call>"),
     "json_tools": ("<tool_call>", "</tool_call>"),
