@@ -5,6 +5,7 @@ defmodule Orchard.Inference.ReasoningEffort do
 
   alias Orchard.CanonicalRequest
   alias Orchard.Inference
+  alias Orchard.Inference.EffortProfiles
   alias Orchard.Tokenizer.Client
 
   @profiles_path Path.expand(
@@ -12,7 +13,7 @@ defmodule Orchard.Inference.ReasoningEffort do
                    __DIR__
                  )
   @external_resource @profiles_path
-  @profiles @profiles_path |> File.read!() |> Jason.decode!() |> Map.fetch!("profiles")
+  @profiles EffortProfiles.load!(@profiles_path)
   @tiers %{"low" => :low, "medium" => :medium, "high" => :high}
 
   @type tier :: :low | :medium | :high

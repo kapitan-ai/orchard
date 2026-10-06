@@ -213,3 +213,56 @@ def test_closed_v5_contract_rejects_unknown_argument_fields(effort_payload, wher
     target["chat_template_kwargs"] = {"reasoning_effort": "xhigh"}
     with pytest.raises(TokenizerCliError):
         execute_contract(effort_payload)
+
+
+def test_colliding_registry_arguments_cannot_attest_low_while_defaulting_high(
+    effort_payload, monkeypatch
+):
+    low = select(effort_payload, "low")
+    profile = deepcopy(effort_contracts._PROFILES[0])
+    profile["effort_argument"] = profile["generation_argument"]["key"]
+    with pytest.raises(ValueError, match="invalid rendered effort registry"):
+        effort_contracts.validate_profiles({"profiles": [profile]})
+    monkeypatch.setattr(effort_contracts, "_PROFILES", (profile,))
+    with pytest.raises(TokenizerCliError, match="no exact rendered effort"):
+        execute_contract(low)
+
+
+def test_duplicate_registry_identity_never_selects_first_entry(effort_payload, monkeypatch):
+    profile = deepcopy(effort_contracts._PROFILES[0])
+    different = deepcopy(profile)
+    different["efforts"]["low"] = "xhigh"
+    with pytest.raises(ValueError, match="invalid rendered effort registry"):
+        effort_contracts.validate_profiles({"profiles": [profile, different]})
+    monkeypatch.setattr(effort_contracts, "_PROFILES", (profile, different))
+    with pytest.raises(TokenizerCliError, match="no exact rendered effort"):
+        execute_contract(effort_payload)
+
+
+def test_complete_registry_validation_rejects_malformed_entries(effort_payload):
+    profile = deepcopy(effort_contracts._PROFILES[0])
+    malformed = [
+        {**profile, "unknown": True},
+        {key: value for key, value in profile.items() if key != "render_contract"},
+        {**profile, "model_artifact_digest": "A" * 64},
+        {**profile, "chat_template_digest": "short"},
+        {**profile, "render_contract": "invalid name"},
+        {**profile, "render_contract_version": "0"},
+        {**profile, "render_contract_version": 1},
+        {**profile, "effort_argument": ""},
+        {**profile, "generation_argument": {"key": "not an identifier", "value": True}},
+        {**profile, "generation_argument": {"key": "enable_thinking", "value": False}},
+        {**profile, "generation_argument": {"key": "enable_thinking", "value": "true"}},
+        {**profile, "generation_argument": {**profile["generation_argument"], "extra": True}},
+        {**profile, "efforts": {"medium": "medium", "high": "xhigh"}},
+        {**profile, "efforts": {**profile["efforts"], "xhigh": "xhigh"}},
+        {**profile, "efforts": {**profile["efforts"], "low": " "}},
+        {**profile, "efforts": {**profile["efforts"], "medium": None}},
+        None,
+    ]
+    for invalid in malformed:
+        with pytest.raises(ValueError, match="invalid rendered effort registry"):
+            effort_contracts.validate_profiles({"profiles": [invalid]})
+    for invalid in [None, {}, {"profiles": None}, {"profiles": [], "extra": True}]:
+        with pytest.raises(ValueError, match="invalid rendered effort registry"):
+            effort_contracts.validate_profiles(invalid)
