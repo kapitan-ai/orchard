@@ -140,7 +140,8 @@ defmodule Orchard.CanonicalRequest do
     def valid_rendered_effort?(effort) when effort in [:low, :medium, :high], do: true
 
     def valid_rendered_effort?(effort) when is_binary(effort),
-      do: String.match?(effort, ~r/\A[a-z][a-z0-9_]{0,31}\z/)
+      do:
+        effort not in ~w(low medium high) and String.match?(effort, ~r/\A[a-z][a-z0-9_]{0,31}\z/)
 
     def valid_rendered_effort?(_effort), do: false
 

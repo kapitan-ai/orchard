@@ -26,6 +26,9 @@ defmodule Orchard.Models.ModelRenderAssets do
     with {:ok, json} <- File.read(Path.join(bundle_root, "manifest.json")) do
       ManifestParser.parse_json(json)
     end
+  rescue
+    exception in [KeyError, ArgumentError, FunctionClauseError, BadMapError, File.Error] ->
+      {:error, {:invalid_discovery_metadata, exception.__struct__}}
   end
 
   defp local_path("file://" <> path), do: path

@@ -207,6 +207,15 @@ defmodule Orchard.API.ModelsControllerTest do
       assert_unavailable(request_models(token))
       File.write!(manifest_path, Jason.encode!(Map.delete(manifest, "chat_template")))
       assert_unavailable(request_models(token))
+
+      for replacement <- [
+            Map.put(manifest, "tokenizer", "not an object"),
+            Map.put(manifest, "safe_tokenization", %{"control_tokens" => 1})
+          ] do
+        File.write!(manifest_path, Jason.encode!(replacement))
+        assert_unavailable(request_models(token))
+      end
+
       File.write!(manifest_path, "not JSON")
       assert_unavailable(request_models(token))
       File.rm!(manifest_path)

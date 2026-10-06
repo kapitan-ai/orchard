@@ -458,7 +458,7 @@ def _execute_render_and_count_effort(payload: dict[str, Any]) -> dict[str, Any]:
     template_path = Path(
         require_non_empty_string(assets, "chat_template_path", category="missing_assets")
     )
-    _verify_chat_template_digest(template_path, template_digest)
+    verified_template_text = _verify_chat_template_digest(template_path, template_digest)
     config_path = Path(
         require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
     )
@@ -484,6 +484,7 @@ def _execute_render_and_count_effort(payload: dict[str, Any]) -> dict[str, Any]:
         tool_choice=request["tool_choice"],
         template_arguments=arguments,
         strict_template_arguments=True,
+        verified_template_text=verified_template_text,
     )
     count = count_tokens(
         rendered,
@@ -540,7 +541,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
             3,
         )
 
-    _verify_chat_template_digest(chat_template_path, chat_template_digest)
+    verified_template_text = _verify_chat_template_digest(chat_template_path, chat_template_digest)
 
     reasoning = require_mapping(request, "reasoning")
     _require_exact_keys(
@@ -612,6 +613,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
         tools=tools,
         tool_choice=tool_choice,
         template_arguments=resolved_contract.template_arguments,
+        verified_template_text=verified_template_text,
     )
     input_token_count = count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path)
 
@@ -1029,9 +1031,10 @@ def _require_sha256_digest(payload: dict[str, Any], field_name: str) -> str:
     return value
 
 
-def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
+def _verify_chat_template_digest(path: Path, expected_digest: str) -> str:
     try:
-        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        template_bytes = path.read_bytes()
+        actual_digest = hashlib.sha256(template_bytes).hexdigest()
     except OSError as exc:
         raise TokenizerCliError(
             "missing_assets", f"chat template asset is missing: {path}", 3
@@ -1043,6 +1046,11 @@ def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
             "chat template digest does not match the exact tokenizer contract",
             2,
         )
+
+    try:
+        return template_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TokenizerCliError("missing_assets", "chat template is not valid UTF-8", 3) from exc
 
 
 def _require_optional_reasoning_effort(payload: dict[str, Any]) -> str | None:
@@ -1377,22 +1385,27 @@ def render_prompt(
     marker_pairs: Sequence[MarkerPair] = (),
     template_arguments: Mapping[str, bool | str] | None = None,
     strict_template_arguments: bool = False,
+    verified_template_text: str | None = None,
 ) -> str:
-    if not chat_template_path.is_file():
-        raise TokenizerCliError(
-            "missing_assets",
-            f"chat template asset is missing: {chat_template_path}",
-            3,
-        )
-
-    try:
-        template_text = chat_template_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise TokenizerCliError(
-            "missing_assets",
-            f"failed to read chat template asset: {chat_template_path}",
-            3,
-        ) from exc
+    # Identity-bound contracts render the exact snapshot that was hashed.
+    # Legacy callers retain the original asset-reading path.
+    if verified_template_text is None:
+        if not chat_template_path.is_file():
+            raise TokenizerCliError(
+                "missing_assets",
+                f"chat template asset is missing: {chat_template_path}",
+                3,
+            )
+        try:
+            template_text = chat_template_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise TokenizerCliError(
+                "missing_assets",
+                f"failed to read chat template asset: {chat_template_path}",
+                3,
+            ) from exc
+    else:
+        template_text = verified_template_text
 
     environment = _chat_template_environment(render_time, marker_pairs)
 

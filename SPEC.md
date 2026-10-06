@@ -2491,7 +2491,14 @@ Response shape:
       "id": "llama-3.1-8b-instruct@mlx-q4-v1",
       "object": "model",
       "created": 1741392000,
-      "owned_by": "local"
+      "owned_by": "local",
+      "orchard_reasoning_effort": {
+        "status": "unavailable",
+        "supported_values": [],
+        "native_mapping": {},
+        "default": null,
+        "omission": {"behavior": "preserve_model_default", "native_effort": null}
+      }
     }
   ]
 }

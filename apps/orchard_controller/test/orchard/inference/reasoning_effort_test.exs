@@ -89,6 +89,25 @@ defmodule Orchard.Inference.ReasoningEffortTest do
     end
   end
 
+  test "rendered canonical requests reject duplicate string spellings of the legacy atoms" do
+    for value <- ~w(low medium high) do
+      {:ok, request} = bound(:responses, value)
+      reasoning = %{request.reasoning | reasoning_effort: value}
+
+      assert_raise ArgumentError,
+                   ~r/rendered effort requires every exact input identity field/,
+                   fn ->
+                     CanonicalRequest.new(
+                       Map.put(Map.from_struct(request), :reasoning, reasoning)
+                     )
+                   end
+
+      assert_raise ArgumentError, ~r/reasoning_effort must be/, fn ->
+        CanonicalRequest.Reasoning.to_wire(reasoning)
+      end
+    end
+  end
+
   test "SPEC §3.4 additional rendered values cannot enter the negotiated protocol" do
     {:ok, request} = bound(:responses, "xhigh")
     assert CanonicalRequest.Reasoning.to_wire(request.reasoning)["reasoning_effort"] == "xhigh"

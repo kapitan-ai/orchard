@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from tokenizers import Tokenizer
 
-from orchard_tokenizer import effort_contracts
+from orchard_tokenizer import cli, effort_contracts
 from orchard_tokenizer.cli import TokenizerCliError, execute_contract
 
 
@@ -94,6 +94,24 @@ def test_exact_native_argument_render_and_real_count(effort_payload, tier, nativ
     assert result["rendered_prompt"].startswith(f"effort={native};")
     tokenizer = Tokenizer.from_file(payload["assets"]["tokenizer_path"])
     assert result["input_token_count"] == len(tokenizer.encode(result["rendered_prompt"]).ids)
+
+
+def test_verified_template_snapshot_survives_replacement_before_render(effort_payload, monkeypatch):
+    template = Path(effort_payload["assets"]["chat_template_path"])
+    original = execute_contract(effort_payload)
+    render = cli.render_prompt
+
+    def replace_then_render(*args, **kwargs):
+        template.write_text("UNREGISTERED {{ enable_thinking }} {{ reasoning_effort }}")
+        assert kwargs["verified_template_text"] is not None
+        return render(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "render_prompt", replace_then_render)
+    result = execute_contract(effort_payload)
+    assert result == original
+    assert "UNREGISTERED" not in result["rendered_prompt"]
+    with pytest.raises(TokenizerCliError, match="digest does not match"):
+        execute_contract(effort_payload)
 
 
 def test_explicit_high_equals_omitted_render_without_changing_omitted_payload(effort_payload):
@@ -312,10 +330,8 @@ def test_registry_rejects_enablement_values_and_malformed_identifiers(effort_pay
         effort_contracts.validate_profiles({"profiles": [profile]})
 
 
-@pytest.mark.parametrize("with_history", [False, True])
-def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_alias(
-    tmp_path, monkeypatch, with_history
-):
+@pytest.mark.parametrize("history", ["plain", "after_tool", "new_user"])
+def test_exact_registered_qwen_template_all_efforts_and_default(tmp_path, monkeypatch, history):
     # Exact vendor template, minimal fixture tokenizer: CPU render evidence only.
     fixture_root = (
         Path(__file__).resolve().parents[3] / "apps/orchard_controller/test/fixtures/tokenizer"
@@ -331,7 +347,7 @@ def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_ali
     config.write_text("{}")
     items = [{"role": "user", "content": "Inspect a.py."}]
     tools = []
-    if with_history:
+    if history != "plain":
         tools = [
             {
                 "type": "function",
@@ -358,8 +374,9 @@ def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_ali
                 ],
             },
             {"role": "tool", "content": "source_ok", "tool_call_id": "call_one", "name": "inspect"},
-            {"role": "user", "content": "Continue."},
         ]
+    if history == "new_user":
+        items.append({"role": "user", "content": "Continue."})
     payload = {
         "contract_version": 5,
         "command": "render_and_count_effort",
@@ -386,7 +403,24 @@ def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_ali
             },
         },
     }
-    default = execute_contract(select(payload, profile["default_effort"]))
+    results = {value: execute_contract(select(payload, value)) for value in profile["efforts"]}
+    for value, result in results.items():
+        prompt = result["rendered_prompt"]
+        assert prompt.endswith("<|im_start|>assistant\n<think>\n")
+        assert ("Reasoning effort is set to low." in prompt) == (value == "low")
+        assert ("Reasoning effort is set to xhigh." in prompt) == (value in {"high", "xhigh"})
+        assert result["applied_template_arguments"]["reasoning_effort"] == profile["efforts"][value]
+        tokenizer = Tokenizer.from_file(payload["assets"]["tokenizer_path"])
+        assert result["input_token_count"] == len(tokenizer.encode(prompt).ids)
+        if history != "plain":
+            assert "<function=inspect>" in prompt
+            assert "<parameter=file>" in prompt
+            assert "a.py" in prompt
+            assert "source_ok" in prompt
+            assert "<tool_response>" in prompt
+    assert results["low"]["rendered_prompt"] != results["medium"]["rendered_prompt"]
+    assert results["medium"]["rendered_prompt"] != results["xhigh"]["rendered_prompt"]
+    default = results[profile["default_effort"]]
     alias = execute_contract(select(payload, "high"))
     omitted = deepcopy(payload)
     omitted.update(contract_version=2, command="render_and_count")
@@ -396,7 +430,7 @@ def test_exact_registered_qwen_template_default_equals_native_xhigh_and_high_ali
     assert default["input_token_count"] == alias["input_token_count"] == legacy["input_token_count"]
     assert default["reasoning"]["reasoning_effort"] != alias["reasoning"]["reasoning_effort"]
     assert default["applied_template_arguments"] == alias["applied_template_arguments"]
-    if with_history:
+    if history != "plain":
         assert "<function=inspect>" in default["rendered_prompt"]
         assert "<parameter=file>" in default["rendered_prompt"]
         assert "source_ok" in default["rendered_prompt"]
