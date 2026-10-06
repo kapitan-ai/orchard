@@ -3086,6 +3086,95 @@ def test_batch_runtime_clears_once_when_runtime_goes_idle() -> None:
         runtime.close()
 
 
+@pytest.mark.parametrize("settlement_fails", [True, False])
+def test_batch_admission_rechecks_settlement_under_idle_cleanup_lock(settlement_fails) -> None:
+    sync_entered = threading.Event()
+    release_sync = threading.Event()
+    submit_entered = threading.Event()
+    insertions: list[bool] = []
+
+    def synchronize() -> None:
+        sync_entered.set()
+        assert release_sync.wait(timeout=5)
+        if settlement_fails:
+            raise RuntimeError("injected settlement failure")
+
+    session = _make_fake_session()
+    session.native_settlement_failed = False
+    session.tokenizer = _ToyTokenizer()
+
+    class CountingBatchGenerator(_FakeBatchGenerator):
+        def insert(self, prompts, **kwargs):
+            insertions.append(session.native_settlement_failed)
+            return super().insert(prompts, **kwargs)
+
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            synchronize=synchronize,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=CountingBatchGenerator),
+    )
+    outcomes: list[list[dict[str, Any]] | BackendError] = []
+
+    def generate() -> None:
+        try:
+            outcomes.append(
+                list(
+                    generate_events(
+                        session,
+                        _make_fake_request(max_output_tokens=2),
+                        threading.Event(),
+                        deps=runtime.generation_deps(),
+                    )
+                )
+            )
+        except BackendError as exc:
+            outcomes.append(exc)
+
+    first = threading.Thread(target=generate)
+    second = threading.Thread(target=generate)
+    try:
+        first.start()
+        assert sync_entered.wait(timeout=2)
+        next_id = runtime._next_request_id
+        original_submit = runtime._submit
+
+        def observed_submit(prompt_ids, kwargs):
+            submit_entered.set()
+            return original_submit(prompt_ids, kwargs)
+
+        runtime._submit = observed_submit
+        second.start()
+        assert submit_entered.wait(timeout=2)
+        release_sync.set()
+        first.join(timeout=3)
+        second.join(timeout=3)
+        assert not first.is_alive() and not second.is_alive()
+        errors = [outcome for outcome in outcomes if isinstance(outcome, BackendError)]
+        successes = [outcome for outcome in outcomes if isinstance(outcome, list)]
+        assert all(outcome[-1]["kind"] == "completed" for outcome in successes)
+        if settlement_fails:
+            assert len(errors) == 1 and len(successes) == 1
+            assert errors[0].code == "native_settlement_failed"
+            assert errors[0].retryable is False
+            assert insertions == [False]
+            assert runtime._next_request_id == next_id
+        else:
+            assert not errors and len(successes) == 2
+            assert insertions == [False, False]
+            assert runtime._next_request_id == next_id + 1
+        assert not runtime._pending_by_id and not runtime._pending_request_ids
+    finally:
+        release_sync.set()
+        first.join(timeout=3)
+        if second.ident is not None:
+            second.join(timeout=3)
+        runtime.close()
+
+
 def test_batch_runtime_does_not_clear_while_request_is_active() -> None:
     calls: list[str] = []
     session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
@@ -6698,6 +6787,7 @@ def test_stream_finally_clears_when_synchronize_raises() -> None:
     _collect_events(session, request, deps)
 
     assert calls == ["synchronize", "clear"]
+    assert session.native_settlement_failed is True
 
 
 def test_stream_finally_without_synchronize_still_clears_fail_open() -> None:
