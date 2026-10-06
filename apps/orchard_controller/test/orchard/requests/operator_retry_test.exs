@@ -11,8 +11,10 @@ defmodule Orchard.Requests.OperatorRetryTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Ecto.Changeset
+  alias Orchard.CanonicalRequest.Reasoning
   alias Orchard.Governance
   alias Orchard.Governance.Tenant
+  alias Orchard.Inference.ReasoningEffort
   alias Orchard.Models.{Access, Model, TenantModelAccess}
   alias Orchard.Repo
   alias Orchard.Requests.{OperatorRetry, Request}
@@ -105,6 +107,34 @@ defmodule Orchard.Requests.OperatorRetryTest do
         Repo.update!(
           Changeset.change(source,
             canonical_request: Map.put(source.canonical_request, "reasoning", negotiated)
+          )
+        )
+
+      assert {:error, :retry_source_unavailable} = OperatorRetry.reserve(source.public_id)
+      assert descendant_count(source.id) == 0
+    end
+
+    test "SPEC §3.4 rendered effort cannot be silently dropped during operator retry" do
+      tenant = tenant!(:full)
+      model = create_granted_model!(tenant)
+      source = create_full_legacy_source!(tenant, model, state: :failed)
+
+      {:ok, reasoning} =
+        ReasoningEffort.resolve(
+          :medium,
+          "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9",
+          "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+        )
+
+      source =
+        Repo.update!(
+          Changeset.change(source,
+            canonical_request:
+              Map.put(
+                source.canonical_request,
+                "reasoning",
+                Reasoning.to_wire(reasoning)
+              )
           )
         )
 

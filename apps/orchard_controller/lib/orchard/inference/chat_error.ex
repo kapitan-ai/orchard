@@ -17,6 +17,7 @@ defmodule Orchard.Inference.ChatError do
   @type kind ::
           :missing_required_field
           | :unsupported_parameter
+          | :unsupported_reasoning_control
           | :invalid_value
           | :model_not_found
           | :model_not_authorized
@@ -84,6 +85,9 @@ defmodule Orchard.Inference.ChatError do
 
   def from_prepare_reason({:validation, {:unsupported_parameter, field}}),
     do: build(:unsupported_parameter, param: to_string(field))
+
+  def from_prepare_reason({:validation, {:unsupported_reasoning_control, field}}),
+    do: build(:unsupported_reasoning_control, param: to_string(field))
 
   def from_prepare_reason({:validation, {:invalid_value, field, reason}}),
     do: build(:invalid_value, param: to_string(field), detail: reason)
@@ -187,6 +191,16 @@ defmodule Orchard.Inference.ChatError do
       type: "invalid_request_error",
       code: "invalid_value",
       message: "Invalid value for #{field}: #{reason}",
+      param: field
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :unsupported_reasoning_control, param: field}) do
+    %{
+      status: :bad_request,
+      type: "invalid_request_error",
+      code: "unsupported_reasoning_control",
+      message: "The selected model and rendering route do not support this reasoning control",
       param: field
     }
   end

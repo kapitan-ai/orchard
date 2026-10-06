@@ -25,6 +25,18 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests.Request
   alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
+  test "SPEC §7.2.1 Responses effort rejects unsupported levels and fake rendering with HTTP 400" do
+    model = create_model!(%{state: :active})
+    params = %{"model" => "#{model.model_id}@#{model.version}", "input" => "hello"}
+
+    for tier <- ["minimal", "xhigh", "medium"] do
+      conn = post_responses(Map.put(params, "reasoning", %{"effort" => tier}))
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_reasoning_control"
+      assert Jason.decode!(conn.resp_body)["error"]["param"] == "reasoning.effort"
+    end
+  end
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")

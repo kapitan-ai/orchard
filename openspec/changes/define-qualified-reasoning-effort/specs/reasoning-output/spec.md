@@ -2,7 +2,7 @@
 
 ### Requirement: Qualified reasoning effort follows the apex contract
 
-Orchard SHALL implement the closed `reasoning_effort = nil | low | medium | high` axis according to `SPEC.md` sections 3.4 and 7.2.1 without creating a provider-specific public policy. A non-`nil` effort MUST be accepted only for a negotiated `generation_policy = enabled` and `projection = final_only` Request whose exact renderer contract qualifies that tier. The concrete public field name remains deferred to the accepted API contract.
+Orchard SHALL implement the closed `reasoning_effort = nil | low | medium | high` axis according to `SPEC.md` sections 3.4 and 7.2.1 without creating a provider-specific public policy. A non-`nil` effort MUST require enabled generation and an exact renderer mapping; rendered input steering permits legacy blended output independently of separately negotiated final-only projection. Chat reasoning_effort and Responses reasoning.effort follow the request-local reasoning-effort change; negotiated output controls retain their activation requirements.
 
 #### Scenario: Omitted public reasoning control
 

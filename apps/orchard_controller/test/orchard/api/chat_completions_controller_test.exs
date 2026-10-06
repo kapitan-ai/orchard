@@ -58,6 +58,22 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Requests.{Idempotency, Request}
   alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
+  test "SPEC §7.2.1 Chat effort rejects unsupported levels and fake rendering with HTTP 400" do
+    model = create_model!(%{state: :active})
+
+    params = %{
+      "model" => "#{model.model_id}@#{model.version}",
+      "messages" => [%{"role" => "user", "content" => "hello"}]
+    }
+
+    for tier <- ["minimal", "xhigh", "medium"] do
+      conn = post_chat(Map.put(params, "reasoning_effort", tier))
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_reasoning_control"
+      assert Jason.decode!(conn.resp_body)["error"]["param"] == "reasoning_effort"
+    end
+  end
+
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.

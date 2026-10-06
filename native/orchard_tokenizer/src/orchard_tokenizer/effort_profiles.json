@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "model_artifact_digest": "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9",
+      "chat_template_digest": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "render_contract": "qwen3_8_native_effort",
+      "render_contract_version": "1",
+      "generation_argument": {"key": "enable_thinking", "value": true},
+      "effort_argument": "reasoning_effort",
+      "efforts": {"low": "low", "medium": "medium", "high": "xhigh"}
+    }
+  ]
+}

@@ -495,6 +495,14 @@ All public inference requests SHALL normalize into one internal struct:
     effective_contract:
       %{mode: :legacy}
       | %{
+          mode: :rendered,
+          model_artifact_digest: String.t(),
+          chat_template_digest: String.t(),
+          render_contract: String.t(),
+          render_contract_version: String.t(),
+          native_effort: String.t()
+        }
+      | %{
           mode: :negotiated,
           model_artifact_digest: String.t(),
           chat_template_digest: String.t(),
@@ -538,7 +546,7 @@ Reasoning generation and public projection are independent canonical axes.
 `projection` controls whether decoded output remains one legacy blended text channel, exposes final answer text only, or selects structured reasoning as public output in addition to final answer text.
 `reasoning_effort` is a separate optional canonical axis with the closed provider-neutral vocabulary `low`, `medium`, and `high`.
 It controls only the qualified renderer's requested reasoning effort; it MUST NOT derive or replace generation policy or public projection.
-A non-`nil` reasoning effort is valid only for a negotiated Request with `generation_policy = enabled` and `projection = final_only`.
+A non-`nil` reasoning effort requires `generation_policy = enabled`; it MAY use the exact rendered-input contract with `projection = legacy_blended`, or the separately negotiated contract with `projection = final_only`.
 Supplying effort with `generation_policy = model_default` or `disabled` is contradictory and SHALL fail before the first Request write, scheduling, dispatch, or model invocation.
 Effort remains optional for `enabled + final_only`; omission selects no tier and SHALL preserve that generation policy's existing semantics.
 The Controller SHALL preserve the policy source and resolve the complete effective contract before dispatch.
@@ -547,6 +555,9 @@ The Controller MUST NOT derive the generation-policy and projection axes from ea
 The outer `generation_policy`, `projection`, and `reasoning_effort` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
 An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain no nullable negotiated identity fields.
 An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
+An explicit rendered-input Request SHALL use `mode = rendered`, `source = explicit_public`, and a non-`nil` tier. It SHALL retain exactly the artifact/template/render identities and effective native effort listed above, without negotiated parser/runtime/event fields.
+For this unparsed input-steering mode, `enabled` means native thinking is requested by the reviewed renderer; it does not promise nonempty reasoning or final-only privacy. Parsed-projection conformance requirements remain unchanged.
+Public controls SHALL remain separately held in the preparation call until the selected model and trusted manifest are resolved. Preparation SHALL bind the complete rendered identity before tokenization, and verify the returned input-control proof before canonical persistence, canonical hashing, scheduling or dispatch. The earlier public-body idempotency hash SHALL retain the caller's explicit control. Pure normalizers SHALL NOT resolve Catalog identities or create a persistent unbound reasoning contract.
 Missing or nullable negotiated identity SHALL fail validation before scheduling.
 Because §5.6 restricts a negotiated Request to already loaded Tier 0 candidates, `resolved_policy.residency_preference` and `admission.max_cold_start_ms` SHALL NOT apply to its candidate selection.
 An `allow_cold_load` or `prefer_loaded` policy SHALL NOT admit a cold or cached candidate for it, and a `required_loaded` policy SHALL NOT narrow it further.
@@ -557,10 +568,10 @@ The currently valid source, generation, and projection combinations are closed:
 * `omitted_public` requires `model_default + legacy_blended`
 * `console_default` requires `disabled + final_only`
 * `console_explicit` may select `model_default`, `disabled`, or `enabled` only with `final_only`
-* `explicit_public` may select `model_default`, `disabled`, or `enabled` only with `final_only`, and only after the concrete public input contract is accepted
+* `explicit_public` may select `enabled + legacy_blended` with a non-`nil` tier and an exact rendered-input contract; its separately negotiated `final_only` controls remain subject to their public contract and activation gates
 * `reasoning_structured` remains unavailable until its separate public contract expands this matrix
 
-For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` and `explicit_public` may select a non-`nil` tier only with `enabled + final_only`; and every other valid generation/projection combination requires `nil`.
+For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` may select a tier only with negotiated `enabled + final_only`; `explicit_public` additionally permits rendered `enabled + legacy_blended`. Every other valid combination requires `nil`.
 Every other combination SHALL fail before the first Request write and MUST NOT reach scheduling or dispatch.
 
 When both Chat Completions and Responses omit reasoning control, Orchard SHALL normalize the Request to `generation_policy = model_default`, `projection = legacy_blended`, and `source = omitted_public`.
@@ -646,6 +657,10 @@ The tokenizer SHALL return effective render metadata sufficient for the Controll
 The Controller SHALL reject the render result before dispatch when that metadata does not prove that the applied effort is exactly the selected canonical tier, or exactly no tier when none was selected, using the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7 because the accepted caller input was already valid and qualified.
 The Controller SHALL reject an explicit reasoning control before dispatch when the exact model and template contract cannot honor it.
 The Controller MUST NOT guess support from a model name, family-name substring, unversioned parser heuristic, or unqualified template inspection.
+For rendered-input steering, a source-owned closed registry SHALL bind the exact admitted artifact and template digests to the render contract/version, native generation argument and exact canonical-to-native tier mapping. It SHALL NOT authorize another artifact, a caller template override, a silently ignored argument, or a substituted tier. Selecting a different effort SHALL NOT require another Catalog model/weights identity or an effort-only reload.
+The helper SHALL use the same legacy message/tool-history normalization as omitted rendering, verify the template digest, reject reserved or unreferenced registered arguments, and render/count that exact input. Its response SHALL prove canonical policy/provenance, exact render identity, effective native effort and applied arguments; the Controller SHALL compare the complete proof and reject mismatch as runtime incompatible before dispatch.
+Every enabled tokenizer route SHALL apply the explicit control or reject it. The initial rendered-input route requires a real tokenizer port and safe mode off; fake, segmented and degrade routes SHALL reject explicit effort rather than lose it. This restriction does not downgrade another source's safety configuration.
+Automatic attempts SHALL reuse the prepared input and identity. Operator retry MAY retain its existing refusal for any retained explicit reasoning. Exact token IDs remain cache authority; bounded-prefix affinity is only a ranking hint and need not differ between tiers.
 `model_default` in omitted legacy mode means the existing template behavior and MUST NOT be rewritten into an explicit enabled or disabled template argument.
 
 Safe-tokenization caller-string segmentation SHALL protect free-form caller-authored prompt material, including message content text, multimodal text parts, message names, tool descriptions, tool schema strings, tool call identifiers, function names, function arguments, and named tool-choice fields. Fixed protocol role values (`system`, `developer`, `user`, `assistant`, `tool`) SHALL remain unwrapped during marker-based dual rendering because chat templates commonly use roles for control flow; roles are validated request metadata rather than free-form prompt text. This role exemption MUST NOT exempt message content or tool/schema text from control-token detection.
@@ -2124,7 +2139,7 @@ This contract change SHALL NOT rehash existing Catalog rows or introduce a new d
 
 Reasoning-generation support is an additive, versioned runtime capability bound to an exact model artifact and chat-template digest.
 Its contract SHALL enumerate complete supported tuples containing generation policy, projection, reasoning effort, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
-Reasoning effort is never a free dimension of that enumeration: a `nil` effort belongs to the non-tier-selected tuple, and a non-`nil` effort SHALL appear only in a tuple whose generation policy is `enabled` and whose projection is `final_only`.
+Negotiated reasoning effort is never a free dimension of that runtime enumeration: a `nil` effort belongs to the non-tier-selected tuple, and a non-`nil` effort SHALL appear only in a negotiated tuple whose generation policy is `enabled` and whose projection is `final_only`. Rendered-input steering under §3.4 is an exact helper registration, not a manifest or Runtime Endpoint reasoning-capability advertisement.
 Manifest compatibility and strict unknown-key handling SHALL follow the existing additive migration rules until an accepted manifest schema extension supplies typed fields.
 An older manifest that omits reasoning capability remains valid but SHALL NOT prove support for an explicitly negotiated reasoning mode.
 Repository-owned manual model qualification evidence is governance evidence only.
@@ -2440,10 +2455,9 @@ The Public Inference API SHALL prioritize wire compatibility with OpenAI for:
 `/v1/models` SHALL return objects shaped like OpenAI model list entries with `id`, `object`, `created`, and `owned_by`. ([OpenAI Developers][5])
 
 Reasoning control is an Orchard extension whose canonical semantics are defined in §3.4.
-The first reasoning-control release SHALL support an explicit request for `projection = final_only` on both Chat Completions and Responses when the exact model, template, parser, and Runtime Endpoint contract is compatible.
-This specification intentionally reserves the concrete public request field names until an accepted API contract defines them, and Orchard MUST NOT expose an ad hoc field before that contract is accepted.
-That later contract MAY expose only the provider-neutral effort vocabulary `low`, `medium`, and `high`; it MUST normalize a supplied tier to the canonical `reasoning_effort` axis and reject effort unless the same explicit control selects `generation_policy = enabled` and `projection = final_only`.
-It MUST NOT expose provider-specific renderer values, accept arbitrary template keyword arguments, or make effort alone imply enabled generation.
+Chat Completions accepts optional top-level `reasoning_effort`; Responses accepts optional `reasoning` containing exactly `effort`. Both accept only `low`, `medium`, and `high`, reject explicit null/incorrect types and unsupported fields, and select the rendered-input `enabled + legacy_blended` contract only when the exact mapping and rendering route support it. These controls select native thinking at render and SHALL NOT select final-only output or a numeric reasoning-token budget.
+The exact initial Qwen template mapping is low to native low, medium to native medium, and high to native xhigh. Unsupported levels/models/templates/routes SHALL return `400 invalid_request_error` with `unsupported_reasoning_control` and the applicable effort parameter; malformed values retain `invalid_value`. No provider-specific input value, arbitrary template keyword argument, or nearest-tier fallback is accepted.
+The separately negotiated final-only release remains dependent on its accepted public contract and compatible exact model/template/parser/Runtime Endpoint implementation. Its activation requirements SHALL NOT be inferred from successful rendered-input steering.
 When the control is omitted, both endpoints SHALL preserve `model_default + legacy_blended` behavior across sync and streaming responses.
 The first release SHALL reject Chat requests for raw structured reasoning output.
 Public Responses structured reasoning items and events SHALL remain disabled until a later accepted contract defines their wire names, raw-versus-summary semantics, sync representation, event ordering, terminal behavior, capture, and replay.
@@ -3996,7 +4010,7 @@ Runtime capacity and Placement Capacity observation semantics:
 
 Reasoning generation and parsing SHALL be a versioned capability of the transport-independent Runtime Endpoint Interface and provider-neutral Worker Runtime contract.
 Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version.
-A `nil` effort is part of the existing non-tier-selected negotiated contract; a non-`nil` effort is valid only for `enabled + final_only` and identifies the exact qualified renderer mapping through the pinned render contract and version.
+A `nil` effort is part of the existing non-tier-selected negotiated contract; within this negotiated runtime capability, a non-`nil` effort is valid only for `enabled + final_only` and identifies the exact qualified renderer mapping through the pinned render contract and version. The §3.4 rendered-input contract does not advertise or require this output-separation capability.
 Separate lists whose Cartesian product could authorize a tuple that was not explicitly advertised are invalid capability evidence.
 Candidate-time observations are advisory selection evidence only and cannot replace the loaded-worker execution proof; the narrow negotiated reasoning eligibility exception is specified below.
 The Controller SHALL select an endpoint for an explicit `final_only` or `reasoning_structured` request only when a fresh observation advertises the exact complete tuple, including the selected effort when present.

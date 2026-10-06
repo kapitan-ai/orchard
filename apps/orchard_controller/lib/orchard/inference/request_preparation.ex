@@ -5,6 +5,7 @@ defmodule Orchard.Inference.RequestPreparation do
 
   alias Orchard.Inference.{
     AdmissionPolicy,
+    ReasoningEffort,
     ToolExecutionSemantics,
     ToolingValidation,
     ToolRegistryResolver
@@ -30,7 +31,7 @@ defmodule Orchard.Inference.RequestPreparation do
          {:ok, canonical} <- attach_execution_snapshot(canonical),
          {:ok, model} <- resolve_model(canonical),
          :ok <- enforce_tooling_support(canonical, model),
-         {:ok, canonical} <- tokenize(canonical, model),
+         {:ok, canonical} <- tokenize(canonical, model, params),
          :ok <- enforce_context_window(canonical, model),
          {:ok, canonical} <- authorize_model(canonical, model) do
       {:ok, canonical, model}
@@ -82,11 +83,16 @@ defmodule Orchard.Inference.RequestPreparation do
     end
   end
 
-  defp tokenize(canonical, model) do
+  defp tokenize(canonical, model, params) do
     with {:ok, tokenizer_opts} <- build_tokenizer_opts(model),
-         {:ok, tokenization} <- TokenizerClient.tokenize(canonical, tokenizer_opts) do
+         {:ok, canonical} <- ReasoningEffort.bind(canonical, params, tokenizer_opts),
+         {:ok, tokenization} <- TokenizerClient.tokenize(canonical, tokenizer_opts),
+         :ok <- ReasoningEffort.verify_tokenization(canonical, tokenization) do
       {:ok, apply_tokenization(canonical, tokenization)}
     else
+      {:error, {:validation, _reason}} = error ->
+        error
+
       {:error, {:tokenization, _reason}} = error ->
         error
 

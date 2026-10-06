@@ -89,7 +89,16 @@ defmodule Orchard.CanonicalRequest do
             required(:event_binding_version) => String.t()
           }
 
-    @type effective_contract :: legacy_contract() | negotiated_contract()
+    @type rendered_contract :: %{
+            required(:mode) => :rendered,
+            required(:model_artifact_digest) => String.t(),
+            required(:chat_template_digest) => String.t(),
+            required(:render_contract) => String.t(),
+            required(:render_contract_version) => String.t(),
+            required(:native_effort) => String.t()
+          }
+
+    @type effective_contract :: legacy_contract() | negotiated_contract() | rendered_contract()
 
     @type t :: %__MODULE__{
             generation_policy: generation_policy(),
@@ -545,6 +554,34 @@ defmodule Orchard.CanonicalRequest do
          effective_contract
        ) do
     validate_negotiated_reasoning_contract!(effective_contract)
+  end
+
+  defp validate_reasoning_combination!(
+         :enabled,
+         :legacy_blended,
+         reasoning_effort,
+         :explicit_public,
+         %{mode: :rendered} = contract
+       )
+       when reasoning_effort in [:low, :medium, :high] do
+    expected_keys = [
+      :mode,
+      :model_artifact_digest,
+      :chat_template_digest,
+      :render_contract,
+      :render_contract_version,
+      :native_effort
+    ]
+
+    if Enum.sort(Map.keys(contract)) == Enum.sort(expected_keys) and
+         Enum.all?(expected_keys -- [:mode], &valid_contract_identity?(Map.get(contract, &1))) do
+      :ok
+    else
+      invalid_reasoning_contract!(
+        "rendered effort requires every exact input identity field",
+        contract
+      )
+    end
   end
 
   defp validate_reasoning_combination!(

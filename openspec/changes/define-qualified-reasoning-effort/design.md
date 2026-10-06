@@ -30,7 +30,7 @@ Issue #398 supplies the narrow missing contract. It must preserve omitted public
 
 The canonical Request adds `reasoning_effort: nil | low | medium | high` beside `generation_policy` and `projection`. It answers how much qualified reasoning the renderer asks for; it neither selects whether reasoning is generated nor selects what becomes public output.
 
-A non-`nil` tier is valid only when all of the following hold:
+For the separately negotiated output path, a non-`nil` tier is valid only when all of the following hold:
 
 - the request is negotiated rather than omitted legacy;
 - `generation_policy = enabled`;
@@ -41,15 +41,17 @@ A tier with `generation_policy = model_default` or `disabled` is contradictory a
 
 Effort is optional even for `enabled + final_only`. Absence means no effort tier was selected; Orchard does not manufacture a default tier. Omitted public controls remain `model_default + legacy_blended` with `reasoning_effort = nil`, and their existing public-body bytes and hash domain remain unchanged.
 
+The dependent request-local-reasoning-effort change additionally permits exact rendered input steering with `explicit_public + enabled + legacy_blended`. It uses the same admitted model and reviewed template, without negotiated parser/runtime/event identity or a hidden-thought claim. Its binding and technical render proof precede persistence; nonempty-thought conformance is limited to parsed projections.
+
 ### Stage public vocabulary, not a wire name
 
-The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. A later accepted issue #331 public-input contract will choose concrete field names for both endpoints. It must expose only this vocabulary, normalize it into the canonical axis, and use the existing closed `unsupported_reasoning_control` error mapping. It must not expose provider values or accept effort alone without an explicit enabled generation policy.
+The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. The dependent request-local-reasoning-effort change defines Chat `reasoning_effort` and Responses `reasoning.effort` for rendered input steering. Their syntax explicitly requests enabled thinking while keeping legacy output; separately negotiated output controls remain subject to their own accepted API contract. No provider-value pass-through is allowed.
 
 The prohibition on provider-specific reasoning-effort pass-through does not prohibit this provider-neutral canonical axis. Its internal name does not choose a public API field name.
 
 That mapping now carries two distinct rows: a contradictory tier/policy combination that is never valid on any model, and an exact-tuple capability failure that another qualified model may honor. Both keep `400 invalid_request_error` and `unsupported_reasoning_control` and stay non-retryable, so the split is remediation guidance rather than a new envelope. #331 must set `param` to the concrete offending accepted public field — the reasoning-control field for a control failure and the effort field for a tier failure — while the Console, which supplies no public field, keeps `param = nil`.
 
-This amendment therefore defines request semantics without preempting the concrete Chat Completions or Responses encoding that #331 owns.
+The original negotiated encoding remains separate from the dependent rendered-input encoding; neither activates the other's runtime or projection contract.
 
 ### Bind renderer mappings to an exact tuple
 
