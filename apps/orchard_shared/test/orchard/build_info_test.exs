@@ -149,6 +149,25 @@ defmodule Orchard.BuildInfoTest do
     assert File.read!(counter) == "compiled\n"
   end
 
+  test "provenance state changes recompile when SHA and channel are unchanged" do
+    fixture = create_fixture!(clock: true)
+    counter = Path.join(fixture, "compile-counter")
+    date = "2026-10-05"
+    sha = git!(fixture, ["rev-parse", "HEAD"])
+
+    compile!(fixture, counter, date: date, sha: sha)
+    original_info = baked_info!(fixture, counter, date: date, sha: sha)
+
+    inferred_output = compile!(fixture, counter, date: date)
+    assert inferred_output =~ "Compiling 1 file"
+    assert baked_info!(fixture, counter, date: date) == original_info
+
+    overridden_output = compile!(fixture, counter, date: date, sha: sha)
+    assert overridden_output =~ "Compiling 1 file"
+    assert baked_info!(fixture, counter, date: date, sha: sha) == original_info
+    assert File.read!(counter) == "compiled\n"
+  end
+
   # SPEC.md §13.1: build date is baked at compilation, including across UTC midnight.
   test "UTC date rollover preserves baked provenance without recompiling" do
     fixture = create_fixture!(clock: true)
@@ -180,7 +199,7 @@ defmodule Orchard.BuildInfoTest do
     assert File.read!(counter) == "compiled\n"
   end
 
-  test "build_date is a baked UTC ISO date" do
+  test "build_date is an ISO date" do
     assert {:ok, date} = Date.from_iso8601(BuildInfo.build_date())
     assert Date.to_iso8601(date) == BuildInfo.build_date()
   end
@@ -205,6 +224,7 @@ defmodule Orchard.BuildInfoTest do
 
     if Keyword.get(opts, :clock, false) do
       source = File.read!(@build_info_source)
+      assert String.contains?(source, "Date.utc_today()")
 
       File.write!(
         Path.join(fixture, "lib/orchard/build_info.ex"),
