@@ -19,12 +19,15 @@ this service directly.
 
 See `../../docs/architecture.md` for the broader runtime map.
 
-If request-boundary MLX synchronization fails, the Worker reports not-ready with
-`native_settlement_failed` and refuses further generation or loading in that
-process, including after model unload. The Node Agent must replace the Worker
-before reuse. A public terminal event does not prove native settlement; cache
-cleanup still runs after a synchronization failure. This applies to ordinary MLX
-models as well as specialized loaders and does not establish device-drain latency.
+If final stream settlement synchronization or batch runtime idle synchronization
+fails, the Worker reports not-ready with `native_settlement_failed` and refuses
+further generation or loading in that process, including after model unload.
+Recovery requires retiring the Worker process through Node Agent unload or model
+eviction. Automatic quarantine or replacement is not implemented by this change.
+The separate memory-limit helper synchronization remains best-effort and log-only.
+A public terminal event does not prove native settlement; cache cleanup still runs
+after a settlement synchronization failure. This applies to ordinary MLX models as
+well as specialized loaders and does not establish device-drain latency.
 
 ## Backend modes
 
