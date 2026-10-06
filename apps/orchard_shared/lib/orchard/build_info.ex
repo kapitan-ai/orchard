@@ -93,9 +93,12 @@ defmodule Orchard.BuildInfo do
 
   @build_info Resolver.resolve()
 
-  @doc "Returns whether any effective compile-time build metadata input changed."
+  @doc "Returns whether source provenance or the effective build channel changed."
   @spec __mix_recompile__?() :: boolean()
-  def __mix_recompile__?, do: Resolver.resolve() != @build_info
+  def __mix_recompile__? do
+    # The date records when this module was compiled, not an input to a new build.
+    Map.drop(Resolver.resolve(), [:build_date]) != Map.drop(@build_info, [:build_date])
+  end
 
   @spec git_sha() :: String.t()
   def git_sha, do: @build_info.git_sha
