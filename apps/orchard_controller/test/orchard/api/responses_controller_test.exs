@@ -37,6 +37,26 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
+  test "structured prior reasoning rejects omitted and explicit controls before Request writes" do
+    model = create_model!(%{state: :active})
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    for explicit <- [false, true], key <- ["reasoning_content", "reasoning", "thinking"] do
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      params = %{"model" => "#{model.model_id}@#{model.version}", "input" => [message]}
+
+      params =
+        if explicit, do: Map.put(params, "reasoning", %{"effort" => "medium"}), else: params
+
+      conn = post_responses(params)
+      assert conn.status == 400
+      error = Jason.decode!(conn.resp_body)["error"]
+      assert error["code"] == "invalid_value"
+      assert error["param"] == "input[0]"
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+  end
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")

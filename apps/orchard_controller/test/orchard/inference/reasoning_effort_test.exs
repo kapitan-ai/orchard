@@ -94,6 +94,25 @@ defmodule Orchard.Inference.ReasoningEffortTest do
     end
   end
 
+  test "structured prior reasoning rejects omitted and explicit controls on both endpoints" do
+    for endpoint <- [:chat_completions, :responses],
+        tier <- [nil, "medium"],
+        key <- ["reasoning_content", "reasoning", "thinking"] do
+      {validator, _normalizer} = modules(endpoint)
+      field = if endpoint == :responses, do: "input", else: "messages"
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      request = Map.put(params(endpoint, tier), field, [message])
+
+      if endpoint == :responses do
+        assert {:error, :invalid_value, "input[0]", "contains unsupported or mixed fields"} =
+                 validator.validate(request)
+      else
+        assert {:error, :unsupported_parameter, param} = validator.validate(request)
+        assert param == "messages[0].#{key}"
+      end
+    end
+  end
+
   test "exact model/template registration rejects unknown identities before rendering" do
     {_, normalizer} = modules(:chat_completions)
     params = params(:chat_completions, "medium")

@@ -552,7 +552,7 @@ Effort remains optional for `enabled + final_only`; omission selects no tier and
 The Controller SHALL preserve the policy source and resolve the complete effective contract before dispatch.
 The effective contract SHALL remain pinned for every attempt of the logical Request and SHALL NOT be inferred again after scheduling.
 The Controller MUST NOT derive the generation-policy and projection axes from each other.
-The outer `generation_policy`, `projection`, and `reasoning_effort` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
+The outer `generation_policy`, `projection`, and `reasoning_effort` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`. The rendered contract's `native_effort` records the exact provider-native argument resolved from that canonical tier; it is identity evidence, not another canonical selector.
 An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain no nullable negotiated identity fields.
 An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
 An explicit rendered-input Request SHALL use `mode = rendered`, `source = explicit_public`, and a non-`nil` tier. It SHALL retain exactly the artifact/template/render identities and effective native effort listed above, without negotiated parser/runtime/event fields.
@@ -2842,6 +2842,7 @@ The corpus SHALL declare the endpoint, streaming mode, and applicable output con
 | --- | --- | --- |
 | typed text and tool-call continuation | Responses sync and stream; Chat sync and stream only when included in the claimed envelope | positive typed lifecycle under each endpoint's existing contract |
 | omitted reasoning control | every tested endpoint/mode | positive preservation of `model_default + legacy_blended`; delimiter-like legacy text is not reclassified |
+| explicit rendered reasoning effort | each claimed Chat or Responses mode with the accepted input contract and exact registered artifact/template | positive native argument application, exact render/count and preserved legacy blended projection; no final-only or quality claim |
 | explicit `final_only` reasoning | each endpoint/mode only after its concrete public input contract is accepted | positive negotiated separation; `dependency_blocked` before that contract |
 | public structured reasoning | current Chat and Responses modes | negative rejection until the separately required public contract is accepted |
 | structured JSON object | Chat Completions sync and stream | positive `json_object` behavior under §7.2.4 |

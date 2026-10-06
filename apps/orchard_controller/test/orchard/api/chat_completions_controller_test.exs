@@ -74,6 +74,23 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
   end
 
+  test "structured prior reasoning rejects omitted and explicit controls before Request writes" do
+    model = create_model!(%{state: :active})
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    for explicit <- [false, true], key <- ["reasoning_content", "reasoning", "thinking"] do
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      params = %{"model" => "#{model.model_id}@#{model.version}", "messages" => [message]}
+      params = if explicit, do: Map.put(params, "reasoning_effort", "medium"), else: params
+      conn = post_chat(params)
+      assert conn.status == 400
+      error = Jason.decode!(conn.resp_body)["error"]
+      assert error["code"] == "unsupported_parameter"
+      assert error["param"] == "messages[0].#{key}"
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+  end
+
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.
