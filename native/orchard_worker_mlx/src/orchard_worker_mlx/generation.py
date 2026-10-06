@@ -1994,16 +1994,17 @@ def _synchronize_then_clear_session_cache(
     session: Any,
     synchronize: Callable[[], None] | None,
 ) -> None:
-    """Best-effort request-boundary MLX cache cleanup.
+    """Request-boundary MLX settlement and best-effort cache cleanup.
 
     Synchronize before clear to avoid racing in-flight Metal command buffers.
-    Both operations are fail-open and synchronize failure must not skip clear.
+    A failed synchronize poisons the session for reuse, but must not skip cleanup.
     """
     if synchronize is not None:
         try:
             synchronize()
         except Exception:
-            pass
+            session.native_settlement_failed = True
+            logger.error("native settlement failed; Worker restart required", exc_info=True)
 
     clear_fn = getattr(session, "clear_cache", None)
     if callable(clear_fn):

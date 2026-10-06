@@ -6698,6 +6698,7 @@ def test_stream_finally_clears_when_synchronize_raises() -> None:
     _collect_events(session, request, deps)
 
     assert calls == ["synchronize", "clear"]
+    assert session.native_settlement_failed is True
 
 
 def test_stream_finally_without_synchronize_still_clears_fail_open() -> None:
