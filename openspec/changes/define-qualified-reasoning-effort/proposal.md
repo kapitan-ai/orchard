@@ -2,18 +2,18 @@
 
 ## Why
 
-The accepted reasoning contract deliberately separates generation policy from public projection, but it has no provider-neutral way to select a qualified reasoning effort. Template controls and their values vary by exact artifact and chat template. Passing those values through would make provider vocabulary public policy, while inferring support from a model family or a successful sample would authorize unproven behavior.
+The accepted negotiated reasoning contract deliberately separates generation policy from public projection, but it has no provider-neutral way to select a qualified reasoning effort. Template controls and their values vary by exact artifact and chat template. Passing arbitrary unregistered values through would make provider vocabulary public policy, while inferring support from a model family or a successful sample would authorize unproven behavior.
 
 Issue #398 adds only the contract needed to select a bounded effort tier after the existing negotiated reasoning path is implemented. It preserves every omitted request and leaves concrete public fields, renderer implementation, runtime encoding, parser work, and support claims to their existing follow-on work. The later `request-local-reasoning-effort` change defines concrete public input steering independently of negotiated output projection; the deferrals below describe this original negotiated contract's scope.
 
-The canonical axis excludes provider-specific pass-through; its internal name does not select #331's public field names. Pre-invocation qualification means exact technical mapping, observation, render, and preparation proof, not semantic qualification. A technically proven tier may execute without semantic qualification, which remains governance-only under `SPEC.md` §6.4 and ADR 0028; enabled-conformance failure still terminalizes afterward.
+The negotiated canonical axis excludes arbitrary provider-specific pass-through; rendered input uses the dependent change's exact registered identifiers rather than unrestricted native values; its internal name does not select #331's public field names. Pre-invocation qualification means exact technical mapping, observation, render, and preparation proof, not semantic qualification. A technically proven tier may execute without semantic qualification, which remains governance-only under `SPEC.md` §6.4 and ADR 0028; enabled-conformance failure still terminalizes afterward.
 
 ## What changes
 
-- Add `reasoning_effort` as a separate optional canonical axis with the provider-neutral closed vocabulary `low | medium | high`.
+- Add `reasoning_effort` as a separate optional negotiated canonical axis with the provider-neutral closed negotiated vocabulary `low | medium | high`; rendered input uses the dependent change's exact registered model-specific identifiers.
 - Permit a non-`nil` effort for enabled generation with an exact renderer mapping: negotiated final-only output retains its full contract, while the dependent request-local-reasoning-effort change adds rendered legacy-blended input steering. Effort with `model_default` or `disabled` fails closed before the first Request write, scheduling, dispatch, or model invocation.
 - Preserve the existing generation-policy semantics when effort is omitted. Neither normalization nor serialization may synthesize a default tier or change an omitted-request hash domain.
-- Require the exact artifact/template renderer to map a canonical tier through a closed qualified mapping bound to the exact artifact digest, chat-template digest, render contract, and render-contract version, and require render metadata to prove that the applied effort equals the selected tier before dispatch, mapping an unprovable render result to the existing `503 server_error` and `runtime_incompatible` row rather than a caller error. Public callers cannot pass arbitrary template keywords or provider values.
+- Require the exact artifact/template renderer to map a canonical tier through a closed qualified mapping bound to the exact artifact digest, chat-template digest, render contract, and render-contract version, and require render metadata to prove that the applied effort equals the selected tier before dispatch, mapping an unprovable render result to the existing `503 server_error` and `runtime_incompatible` row rather than a caller error. Public callers cannot pass arbitrary template keywords or unregistered provider values.
 - Extend exact manifest, capability, and loaded-worker acceptance tuples to include the selected canonical tier when present, while preserving legacy-only behavior when no complete tuple is negotiated.
 - Separate the closed `unsupported_reasoning_control` mapping into a contradictory-combination row and an exact-tuple capability row, keeping identical statuses, codes, and retry semantics while fixing `param` to the concrete offending accepted public field and `nil` for the Console.
 - Gate any future Console effort selection behind `enabled + final_only` and exact-tuple proof, with no effort selector until that contract is accepted.
@@ -44,7 +44,7 @@ Every capability this change touches must already exist in the main specs before
 
 Implementation remains sequenced through issue #326 for canonical normalization and exact rendering, #327 for concrete Runtime Endpoint and Worker Runtime encoding, #328 for parser and final-only projection conformance, #329 for usage, retry, and capture implementation, and #331 for concrete public Chat Completions and Responses fields. This change does not create a parallel render, runtime, parser, capture, or public-control path.
 
-The exact `mlx-community/Qwen3.8-27B-4bit` fixture is limited to its qualified renderer evidence: canonical `low`, `medium`, and `high` may map to that exact template's `low`, `medium`, and `xhigh` values. Those provider values are not canonical vocabulary, a model allowlist, or support evidence for another tuple.
+The exact `mlx-community/Qwen3.8-27B-4bit` fixture is limited to its qualified renderer evidence: canonical `low`, `medium`, and `high` may map to that exact template's `low`, `medium`, and `xhigh` values. Those provider values are not negotiated canonical vocabulary, a model allowlist, or support evidence for another tuple; separately registered rendered identifiers retain their own exact identity.
 
 ## Out of scope
 
