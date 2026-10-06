@@ -5,6 +5,7 @@ defmodule Orchard.Inference.RequestPreparation do
 
   alias Orchard.Inference.{
     AdmissionPolicy,
+    ReasoningEffort,
     ToolExecutionSemantics,
     ToolingValidation,
     ToolRegistryResolver
@@ -12,11 +13,10 @@ defmodule Orchard.Inference.RequestPreparation do
 
   alias Orchard.Models
   alias Orchard.Models.Access
-  alias Orchard.Models.ManifestParser
+  alias Orchard.Models.ModelRenderAssets
   alias Orchard.Tokenizer.Client, as: TokenizerClient
 
   @default_max_output_tokens 4096
-  @manifest_tokenization_error_message "model manifest could not be loaded for tokenization"
 
   @spec prepare(map(), keyword(), keyword()) ::
           {:ok, CanonicalRequest.t(), map()} | {:error, term()}
@@ -29,10 +29,13 @@ defmodule Orchard.Inference.RequestPreparation do
          {:ok, canonical} <- resolve_requested_tools(canonical),
          {:ok, canonical} <- attach_execution_snapshot(canonical),
          {:ok, model} <- resolve_model(canonical),
+         {:ok, effort} <-
+           wrap_validation_result(ReasoningEffort.requested(params, canonical.endpoint)),
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :explicit),
          :ok <- enforce_tooling_support(canonical, model),
-         {:ok, canonical} <- tokenize(canonical, model),
+         {:ok, canonical} <- tokenize(canonical, model, params),
          :ok <- enforce_context_window(canonical, model),
-         {:ok, canonical} <- authorize_model(canonical, model) do
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted) do
       {:ok, canonical, model}
     end
   end
@@ -82,11 +85,16 @@ defmodule Orchard.Inference.RequestPreparation do
     end
   end
 
-  defp tokenize(canonical, model) do
+  defp tokenize(canonical, model, params) do
     with {:ok, tokenizer_opts} <- build_tokenizer_opts(model),
-         {:ok, tokenization} <- TokenizerClient.tokenize(canonical, tokenizer_opts) do
+         {:ok, canonical} <- ReasoningEffort.bind(canonical, params, tokenizer_opts),
+         {:ok, tokenization} <- TokenizerClient.tokenize(canonical, tokenizer_opts),
+         :ok <- ReasoningEffort.verify_tokenization(canonical, tokenization) do
       {:ok, apply_tokenization(canonical, tokenization)}
     else
+      {:error, {:validation, _reason}} = error ->
+        error
+
       {:error, {:tokenization, _reason}} = error ->
         error
 
@@ -109,29 +117,9 @@ defmodule Orchard.Inference.RequestPreparation do
   defp build_tokenizer_opts(model) do
     case TokenizerClient.mode() do
       :fake -> {:ok, []}
-      :port -> build_port_tokenizer_opts(model)
+      :port -> ModelRenderAssets.load(model)
       _other -> {:ok, []}
     end
-  end
-
-  defp build_port_tokenizer_opts(model) do
-    bundle_root = uri_to_local_path(model.artifact_uri)
-
-    case ManifestParser.parse_from_bundle(bundle_root) do
-      {:ok, manifest} ->
-        {:ok,
-         [manifest: manifest, bundle_root: bundle_root, bundle_sha256: model.artifact_sha256]}
-
-      {:error, _reason} ->
-        {:error, manifest_tokenization_error()}
-    end
-  end
-
-  defp uri_to_local_path("file://" <> path), do: path
-  defp uri_to_local_path(path), do: path
-
-  defp manifest_tokenization_error do
-    {:tokenization, {:internal_error, @manifest_tokenization_error_message}}
   end
 
   defp enforce_tooling_support(
@@ -169,6 +157,15 @@ defmodule Orchard.Inference.RequestPreparation do
       :ok
     end
   end
+
+  # Explicit controls require authorization before capability probing; omission
+  # retains the existing tooling/tokenization/context error precedence.
+  defp authorize_model(canonical, model, nil, :omitted), do: authorize_model(canonical, model)
+
+  defp authorize_model(canonical, model, effort, :explicit) when not is_nil(effort),
+    do: authorize_model(canonical, model)
+
+  defp authorize_model(canonical, _model, _effort, _phase), do: {:ok, canonical}
 
   defp authorize_model(%CanonicalRequest{} = canonical, model) do
     case Access.authorize(canonical.tenant_id, model.id) do

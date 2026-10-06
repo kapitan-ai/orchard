@@ -4,8 +4,55 @@ defmodule Orchard.API.ModelsControllerTest do
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.API.Router
+  alias Orchard.CanonicalRequest
   alias Orchard.Governance
+  alias Orchard.Inference.ChatOrchestrator
+  alias Orchard.Inference.ReasoningEffort
+  alias Orchard.Inference.ResponsesOrchestrator
   alias Orchard.Models.Access
+  alias Orchard.Models.ModelRenderAssets
+
+  @artifact "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9"
+  @template "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+
+  defmodule PathProvingTokenizer do
+    def tokenize(request, opts) do
+      send(self(), {:tokenizer_bundle_root, Keyword.fetch!(opts, :bundle_root)})
+
+      {:ok,
+       %{
+         rendered_prompt: "model-free path fixture",
+         input_token_count: 7,
+         reasoning: CanonicalRequest.Reasoning.to_wire(request.reasoning),
+         applied_template_arguments: ReasoningEffort.arguments(request.reasoning)
+       }}
+    end
+  end
+
+  setup do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+    artifacts_root = Path.expand(Path.join("tmp", unique_slug("effort-discovery")))
+    root = Path.join(artifacts_root, "bundle")
+    File.mkdir_p!(root)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(previous,
+        artifacts_root: artifacts_root,
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :off,
+        tokenizer_executable: "/nonexistent/discovery-must-not-start-a-helper"
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, previous)
+      File.rm_rf!(artifacts_root)
+    end)
+
+    %{bundle_root: root, artifacts_root: artifacts_root}
+  end
 
   describe "GET /v1/models" do
     @describetag :db
@@ -95,6 +142,226 @@ defmodule Orchard.API.ModelsControllerTest do
       assert model_ids(request_models(direct_token)) == expected
       assert model_ids(request_models(service_token)) == expected
     end
+
+    test "SPEC §7.2.3 discovery and binding share exact values, native mappings and default",
+         ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-visible")
+      model = registered_model(ctx.bundle_root)
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      effort = visible["orchard_reasoning_effort"]
+
+      assert effort == %{
+               "status" => "available",
+               "supported_values" => ["high", "low", "medium", "xhigh"],
+               "native_mapping" => %{
+                 "low" => "low",
+                 "medium" => "medium",
+                 "high" => "xhigh",
+                 "xhigh" => "xhigh"
+               },
+               "default" => "xhigh",
+               "omission" => %{"behavior" => "preserve_model_default", "native_effort" => "xhigh"}
+             }
+
+      File.rm!(Path.join(ctx.bundle_root, "tool_capability_evidence.json"))
+      {:ok, opts} = ModelRenderAssets.load(model)
+      manifest = Keyword.fetch!(opts, :manifest)
+
+      for value <- effort["supported_values"] do
+        assert {:ok, reasoning} =
+                 ReasoningEffort.resolve(
+                   value,
+                   model.artifact_sha256,
+                   manifest.chat_template.sha256
+                 )
+
+        assert reasoning.effective_contract.native_effort == effort["native_mapping"][value]
+      end
+
+      assert {:error, :unsupported_reasoning_control} =
+               ReasoningEffort.resolve(
+                 "max",
+                 model.artifact_sha256,
+                 manifest.chat_template.sha256
+               )
+
+      refute Map.has_key?(visible, "artifact_uri")
+      refute Map.has_key?(visible, "artifact_sha256")
+      refute Map.has_key?(effort, "model_artifact_digest")
+
+      %{token: other_token} = create_direct_token!("effort-hidden")
+      assert model_ids(request_models(other_token)) == []
+      Access.disable_model_access(tenant, model)
+      assert model_ids(request_models(token)) == []
+    end
+
+    test "SPEC §7.2.3 unavailable proof or routes never fabricate effort support", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-unavailable")
+      model = registered_model(ctx.bundle_root)
+      grant_model_access!(tenant, model)
+
+      previous = Application.fetch_env!(:orchard_controller, :inference)
+
+      for overrides <- [
+            tokenizer_mode: :fake,
+            tokenizer_safe_mode: :on,
+            tokenizer_safe_mode: :reject
+          ] do
+        Application.put_env(:orchard_controller, :inference, Keyword.merge(previous, [overrides]))
+        assert_unavailable(request_models(token))
+      end
+
+      Application.put_env(:orchard_controller, :inference, previous)
+
+      manifest_path = Path.join(ctx.bundle_root, "manifest.json")
+      original = File.read!(manifest_path)
+      manifest = Jason.decode!(original)
+
+      File.write!(
+        manifest_path,
+        Jason.encode!(put_in(manifest["chat_template"]["sha256"], String.duplicate("b", 64)))
+      )
+
+      assert_unavailable(request_models(token))
+      File.write!(manifest_path, Jason.encode!(Map.delete(manifest, "chat_template")))
+      assert_unavailable(request_models(token))
+
+      for replacement <- [
+            Map.put(manifest, "tokenizer", "not an object"),
+            Map.put(manifest, "safe_tokenization", %{"control_tokens" => 1})
+          ] do
+        File.write!(manifest_path, Jason.encode!(replacement))
+        assert_unavailable(request_models(token))
+      end
+
+      File.write!(manifest_path, "not JSON")
+      assert_unavailable(request_models(token))
+      File.rm!(manifest_path)
+      assert_unavailable(request_models(token))
+    end
+
+    test "SPEC §7.2.3 discovered encoded bundles prepare through both APIs", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-encoded-preparation")
+      bundle = Path.join(ctx.bundle_root, "bundle with # space % and é")
+      File.mkdir!(bundle)
+      model = registered_model(bundle)
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      assert "medium" in visible["orchard_reasoning_effort"]["supported_values"]
+
+      # Full preparation still rejects invalid sidecar evidence that discovery does not read.
+      assert {:error, _reason} = ModelRenderAssets.load(model, :preparation)
+      File.rm!(Path.join(bundle, "tool_capability_evidence.json"))
+      assert {:ok, opts} = ModelRenderAssets.load(model, :preparation)
+      assert Keyword.fetch!(opts, :bundle_root) == bundle
+
+      inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.put(inference, :tokenizer_client_impl, PathProvingTokenizer)
+      )
+
+      chat = %{
+        "model" => visible["id"],
+        "messages" => [%{"role" => "user", "content" => "hello"}],
+        "max_tokens" => 9,
+        "reasoning_effort" => "medium"
+      }
+
+      responses = %{
+        "model" => visible["id"],
+        "input" => "hello",
+        "max_output_tokens" => 9,
+        "reasoning" => %{"effort" => "medium"}
+      }
+
+      requests = [{ChatOrchestrator, chat}, {ResponsesOrchestrator, responses}]
+
+      for {orchestrator, params} <- requests do
+        assert {:ok, request, prepared_model} =
+                 orchestrator.prepare(params, tenant_id: tenant.id)
+
+        assert prepared_model.id == model.id
+        assert request.reasoning.effective_contract.native_effort == "medium"
+        assert_receive {:tokenizer_bundle_root, ^bundle}
+      end
+
+      assert Orchard.Repo.aggregate(Orchard.Requests.Request, :count) == 0
+    end
+
+    test "SPEC §6 discovery rejects non-file, outside-root and symlinked artifact paths", ctx do
+      %{tenant: tenant, token: token} = create_direct_token!("effort-paths")
+      bundle = Path.join(ctx.bundle_root, "bundle with # and space")
+      File.mkdir!(bundle)
+      model = registered_model(bundle)
+      original_uri = model.artifact_uri
+      grant_model_access!(tenant, model)
+      [visible] = Jason.decode!(request_models(token).resp_body)["data"]
+      assert visible["orchard_reasoning_effort"]["status"] == "available"
+
+      link = Path.join(ctx.bundle_root, "linked-bundle")
+      File.ln_s!(bundle, link)
+      outside = Path.join(Path.dirname(ctx.artifacts_root), unique_slug("effort-outside"))
+      File.mkdir!(outside)
+      File.cp!(Path.join(bundle, "manifest.json"), Path.join(outside, "manifest.json"))
+      on_exit(fn -> File.rm_rf!(outside) end)
+
+      for uri <- [bundle, "https://example.invalid/model", "file://#{outside}", "file://#{link}"] do
+        model = Orchard.Repo.update!(Ecto.Changeset.change(model, artifact_uri: uri))
+        assert {:error, _reason} = ModelRenderAssets.load(model, :discovery)
+        assert_unavailable(request_models(token))
+      end
+
+      model = Orchard.Repo.update!(Ecto.Changeset.change(model, artifact_uri: original_uri))
+      manifest_path = Path.join(bundle, "manifest.json")
+      File.rm!(manifest_path)
+      File.ln_s!(Path.join(outside, "manifest.json"), manifest_path)
+      assert {:error, _reason} = ModelRenderAssets.load(model, :discovery)
+      assert_unavailable(request_models(token))
+    end
+  end
+
+  defp registered_model(root) do
+    model =
+      create_model!(%{
+        state: :active,
+        artifact_uri: "file://" <> URI.encode(root, &(&1 == ?/ or URI.char_unreserved?(&1))),
+        artifact_sha256: @artifact
+      })
+
+    manifest = %{
+      "model_id" => model.model_id,
+      "version" => model.version,
+      "format" => "mlx",
+      "artifact_layout" => "directory",
+      "entrypoint" => "weights/",
+      "capabilities" => ["chat"],
+      "tokenizer" => model.tokenizer,
+      "chat_template" => %{"path" => "chat_template.jinja", "sha256" => @template},
+      "runtime_requirements" => model.runtime_requirements
+    }
+
+    File.write!(Path.join(root, "manifest.json"), Jason.encode!(manifest))
+
+    # An invalid sidecar would fail the preparation preflight; discovery reads no sidecar or helper.
+    File.write!(Path.join(root, "tool_capability_evidence.json"), "not JSON")
+    model
+  end
+
+  defp assert_unavailable(conn) do
+    assert conn.status == 200
+    [visible] = Jason.decode!(conn.resp_body)["data"]
+
+    assert visible["orchard_reasoning_effort"] == %{
+             "status" => "unavailable",
+             "supported_values" => [],
+             "native_mapping" => %{},
+             "default" => nil,
+             "omission" => %{"behavior" => "preserve_model_default", "native_effort" => nil}
+           }
   end
 
   defp request_models(nil) do

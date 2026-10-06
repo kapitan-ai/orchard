@@ -36,6 +36,27 @@ and version tuple is accepted, so every negotiated request currently fails
 closed with `unsupported_reasoning_control`; package tests cover the contract
 with synthetic exact-identity fixtures.
 
+Contract v5 adds `render_and_count_effort` for request-local input steering with
+legacy blended output. The shared source-owned `effort_profiles.json` binds each
+supported tier to an exact artifact/template digest and render contract version.
+The helper verifies the template bytes, applies only the registered arguments,
+counts the actual rendered input and returns both canonical identity and applied
+arguments for Controller verification. It accepts no caller template overrides.
+This route requires port tokenization with safe mode off; explicit effort is
+rejected on fake or segmented routes rather than degraded. Its first exact
+registration maps low/medium/xhigh directly to the reviewed Qwen template's
+native values and retains high as an explicit compatibility alias to xhigh. Static fixtures prove rendering and protocol behavior,
+not model generation, hidden reasoning, a numeric reasoning budget or a support
+claim. The separate negotiated-output registry remains empty.
+The registry accepts any nonempty set of bounded public identifiers and requires
+an explicit registered `default_effort` with exact-template omission equivalence
+evidence. Identifiers do not imply cross-model semantic equivalence. Distinct
+generation-enable and effort arguments with boolean `true` enablement remain
+required; other enablement shapes need a reviewed contract extension.
+Authorized `/v1/models` entries advertise the exact mappings and informational
+default in `orchard_reasoning_effort`. Omission still applies no explicit control;
+discovery never runs a helper or reads weights, and preparation remains authoritative.
+
 ## Validation
 
 Contract-v3 segmented rendering decodes tool-call history argument JSON into objects before template rendering and caller-string tagging.

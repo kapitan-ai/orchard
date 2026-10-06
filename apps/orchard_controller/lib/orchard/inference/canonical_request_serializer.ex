@@ -47,8 +47,9 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
 
   defp maybe_put_reasoning(
          serialized,
-         %CanonicalRequest.Reasoning{effective_contract: %{mode: :negotiated}} = reasoning
-       ) do
+         %CanonicalRequest.Reasoning{effective_contract: %{mode: mode}} = reasoning
+       )
+       when mode in [:negotiated, :rendered] do
     Map.put(serialized, "reasoning", CanonicalRequest.Reasoning.to_wire(reasoning))
   end
 

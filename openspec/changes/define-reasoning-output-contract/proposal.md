@@ -19,7 +19,7 @@ The contract must preserve existing omitted-request behavior byte for byte while
 - Classify negotiated decoded output before tool-call parsing and caller stop matching, with fail-closed parser behavior.
 - Extend Output Commitment and usage semantics for selected public reasoning and hidden reasoning tokens.
 - Define exact-versus-lower-bound usage evidence and keep reasoning-token subsets internal until presence-aware wire contracts are accepted.
-- Define final-only first-release behavior while deferring all concrete public control names and structured reasoning wire shapes to later accepted API contracts.
+- Define negotiated final-only first-release behavior while deferring its selector names and structured reasoning wire shapes to later accepted API contracts. Rendered effort input names and legacy blended output follow the separate `request-local-reasoning-effort` change.
 - Make hidden reasoning ephemeral under every capture mode and preserve exact public response hashing and replay behavior.
 - Pin the complete reasoning contract across automatic and operator retry and fail closed across mixed versions.
 - Preserve issue #189 as a display-only fallback for legacy blended output.

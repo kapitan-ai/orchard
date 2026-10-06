@@ -4,13 +4,13 @@
 
 PR #325 established independent reasoning generation-policy and public-projection axes. A reasoning-capable renderer can still expose provider-specific effort values that vary by exact model artifact and template. Those values do not establish a portable public vocabulary, a Runtime Endpoint capability, semantic effect, or a model support claim.
 
-Issue #398 supplies the narrow missing contract. It must preserve omitted public requests on the complete legacy path and let future implementation select only exact, qualified mappings. The first fixture is `mlx-community/Qwen3.8-27B-4bit`, whose exact template values are `low`, `medium`, and `xhigh`; the third is evidence for canonical `high`, not a new canonical tier.
+Issue #398 supplies the narrow missing contract. It must preserve omitted public requests on the complete legacy path and let future implementation select only exact, qualified mappings. The first negotiated fixture is `mlx-community/Qwen3.8-27B-4bit`, whose exact template values are `low`, `medium`, and `xhigh`; the third is evidence for negotiated canonical `high`. The dependent rendered-input contract now admits registered model-specific identifiers, including `xhigh`, without changing negotiated enums.
 
 ## Goals and non-goals
 
 ### Goals
 
-- Define a provider-neutral closed effort vocabulary and validity matrix.
+- Define a provider-neutral closed negotiated effort vocabulary and validity matrix.
 - Preserve independent generation-policy and projection authority.
 - Require exact renderer mapping and complete capability evidence before execution.
 - Preserve existing omitted-request, hidden-reasoning, retry, capture, hash, replay, and mixed-version guarantees.
@@ -26,11 +26,11 @@ Issue #398 supplies the narrow missing contract. It must preserve omitted public
 
 ## Decisions
 
-### Use a separate optional closed axis
+### Use a separate optional closed negotiated axis
 
-The canonical Request adds `reasoning_effort: nil | low | medium | high` beside `generation_policy` and `projection`. It answers how much qualified reasoning the renderer asks for; it neither selects whether reasoning is generated nor selects what becomes public output.
+For the negotiated protocol, the canonical Request adds `reasoning_effort: nil | low | medium | high` beside `generation_policy` and `projection`. It answers how much qualified reasoning the renderer asks for; it neither selects whether reasoning is generated nor selects what becomes public output.
 
-A non-`nil` tier is valid only when all of the following hold:
+For the separately negotiated output path, a non-`nil` tier is valid only when all of the following hold:
 
 - the request is negotiated rather than omitted legacy;
 - `generation_policy = enabled`;
@@ -41,15 +41,17 @@ A tier with `generation_policy = model_default` or `disabled` is contradictory a
 
 Effort is optional even for `enabled + final_only`. Absence means no effort tier was selected; Orchard does not manufacture a default tier. Omitted public controls remain `model_default + legacy_blended` with `reasoning_effort = nil`, and their existing public-body bytes and hash domain remain unchanged.
 
+The dependent request-local-reasoning-effort change additionally permits exact rendered input steering with `explicit_public + enabled + legacy_blended`. It uses the same admitted model and reviewed template, without negotiated parser/runtime/event identity or a hidden-thought claim. Its binding and technical render proof precede persistence; nonempty-thought conformance is limited to parsed projections.
+
 ### Stage public vocabulary, not a wire name
 
-The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. A later accepted issue #331 public-input contract will choose concrete field names for both endpoints. It must expose only this vocabulary, normalize it into the canonical axis, and use the existing closed `unsupported_reasoning_control` error mapping. It must not expose provider values or accept effort alone without an explicit enabled generation policy.
+The negotiated provider-neutral vocabulary is exactly `low`, `medium`, and `high`. Rendered input uses the dependent request-local change's bounded, exact registered identifiers and per-model discovery, without a universal three-value ceiling. The dependent request-local-reasoning-effort change defines Chat `reasoning_effort` and Responses `reasoning.effort` for rendered input steering. Their syntax explicitly requests enabled thinking while keeping legacy output; separately negotiated output controls remain subject to their own accepted API contract. No arbitrary, unregistered provider-value pass-through is allowed.
 
 The prohibition on provider-specific reasoning-effort pass-through does not prohibit this provider-neutral canonical axis. Its internal name does not choose a public API field name.
 
 That mapping now carries two distinct rows: a contradictory tier/policy combination that is never valid on any model, and an exact-tuple capability failure that another qualified model may honor. Both keep `400 invalid_request_error` and `unsupported_reasoning_control` and stay non-retryable, so the split is remediation guidance rather than a new envelope. #331 must set `param` to the concrete offending accepted public field — the reasoning-control field for a control failure and the effort field for a tier failure — while the Console, which supplies no public field, keeps `param = nil`.
 
-This amendment therefore defines request semantics without preempting the concrete Chat Completions or Responses encoding that #331 owns.
+The original negotiated encoding remains separate from the dependent rendered-input encoding; neither activates the other's runtime or projection contract.
 
 ### Bind renderer mappings to an exact tuple
 
@@ -102,9 +104,9 @@ Rejected because it exposes provider vocabulary, prevents stable validation, and
 
 Rejected because it would collapse the independent concerns accepted in PR #325. Effort only refines an explicitly enabled generation request; it cannot silently change `model_default` or `disabled`.
 
-### Make `xhigh` canonical
+### Make `xhigh` a negotiated protocol enum
 
-Rejected because it is an exact Qwen3.8 renderer value, not a provider-neutral product term. Canonical `high` preserves a stable contract while allowing qualified mapping evidence.
+Rejected for the negotiated protocol because it is an exact Qwen3.8 renderer value, not a provider-neutral product term. Negotiated canonical `high` preserves that wire contract. The separate rendered-input contract expressly permits registered `xhigh` and retains `high` as an explicit compatibility alias for the admitted Qwen template; neither implies another artifact's support.
 
 ### Treat qualification as dispatch proof
 

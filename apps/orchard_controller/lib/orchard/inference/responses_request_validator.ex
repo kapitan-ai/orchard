@@ -5,6 +5,7 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
 
   alias Orchard.Inference.{
     MessageValidation,
+    ReasoningEffort,
     ResponsesRequestNormalizer,
     SamplingValidation,
     ToolingValidation
@@ -22,12 +23,14 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
                       "stream",
                       "tools",
                       "tool_choice",
-                      "prompt_cache_key"
+                      "prompt_cache_key",
+                      "reasoning"
                     ])
 
   @type validation_error ::
           {:error, :missing_required_field, String.t()}
           | {:error, :unsupported_parameter, String.t()}
+          | {:error, :unsupported_reasoning_control, String.t()}
           | {:error, :invalid_value, String.t(), String.t()}
 
   @spec validate(map()) :: {:ok, map()} | validation_error()
@@ -44,7 +47,8 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
          :ok <- check_metadata(params),
          :ok <- check_store(params),
          :ok <- check_prompt_cache_key(params),
-         :ok <- check_stream(params) do
+         :ok <- check_stream(params),
+         :ok <- ReasoningEffort.validate(params, :responses) do
       {:ok, params}
     end
   end

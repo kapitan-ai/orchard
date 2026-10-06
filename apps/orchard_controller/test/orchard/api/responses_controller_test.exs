@@ -25,6 +25,38 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests.Request
   alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
+  test "SPEC §7.2.1 Responses effort rejects unsupported levels and fake rendering with HTTP 400" do
+    model = create_model!(%{state: :active})
+    params = %{"model" => "#{model.model_id}@#{model.version}", "input" => "hello"}
+
+    for tier <- ["minimal", "xhigh", "medium"] do
+      conn = post_responses(Map.put(params, "reasoning", %{"effort" => tier}))
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_reasoning_control"
+      assert Jason.decode!(conn.resp_body)["error"]["param"] == "reasoning.effort"
+    end
+  end
+
+  test "structured prior reasoning rejects omitted and explicit controls before Request writes" do
+    model = create_model!(%{state: :active})
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    for explicit <- [false, true], key <- ["reasoning_content", "reasoning", "thinking"] do
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      params = %{"model" => "#{model.model_id}@#{model.version}", "input" => [message]}
+
+      params =
+        if explicit, do: Map.put(params, "reasoning", %{"effort" => "medium"}), else: params
+
+      conn = post_responses(params)
+      assert conn.status == 400
+      error = Jason.decode!(conn.resp_body)["error"]
+      assert error["code"] == "invalid_value"
+      assert error["param"] == "input[0]"
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+  end
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")
