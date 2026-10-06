@@ -15,13 +15,15 @@ are explicit; it does not select a global model default.
 Source development accepts these positive-integer millisecond overrides before
 startup. Unset values retain the shared defaults; invalid values fail startup.
 The request deadline still follows [ADR 0022](decisions/0022-request-deadline-ceiling-and-proxy-timeouts.md).
+`ORCHARD_REQUEST_TIMEOUT_MS` must not exceed `ORCHARD_MAX_REQUEST_DEADLINE_MS`;
+setting only the former above the default ceiling fails startup.
 
 | Variable | Default | Scope |
 | --- | ---: | --- |
 | `ORCHARD_REQUEST_TIMEOUT_MS` | 120000 | Controller generation budget |
 | `ORCHARD_MAX_REQUEST_DEADLINE_MS` | 360000 | Controller absolute request ceiling |
 | `ORCHARD_WORKER_READY_TIMEOUT_MS` | 5000 | NodeAgent Worker readiness phase |
-| `ORCHARD_WORKER_LOAD_TIMEOUT_MS` | 120000 | NodeAgent Worker model-load phase |
+| `ORCHARD_WORKER_LOAD_TIMEOUT_MS` | 120000 | NodeAgent load fallback without an explicit deadline |
 
 ## Supported development platform
 

@@ -135,7 +135,7 @@ Typical cells include:
 
 Record the prompt class, input and output token limits, context window exercised, sample count, concurrency, topology, and acceptance rule for each cell.
 Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 establishes.
-Qualified reasoning-effort selection is a separate capability cell. Identify the exact artifact/template renderer mapping and whether the cell uses rendered-input `enabled + legacy_blended` or separately negotiated `enabled + final_only` under `SPEC.md` §2.8 and §3.2.2a. Rendered-input identifiers and native arguments are those registered for the exact artifact; they are not limited to the negotiated low/medium/high vocabulary.
+Qualified reasoning-effort selection is a separate capability cell. Identify the exact artifact/template renderer mapping and whether the cell uses rendered-input `enabled + legacy_blended` under `SPEC.md` §3.4, §3.5 and §7.2.1, or separately negotiated `enabled + final_only` under §7.5.3a. Rendered-input identifiers and native arguments are those registered for the exact artifact; they are not limited to the negotiated low/medium/high vocabulary.
 
 For a rendered-input cell, record the requested public identifier, resolved native argument, registered default, authoritative render/count proof and loaded dispatch identity. Static acceptance and post-run CPU replay must be distinguished from live proof. This selects thinking at render time; it does not establish final-only separation, a reasoning-token budget, separately measured thinking tokens or semantic quality. A support claim needs its own predeclared assertions and operating envelope.
 

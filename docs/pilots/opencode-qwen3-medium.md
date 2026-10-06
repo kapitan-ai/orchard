@@ -7,7 +7,7 @@ work. The [held qualification record](../model-qualification-records/LMQ-2026-00
 states the observed workflow and its limits. It authorizes no active support claim.
 
 The recipe uses the already registered rendered-input effort contract in
-`SPEC.md` §3.2.2a and §7.1. It selects medium on the same weights and template;
+`SPEC.md` §3.4, §3.5 and §7.2.1. It selects medium on the same weights and template;
 final-only reasoning output and numeric thinking budgets remain separate.
 The source configuration overrides below retain the existing defaults when unset.
 
@@ -41,8 +41,8 @@ edit imported Catalog rows, verification receipts or the effort registry to make
 a different artifact eligible.
 
 ```bash
-# Both arguments are operator-selected paths outside this repository.
-# SNAPSHOT contains exactly the19 materialized publisher files; no symlinks.
+# Both arguments are absolute operator-selected paths outside this repository.
+# SNAPSHOT contains exactly the 19 materialized publisher files; no symlinks.
 scripts/prepare-qwen3-medium-bundle.sh "$SNAPSHOT" "$NEW_BUNDLE_DIRECTORY"
 ```
 
@@ -51,10 +51,12 @@ the pinned [publisher file inventory](../../scripts/support/qwen3-medium/upstrea
 copies files using ArtifactBundle, adds the one declaration, and calls normal
 BundleBuilder with the local revision plus pinned publisher base reference.
 It generates the manifest and sidecar from current static preflight rather than
-copying historical evidence. The complete21-file tree must equal the registered
+copying historical evidence. The complete 21-file tree must equal the registered
 digest before success. A changed serializer, catalog or preflight may cause a
 fail-closed mismatch; preserve that destination for inspection and review the
-identity change rather than importing it. Allow space for a29.5GB copy plus
+identity change rather than importing it. Any failure after destination creation
+can leave a partial copy; preserve it for inspection and do not import it. The
+helper will refuse that destination on retry. Allow space for a 29.5 GB copy plus
 normal imported/materialized caches. No weights are downloaded by the helper.
 
 ## Start one owned stack
@@ -81,8 +83,8 @@ mise exec -- bin/dev
 
 This deliberately uses the legacy v2/off tool route tested in the held cell.
 Do not disable another source's safe-tokenization policy to copy this pilot.
-The default HTTP endpoint is loopback4000 and the NodeAgent compatibility
-endpoint is loopback50071. `/health/live` must succeed; inspect detailed
+The default HTTP endpoint is loopback 4000 and the NodeAgent compatibility
+endpoint is loopback 50071. `/health/live` must succeed; inspect detailed
 readiness rather than interpreting one status alone. Plaintext public API has
 HTTPS readiness false and is not globally ready. Missing trust/custody,
 unreachable persistence or incomplete migrations block the pilot; disclosure
@@ -103,13 +105,16 @@ OrchardCLI.main(["models", "access", "grant", "<model-id>@<version>",
   "--tenant", "coding-pilot", "--routing-policy-id", "<returned-policy-id>"])
 ```
 
-Preload through NodeAgent before OpenCode starts. Budgeting acquisition120000,
-Worker readiness30000 and load120000 gives an overall270000ms envelope; allow
-5000ms RPC headroom. The same planning calculation lives in
-`scripts/support/mlx-smoke-budget.sh`. These allowances are not independent
-hard phase caps: an explicit preload deadline forwards its remaining budget to
-Worker load. `ORCHARD_WORKER_LOAD_TIMEOUT_MS` supplies the load fallback when
-there is no explicit deadline. In this all-in-one IEx session:
+Preload through NodeAgent before OpenCode starts. Budgeting acquisition 120000,
+Worker readiness 30000 and load 120000 gives an overall 270000 ms envelope; allow
+5000 ms RPC headroom. The same planning calculation lives in
+`scripts/support/mlx-smoke-budget.sh`. Readiness has its own configured cap;
+acquisition and load planning allowances are not independent hard phase caps.
+An explicit preload deadline forwards its remaining budget, calculated after
+acquisition and before Worker startup, to Worker load. Record the actual load
+timeout as well as the overall deadline; readiness time is not deducted from
+that forwarded allowance. `ORCHARD_WORKER_LOAD_TIMEOUT_MS` supplies the load
+fallback when there is no explicit deadline. In this all-in-one IEx session:
 
 ```elixir
 model = Orchard.Models.get_model_by_identity("<model-id>", "<version>")
@@ -133,7 +138,7 @@ artifact bytes; never fabricate a path-bound verification receipt to skip it.
 
 ## Configure OpenCode explicitly
 
-The [credential-free example](opencode-qwen3-medium.json) targets OpenCode1.18.34
+The [credential-free example](opencode-qwen3-medium.json) targets OpenCode 1.18.34
 and `@ai-sdk/openai-compatible`, using Orchard Chat Completions. Select it in a
 fresh work directory with isolated XDG data/cache/state and a protected
 `ORCHARD_API_KEY` environment value. It changes no global config and installs
@@ -148,26 +153,26 @@ requests for explicit medium. `GET /v1/models`, authenticated as the trial
 tenant, must expose the expected `orchard_reasoning_effort` mapping. Unavailable
 discovery, unsupported medium or differing identities are stop conditions.
 
-The selected sampling is temperature1/top_p0.95. Compaction/pruning are disabled.
-Client context262144 and output32768 are configured allowances, not tested
+The selected sampling is temperature 1/top_p 0.95. Compaction/pruning are disabled.
+Client context 262144 and output 32768 are configured allowances, not tested
 maximums. A thirty-minute per-request stream/header watchdog covers buffered
 tool arguments that produce no visible chunks for minutes. `timeout: false`
 does not disable those watchdogs or Orchard's request deadline. It does not set
 a whole coding-session duration. Keep an explicit task/request-count guard and
-human supervision; the held case counted auxiliary calls and retries within24
-forwarded requests.
+human supervision; the held case declared a guard of 24 forwarded requests,
+including auxiliary calls and retries, and actually forwarded 16.
 
 Use only a bounded repository whose tool permissions and original acceptance
 tests are approved. The example allows local coding tools and denies web and
 external-directory access; that configuration is not an OS sandbox. Capture
 request IDs, terminal state, actual effort and usage without logging tokens.
-The prior evidence used a pass-through capture proxy on4100; this direct4000
+The prior evidence used a pass-through capture proxy on 4100; this direct 4000
 example is a changed client path and has only configuration validation until
 separately exercised. No field injection is required for medium.
 
 Title generation can occupy the single slot while the main request arrives.
 Retryable `cluster_busy` remains a real rejection, including when carried as an
-error inside HTTP200 SSE. Record it; never count HTTP200 alone as success.
+error inside HTTP 200 SSE. Record it; never count HTTP 200 alone as success.
 
 ## Review and stop
 

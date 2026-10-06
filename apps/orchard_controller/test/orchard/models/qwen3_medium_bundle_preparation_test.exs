@@ -95,5 +95,17 @@ defmodule Orchard.Scripts.Qwen3MediumBundlePreparationTest do
     refute File.exists?(destination)
   end
 
+  test "the wrapper rejects relative arguments before invoking Mix", %{root: root} do
+    wrapper = Path.expand("../../../../../scripts/prepare-qwen3-medium-bundle.sh", __DIR__)
+
+    for args <- [["relative-snapshot", root <> "-bundle"], [root, "relative-bundle"]] do
+      assert {message, 64} =
+               System.cmd("bash", [wrapper | args], cd: root, stderr_to_stdout: true)
+
+      assert message =~ "must be absolute paths"
+      assert File.ls!(root) == []
+    end
+  end
+
   defp hash(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 end
