@@ -15,7 +15,7 @@
     "test:mise-action-pins": "node --experimental-test-coverage --test scripts/ci/test-mise-action-pins.mjs"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "1.13.1",
+    "@fission-ai/openspec": "1.13.2",
     "@tailwindcss/cli": "4.3.3",
     "esbuild": "0.28.2",
     "tailwindcss": "4.3.3",
