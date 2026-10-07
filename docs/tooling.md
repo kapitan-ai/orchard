@@ -59,8 +59,8 @@ The pinned toolchain currently covers:
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
-| Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
-| npm | `11.13.0` | Package manager for root tool and asset pins |
+| Node.js | `24.21.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
+| npm | `11.19.0` | Package manager for root tool and asset pins |
 | OpenSpec | `@fission-ai/openspec@1.13.2` | OpenSpec change/spec validation |
 | esbuild | `0.28.2` | Phoenix JavaScript asset bundling CLI |
 | Tailwind CSS | `4.3.3` | Phoenix CSS asset build CLI |

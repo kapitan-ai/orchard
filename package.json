@@ -3,10 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "description": "Repository-local tooling pins for Orchard collaborator workflows.",
-  "packageManager": "npm@11.13.0",
+  "packageManager": "npm@11.19.0",
   "engines": {
-    "node": "24.17.0",
-    "npm": "11.13.0"
+    "node": "24.21.0",
+    "npm": "11.19.0"
   },
   "scripts": {
     "openspec": "OPENSPEC_TELEMETRY=0 openspec",
