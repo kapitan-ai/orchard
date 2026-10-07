@@ -149,6 +149,11 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   field(:supports_prompt_token_ids, 8, type: :bool, json_name: "supportsPromptTokenIds")
   field(:max_concurrency, 9, type: :uint32, json_name: "maxConcurrency")
   field(:capabilities, 10, type: Orchard.Node.Worker.V1.WorkerCapabilities)
+
+  field(:tensorfold_profile_admission_json, 11,
+    type: :bytes,
+    json_name: "tensorfoldProfileAdmissionJson"
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do

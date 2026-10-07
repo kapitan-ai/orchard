@@ -86,13 +86,24 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     def unload_model(_request, _stream), do: %Ack{ok: true}
     def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
 
-    def generate(%ExecuteInferenceRequest{}, stream) do
+    def generate(%ExecuteInferenceRequest{} = request, stream) do
       GRPC.Server.send_reply(
         stream,
         %InferenceEvent{
           event: {:token_delta, %ProtoTokenDelta{token_ids: [17], logprobs: [-0.25]}}
         }
       )
+
+      if request.tensorfold_history_projection_json != "" do
+        GRPC.Server.send_reply(
+          stream,
+          %InferenceEvent{
+            event:
+              {:output_text_delta,
+               %ProtoOutputTextDelta{delta: request.tensorfold_history_projection_json}}
+          }
+        )
+      end
 
       GRPC.Server.send_reply(
         stream,
@@ -781,6 +792,39 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                      1_000
 
       refute_receive {:runtime_adapter_done, ^generation_ref, _reason}, 100
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
+  @tag :tensorfold_transport
+  test "start_generation forwards internal history bytes to the selected Worker" do
+    with_worker_runtime_server(TokenDeltaEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
+
+      request = %{
+        execute_request("req-projection")
+        | tensorfold_history_projection_json: projection
+      }
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %OutputTextDelta{delta: ^projection}}
+                     },
+                     1_000
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %Completed{}}
+                     },
+                     1_000
 
       cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
       refute Map.has_key?(cleaned_state.generations, generation_ref)

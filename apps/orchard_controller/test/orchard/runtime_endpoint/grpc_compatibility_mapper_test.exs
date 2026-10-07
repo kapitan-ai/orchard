@@ -262,7 +262,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
         deadline_unix_ms: 456,
         metadata_json: "{\"tenant\":\"default\"}",
         cache_affinity_fingerprint: "fp",
-        prompt_token_ids: [1, 2, 3]
+        prompt_token_ids: [1, 2, 3],
+        tensorfold_history_projection_json: ~s({"schema_version":1})
       )
 
     proto = GrpcCompatibilityMapper.execute_request_to_proto(request)
@@ -273,6 +274,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     assert proto.version == @version
     assert proto.rendered_prompt_utf8 == "hello"
     assert proto.input_tokens == 2
+    assert proto.tensorfold_history_projection_json == ~s({"schema_version":1})
 
     assert proto.params == %GenerationParams{
              max_output_tokens: 16,

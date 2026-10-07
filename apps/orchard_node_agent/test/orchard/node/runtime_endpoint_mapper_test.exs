@@ -2,6 +2,7 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
   use ExUnit.Case, async: true
 
   alias Orchard.Cluster.V1.{
+    ExecuteInferenceRequest,
     HostCpuObservation,
     HostInventoryObservation,
     RuntimeHealth,
@@ -15,6 +16,31 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
   alias Orchard.Node.RuntimeEndpointMapper
   alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Operation, PlacementCapacity, Target}
+
+  test "execute mapping preserves internal projection bytes without changing baseline" do
+    attrs = %{
+      request_id: "request-1",
+      controller_session_id: "controller-1",
+      model_ref: %{model_id: "model-1", version: "version-1"},
+      rendered_prompt_utf8: "prompt",
+      input_tokens: 1
+    }
+
+    projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
+    baseline = Operation.ExecuteRequest.new!(attrs)
+
+    projected =
+      Operation.ExecuteRequest.new!(Map.put(attrs, :tensorfold_history_projection_json, projection))
+
+    assert RuntimeEndpointMapper.execute_request_to_proto(baseline).
+             tensorfold_history_projection_json == ""
+
+    proto = RuntimeEndpointMapper.execute_request_to_proto(projected)
+    assert proto.tensorfold_history_projection_json == projection
+    assert ExecuteInferenceRequest.decode(
+             ExecuteInferenceRequest.encode(proto)
+           ).tensorfold_history_projection_json == projection
+  end
 
   test "maps node-agent status to Runtime Endpoint observation with placement capacity" do
     target = Target.beam("550e8400-e29b-41d4-a716-446655440000", address: :node_one@localhost)

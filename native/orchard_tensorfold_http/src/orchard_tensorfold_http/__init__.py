@@ -1,1 +1,1 @@
-"""Default-off TensorFold HTTP Worker candidate."""
+"""Default-off TensorFold Worker embedding candidate."""

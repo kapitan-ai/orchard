@@ -5,17 +5,22 @@ build-backend = "hatchling.build"
 [project]
 name = "orchard-tensorfold-http"
 version = "0.1.0"
-description = "Default-off full-history HTTP Worker feasibility components"
+description = "Default-off full-history TensorFold Worker source experiment"
 requires-python = ">=3.11,<3.12"
 dependencies = [
   "orchard-tokenizer==0.1.0",
+  "orchard-worker-mlx==0.1.0",
   "Jinja2==3.1.6",
   "tokenizers==0.22.2",
   "sentencepiece==0.2.1",
 ]
 
+[project.scripts]
+orchard-worker-tensorfold = "orchard_tensorfold_http.cli:main"
+
 [tool.uv.sources]
 orchard-tokenizer = { path = "../orchard_tokenizer" }
+orchard-worker-mlx = { path = "../orchard_worker_mlx" }
 
 [dependency-groups]
 dev = ["pytest==9.0.2", "pytest-cov==7.0.0", "ruff==0.15.7"]

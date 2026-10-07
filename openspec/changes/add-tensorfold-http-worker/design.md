@@ -1,36 +1,23 @@
-## Rendering
+## Rendering and raw output
 
-The assessed Qwen template is unchanged. Transformers and Orchard use different JSON serialization filters for the template's tool definitions. The isolated provider must use the authoritative Orchard sandbox through MLX-LM's existing custom-template callable seam, rather than silently accepting different IDs. Both prompt and no-generation-suffix history use the same verified template and options. The callable is local child configuration, never caller authority.
+The assessed Qwen template is unchanged. Transformers and Orchard use different JSON serialization filters for tool definitions. The isolated provider uses the authoritative Orchard sandbox through MLX-LM's custom-template callable seam. Prompt and no-generation-suffix history use the same verified snapshots and thinking/medium options; exact token-array equality supplies the checkpoint boundary. Ordinary assistant content remains opaque, including reasoning markers. Structured prior reasoning remains rejected under SPEC.md §3.4.
 
-## Admission and custody
+TensorFold 0.6.6's stock ChatApp/HTTP split removes closing reasoning markers and following newlines before deltas are emitted. Concatenating its fields cannot preserve legacy-blended output. A modified HTTP child would need the same raw Scheduler seam plus another protocol and process. The smaller source implementation therefore embeds Scheduler within the existing Node-owned Worker PID and streams raw chunks through Orchard's existing detokenizer, tool parsing and event mapping. No HTTP reconstruction or new public reasoning contract is involved. The historical package/change identifiers retain `http` to avoid an unrelated rename.
 
-The implementation will use the existing ExecuteInferenceRequest, effort profiles and Node-owned Worker process boundary. A versioned trusted projection is optional for baseline Workers and mandatory only for the explicitly selected bridge. An old Worker accepting an unknown protobuf field does not demonstrate bridge capability. HTTP terminal events and health cannot release residency. Any uncertainty blocks admission until settlement or positive reaping.
+## Explicit admission
 
-## Gates
+ExecuteInferenceRequest field 15 contains an optional versioned history projection; baseline requests encode it as empty. The bridge executable requires an explicit experiment flag and local frozen profile. Its bounded WorkerStatusResponse field 11 offers the loaded profile/artifact/template/config/effort/output/incarnation binding on the owned socket. This is separate from generic observe-only capabilities and is not propagated into heartbeat evidence or public discovery. A source-controlled issuer must explicitly select the bridge and verify its fresh offer; an old Worker ignoring an unknown protobuf field is not eligible evidence.
 
-The source copy-custody primitive reserves declared conservative copy and transient
-bounds before invoking the provider, alongside frozen workspace and held leases.
-Staged, retained and borrowed owners share one reservation until explicit settled
-disposal. Only one copy may be in flight; uncertain copy or settlement quarantines
-the incarnation. A returning result remains strongly held even while a concurrent
-reap attempt fails. Positive owned reaping retires the ledger permanently.
+Admission checks exact identities, schema/control types, model/version, finite sampling, request deadline, history/tool equality, authoritative rendered bytes and IDs, vocabulary and context limits. Request envelopes are snapshotted before rendering. Preparation redemption is rejected because its frozen input contract does not cover this field. No Controller dispatch route is enabled by this change.
 
-This primitive is not yet an installed engine hook or a complete state envelope.
-Known cache sizing, working-KV growth, producer buffers, native settlement and
-Node-owned process-tree confirmation require separate integration and tests.
+## Custody and lifecycle
 
-The source token buffer bounds queued chunk count, total token count, individual
-chunk size and the admitted vocabulary. Immutable queued chunks prevent caller
-mutation from changing those bounds. Terminal capacity is independent of data
-capacity, while invalid input or overflow permanently fails the buffer and invokes
-quarantine outside its lock. This does not bound downstream accumulated output or
-prove native settlement. The upstream scheduler does not catch producer-put faults
-as a normal completed request; the bridge must treat them as incarnation faults.
+C1 admission, fixed working/workspace reservations, conservative copy and transient reservations, checkpoint-slot/lease/layer limits, and bounded immutable token buffers compose one source envelope. Copies are reserved before materialization; staged, retained and borrowed owners keep strong references. Unknown cache classes and oversize checkpoints are rejected. Output accumulation and individual deltas have separate byte bounds, including hidden tool buffers. These are caller-qualified experiment bounds, not measured production memory claims.
 
-Provider reasoning/content splitting is lossy: closing markers and following
-newlines may be removed before HTTP deltas are emitted. Concatenating those fields
-cannot establish Orchard's existing legacy-blended output preservation. The isolated
-child needs an internal raw-generation seam or equivalent exact preservation proof;
-it must not enable a new public structured-reasoning contract as a shortcut.
+Successful terminals are withheld until a positive native barrier on the engine thread and no open jobs. Public completion, HTTP health or logical queue emptiness alone cannot release residency. An independent deadline watchdog quarantines even when a downstream consumer stops pulling. Uncertain copy, output, cancellation, engine exit or settlement freezes admission and retains custody. Normal unload/shutdown cancels work, settles, clears Scheduler-owned references on the engine thread, stops and joins engine/watchdog threads, then disposes owners and retires that driver. Uncertainty requires the external Node owner to stop and positively reap the owned process tree; the bridge never treats its own logical shutdown as physical reap proof.
 
-Tokenizer-only parity does not qualify a live HTTP child, checkpoint memory fit or native drain. No protocol fields or dispatch route will be added before saved natural-history parity and bounded state feasibility succeed. Source implementation and model-free tests do not authorize a hardware run.
+The separate executable uses the existing Worker gRPC service and socket, explicit frozen controls, injected disabled memory sampling, signal-driven shutdown, and inode-checked removal of its own socket. It launches no additional child. Native assembly is lazy, verifies the exact isolated runtime tuple and full bounded artifact tree, rejects custom/remote model configuration, and admits only the frozen Qwen3.5 family/parser. Full bundle hashing can add startup cost; it does not replace Node artifact acquisition/trust or justify a tighter preload deadline.
+
+## Qualification boundary
+
+SPEC.md's prohibition against selecting TensorFold as a runtime foundation from experimental qualification results remains intact. This is a default-off source experiment. Model-free fake-engine checks, real internal wire encoding, tokenizer-only parity and source-level Scheduler tests establish composition, not native GPU settlement or memory fit. Baseline MLX pins and normal startup remain unchanged. Runtime dependency provisioning, configured bounds, actual native drain/reap behavior and hardware performance require a separately authorized qualification lane; no hardware run is authorized by this package.
