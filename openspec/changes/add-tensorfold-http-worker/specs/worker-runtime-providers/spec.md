@@ -28,3 +28,14 @@ The experimental Worker SHALL require a bounded internal history projection matc
 #### Scenario: Stale loaded binding or stock Worker
 - **WHEN** a projection has a stale incarnation or targets a current stock Worker
 - **THEN** inference is rejected before native admission
+
+### Requirement: Trusted public dispatch for the selected source experiment
+The Controller SHALL issue a bounded canonical-history projection only under explicit default-off operator profile and eligible Node configuration. The Node SHALL bind a fresh same-owned-channel loaded offer before Accepted and retain the exact bound request for start. Selection SHALL preserve authorization, immutable model/artifact/render/effort/output identity, deadlines and capacity ownership.
+
+#### Scenario: Public natural tool continuation
+- **WHEN** an authorized Chat Completions or Responses request carries the exact admitted explicit medium contract and natural tool-result history
+- **THEN** canonical messages and resolved tools reach the bridge through the real Controller dispatcher and Node preparation without losing opaque assistant content or public request identity
+
+#### Scenario: Ineligible route or controls
+- **WHEN** the selected Node/profile/offer is absent or mismatched, or an admitted public control is unsupported by the experiment
+- **THEN** the request is rejected without ordinary-Worker fallback or native submission, and reserved preparation capacity is cleaned up

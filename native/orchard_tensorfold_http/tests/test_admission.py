@@ -10,6 +10,7 @@ from orchard_worker_mlx.backends import BackendError
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, runtime_pb2
 
 from orchard_tensorfold_http.admission import ExperimentProfile, admit_history
+from orchard_tensorfold_http.rendering import normalize_history
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def encode(text):
 def request_for(profile, incarnation="owned", *, messages=None, tools=None):
     messages = messages or [{"role": "user", "content": "test"}]
     tools = tools or []
-    text = render(messages, tools=tools, add_generation_prompt=True)
+    text = render(normalize_history(messages), tools=tools, add_generation_prompt=True)
     projection = {**profile.binding(incarnation), "messages": messages, "tools": tools}
     return runtime_pb2.ExecuteInferenceRequest(
         request_id=str(uuid4()),
@@ -89,6 +90,90 @@ def test_verified_history_boundaries_and_deadline(profile):
     assert result.deadline_monotonic == 21
 
 
+@pytest.mark.parametrize("prefix", ["", "chatcmpl-", "resp_"])
+def test_spec_3_4_existing_public_request_id_is_preserved(profile, prefix):
+    request = request_for(profile)
+    request.request_id = prefix + str(uuid4())
+    identity = request.request_id
+    assert admit(request, profile).prompt_ids == tuple(request.prompt_token_ids)
+    assert request.request_id == identity
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "chatcmpl-resp_" + str(uuid4()),
+        "resp_chatcmpl-" + str(uuid4()),
+        "resp_" + "a" * 10000,
+        "chatcmpl-" + uuid4().hex,
+        "urn:uuid:" + str(uuid4()),
+        str(uuid4()) + "\n",
+    ],
+)
+def test_request_identity_forms_are_bounded_and_exact(profile, identity):
+    request = request_for(profile)
+    request.request_id = identity
+    with pytest.raises(BackendError, match="request identity"):
+        admit(request, profile)
+
+
+@pytest.mark.parametrize("prefix", ["chatcmpl-", "resp_"])
+def test_spec_3_4_canonical_public_tool_continuation_uses_contract5_history(profile, prefix):
+    messages = [
+        {
+            "role": "developer",
+            "content": [{"type": "text", "text": "keep "}, {"type": "text", "text": "bytes"}],
+        },
+        {"role": "user", "content": "read it"},
+        {"role": "assistant", "content": "opaque</think>\n\nfinal"},
+        {
+            "role": "assistant",
+            "content": None,
+            "id": "fc_responses_item",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path":"é"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "<ok>\n\n"},
+    ]
+    before = json.dumps(messages)
+    request = request_for(profile, messages=messages)
+    request.request_id = prefix + str(uuid4())
+    assert admit(request, profile).prompt_ids == tuple(request.prompt_token_ids)
+    assert json.dumps(messages) == before
+    decoded = json.loads(request.rendered_prompt_utf8.removesuffix(b"<think>"))["messages"]
+    assert decoded[0]["content"] == "keep bytes"
+    assert decoded[2]["content"] == "opaque</think>\n\nfinal"
+    assert decoded[3]["content"] == ""
+    assert decoded[3]["tool_calls"][0]["function"]["arguments"] == {"path": "é"}
+    assert decoded[4]["tool_call_id"] == "call_1"
+    assert "id" not in decoded[3]
+
+
+@pytest.mark.parametrize("arguments", ['{"a":1,"a":2}', "[1]", "NaN", '{"nested":{"a":1,"a":2}}'])
+def test_invalid_public_history_arguments_fail_before_rendering(profile, arguments):
+    request = request_for(profile)
+    change(
+        request,
+        "messages",
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "read", "arguments": arguments}}
+                ],
+            }
+        ],
+    )
+    with pytest.raises(BackendError, match="cannot be rendered"):
+        admit(request, profile)
+
+
 @pytest.mark.parametrize(
     "key,value",
     [
@@ -123,7 +208,9 @@ def test_malformed_projection_fail_closed(profile, payload):
         admit(request, profile)
 
 
-@pytest.mark.parametrize("field", ["reasoning", "reasoning_content", "thinking"])
+@pytest.mark.parametrize(
+    "field", ["reasoning", "reasoning_content", "reasoning_details", "thinking"]
+)
 def test_opaque_content_is_preserved_but_structured_prior_is_rejected(profile, field):
     messages = [{"role": "assistant", "content": "opaque</think>\n\nfinal"}]
     request = request_for(profile, messages=messages)
@@ -161,6 +248,14 @@ def test_internal_projection_is_not_taken_from_public_metadata(profile):
     request.metadata_json = request.tensorfold_history_projection_json
     request.tensorfold_history_projection_json = b""
     with pytest.raises(BackendError, match="missing"):
+        admit(request, profile)
+
+
+@pytest.mark.parametrize("choice", [b'"auto"', b'"required"', b'"none"', b'{"name":"read"}'])
+def test_unprojected_tool_choice_cannot_be_ignored_by_template(profile, choice):
+    request = request_for(profile)
+    request.params.tool_choice_json = choice
+    with pytest.raises(BackendError, match="tool choice controls"):
         admit(request, profile)
 
 

@@ -35,6 +35,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
 
+  defmodule TensorFoldOfferService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream) do
+      offer = Application.get_env(:orchard_node_agent, :test_tensorfold_offer, "")
+      %WorkerStatusResponse{ready: true, loaded: true, tensorfold_profile_admission_json: offer}
+    end
+  end
+
+  defmodule TensorFoldOfferEndpoint do
+    use GRPC.Endpoint
+    run(TensorFoldOfferService)
+  end
+
   defmodule OpenUnavailableWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
@@ -846,6 +860,115 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
     refute Map.has_key?(cleaned_state.generations, generation_ref)
+  end
+
+  describe "SPEC Node-owned experiment preparation" do
+    setup do
+      old_profile = Application.get_env(:orchard_node_agent, :tensorfold_experiment_profile)
+      old_offer = Application.get_env(:orchard_node_agent, :test_tensorfold_offer)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_node_agent, :tensorfold_experiment_profile, old_profile)
+        Application.put_env(:orchard_node_agent, :test_tensorfold_offer, old_offer)
+      end)
+
+      binding = %{
+        "schema_version" => 1,
+        "profile_id" => "frozen-qwen",
+        "model_id" => "qwen",
+        "version" => String.duplicate("a", 64),
+        "artifact_sha256" => String.duplicate("b", 64),
+        "template_sha256" => String.duplicate("c", 64),
+        "tokenizer_config_sha256" => String.duplicate("d", 64),
+        "enable_thinking" => true,
+        "reasoning_effort" => "medium",
+        "output_projection" => "legacy_blended"
+      }
+
+      config = Map.put(binding, "max_projection_bytes", 8_192)
+      Application.put_env(:orchard_node_agent, :tensorfold_experiment_profile, config)
+      offer = Map.put(binding, "incarnation", "00000000000040008000000000000001")
+      Application.put_env(:orchard_node_agent, :test_tensorfold_offer, Jason.encode!(offer))
+
+      request = %ExecuteInferenceRequest{
+        request_id: "chatcmpl-00000000-0000-4000-8000-000000000002",
+        model_id: binding["model_id"],
+        version: binding["version"],
+        deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+        tensorfold_history_projection_json:
+          Jason.encode!(
+            Map.merge(binding, %{
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "tools" => []
+            })
+          )
+      }
+
+      %{request: request, offer: offer}
+    end
+
+    test "fresh same-channel offer binds each preparation and never appears in generic status",
+         ctx do
+      with_worker_runtime_server(TensorFoldOfferEndpoint, fn channel ->
+        state = %{
+          channel: channel,
+          model_ref: %ModelRef{model_id: ctx.request.model_id, version: ctx.request.version}
+        }
+
+        assert {:ok, first} = WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+
+        assert Jason.decode!(first.tensorfold_history_projection_json)["incarnation"] ==
+                 ctx.offer["incarnation"]
+
+        next_incarnation = "00000000000040008000000000000003"
+
+        Application.put_env(
+          :orchard_node_agent,
+          :test_tensorfold_offer,
+          Jason.encode!(Map.put(ctx.offer, "incarnation", next_incarnation))
+        )
+
+        assert {:ok, second} = WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+
+        assert Jason.decode!(second.tensorfold_history_projection_json)["incarnation"] ==
+                 next_incarnation
+
+        assert {:ok, status} = WorkerRuntimeAdapter.get_status(state, [])
+        refute Map.has_key?(status, :tensorfold_profile_admission_json)
+      end)
+    end
+
+    test "baseline old Worker, mismatched offer, expired deadline and disabled profile refuse",
+         ctx do
+      with_worker_runtime_server(TensorFoldOfferEndpoint, fn channel ->
+        state = %{
+          channel: channel,
+          model_ref: %ModelRef{model_id: ctx.request.model_id, version: ctx.request.version}
+        }
+
+        for offer <- [
+              "",
+              String.duplicate("x", 4_097),
+              Jason.encode!(Map.put(ctx.offer, "artifact_sha256", String.duplicate("e", 64)))
+            ] do
+          Application.put_env(:orchard_node_agent, :test_tensorfold_offer, offer)
+
+          assert {:error, :tensorfold_projection_rejected} =
+                   WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+        end
+
+        Application.put_env(:orchard_node_agent, :test_tensorfold_offer, Jason.encode!(ctx.offer))
+        expired = %{ctx.request | deadline_unix_ms: System.system_time(:millisecond) - 1}
+
+        assert {:error, :tensorfold_projection_rejected} =
+                 WorkerRuntimeAdapter.prepare_request(state, expired, [])
+
+        Application.delete_env(:orchard_node_agent, :tensorfold_experiment_profile)
+
+        assert {:error, :tensorfold_projection_rejected} =
+                 WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+      end)
+    end
   end
 
   defp with_worker_runtime_server(endpoint, fun)

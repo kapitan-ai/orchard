@@ -38,6 +38,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   capturing cold/warm classification, stream timing, and outcome.
   """
 
+  alias Orchard.Inference.TensorFoldProjection
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     ExecuteInferenceRequest
@@ -852,7 +854,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
-        ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+        case gate_tensorfold_route(context, metrics) do
+          :ok ->
+            ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+          {:error, reason} ->
+            handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
+        end
 
       {:error, reason, metrics} ->
         handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
@@ -1047,17 +1056,32 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp execute_loaded_request(context, ensure_load_meta, metrics) do
-    case gate_prompt_token_ids(
-           context.execute_request,
-           ensure_load_meta,
-           context.schedule,
-           context.model_load_request
-         ) do
-      {:ok, gated_execute_request} ->
-        execute_under_acceptance_gate(context, gated_execute_request, metrics)
-
+    with :ok <- gate_tensorfold_route(context, metrics),
+         {:ok, gated_execute_request} <-
+           gate_prompt_token_ids(
+             context.execute_request,
+             ensure_load_meta,
+             context.schedule,
+             context.model_load_request
+           ) do
+      execute_under_acceptance_gate(context, gated_execute_request, metrics)
+    else
       {:error, reason} ->
         {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  defp gate_tensorfold_route(context, metrics) do
+    if context.execute_request.tensorfold_history_projection_json in [nil, ""] do
+      :ok
+    else
+      case TensorFoldProjection.authorize_route(
+             metrics.node_id,
+             TensorFoldProjection.config()
+           ) do
+        :ok -> :ok
+        {:error, _reason} -> {:error, :runtime_incompatible}
+      end
     end
   end
 
@@ -2209,6 +2233,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       deadline_unix_ms: zero_to_nil(request.deadline_unix_ms),
       metadata_json: request.metadata_json || "{}",
       cache_affinity_fingerprint: blank_to_nil(request.cache_affinity_fingerprint),
+      tensorfold_history_projection_json:
+        blank_to_nil(request.tensorfold_history_projection_json),
       prompt_token_ids: request.prompt_token_ids || []
     )
   end

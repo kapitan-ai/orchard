@@ -150,6 +150,9 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
     do: build(:request_cancelled, source_code: "request_caller_disconnect")
 
+  def from_execute_error({:dispatch_failed, :runtime_incompatible}),
+    do: build(:tokenization_runtime_incompatible, [])
+
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
   @spec from_failed_event(InferenceEvent.t()) :: t()

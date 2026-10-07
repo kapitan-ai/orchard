@@ -11,8 +11,9 @@ The default-off TensorFold source experiment uses two additive byte fields:
   offer, at most 4096 bytes, issued by the explicitly configured bridge on its
   Node-owned socket. Its schema-1 payload binds the profile, model and version,
   artifact, template, configuration, effort, output contract and loaded
-  incarnation. The source-controlled caller uses that offer to construct an
-  exact history projection; the bridge independently validates the projection
+  incarnation. The explicitly configured Node preparation gate reads that
+  offer on the owned loaded Worker channel and binds the trusted Controller
+  history projection before Accepted; the bridge independently validates it
   before admitting generation.
 - `ExecuteInferenceRequest.tensorfold_history_projection_json` (15) carries
   that versioned, identity-bound history. Empty retains the baseline contract.

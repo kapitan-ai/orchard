@@ -12,3 +12,10 @@
 ## 3. Verification
 - [x] Run affected model-free quality gates and independent source review; full application/database and native gates remain pending.
 - [ ] Prepare a separately approved bounded hardware packet with exact limits and identities.
+
+## 4. Trusted public source integration
+- [x] Gate authorized Chat Completions and Responses preparation on the exact explicit rendered medium profile without changing the effort registry or omission semantics.
+- [x] Issue canonical history per attempt, retain it through the actual dispatcher, and gate the resolved eligible Node before model load and execution.
+- [x] Bind fresh loaded offers at Node preparation before Accepted, retain exact bound bytes for start, and reject altered redemption with capacity cleanup.
+- [x] Exercise public IDs, canonical tool continuations, fake owned-channel offers and real Controller envelopes through the bridge; recheck sealed historical parity.
+- [x] Run affected application/database, transport, Node and Worker model-free checks; full repository/CI and actual native qualification remain distinct outstanding gates.

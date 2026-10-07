@@ -2884,6 +2884,8 @@ Real-model, hardware, and named-client qualification SHALL consume that corpus o
 An OpenCode result SHALL identify the exact client version and configuration and SHALL remain evidence for that client identity only.
 No result from this profile SHALL activate Qwen3.8, claim general OpenCode or agent-client support, or select TensorFold or any other project as an Orchard runtime foundation.
 
+A separately selected, default-off embedded TensorFold source experiment MAY use the existing Chat Completions and Responses request path without selecting a runtime foundation. Controller admission SHALL retain the authorized canonical history, authoritative rendered bytes and token IDs, exact rendered explicit medium effort and legacy-blended output, and an operator-frozen model/version/artifact/template/tokenizer-configuration profile. Selection SHALL require an explicit eligible Node allowlist, never public metadata or generic capability observations. The Node SHALL verify a bounded fresh loaded profile offer on its owned Worker channel before Accepted, bind its incarnation and retain the immutable request for start. Missing or mismatched offers SHALL reject without fallback to an ordinary Worker; every retry SHALL obtain a fresh binding. Unsupported controls and structured prior reasoning SHALL reject before generation. This source permission grants no model load, native execution, memory-fit, cancellation settlement, process-reap or support qualification; those require separately authorized bounded evidence.
+
 ---
 
 ### 7.3 Operator API

@@ -89,6 +89,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient do
     owner = Keyword.fetch!(opts, :owner)
     test_pid = :persistent_term.get({__MODULE__, :test_pid})
     task_ref = make_ref()
+    send(test_pid, {:execute_request, request})
     send(test_pid, :execute_called)
 
     send(
@@ -1233,6 +1234,97 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       assert {:ok, lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
       assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
     end
+  end
+
+  test "TensorFold projection bytes survive the actual dispatcher operation conversion" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "chatcmpl-" <> Ecto.UUID.generate()
+    prior = Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
+
+    Application.put_env(:orchard_controller, :tensorfold_experiment_profile, %{
+      "authorized_node_ids" => [node_id]
+    })
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :tensorfold_experiment_profile, prior)
+    end)
+
+    projection = ~s({"messages":[{"role":"assistant","content":"opaque\\n<think>"}]})
+    request = %{execute_request(request_id) | tensorfold_history_projection_json: projection}
+    schedule = capacity_schedule(authority, node_id, request_id)
+    request = %{request | deadline_unix_ms: DateTime.to_unix(schedule.timeout_at, :millisecond)}
+
+    assert %AttemptOutcome{attempt_outcome: :completed} =
+             dispatch_with_deadline(schedule, request, model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    assert_receive {:execute_request, operation}
+    assert operation.tensorfold_history_projection_json == projection
+    assert operation.request_id == request_id
+    assert operation.controller_session_id == request.controller_session_id
+    assert operation.deadline_unix_ms == DateTime.to_unix(schedule.timeout_at, :millisecond)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "TensorFold actual dispatcher refuses changed target authority before execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "resp_" <> Ecto.UUID.generate()
+    prior = Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
+
+    Application.put_env(:orchard_controller, :tensorfold_experiment_profile, %{
+      "authorized_node_ids" => ["other-node"]
+    })
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :tensorfold_experiment_profile, prior)
+    end)
+
+    request = %{execute_request(request_id) | tensorfold_history_projection_json: "{}"}
+    schedule = capacity_schedule(authority, node_id, request_id)
+
+    assert_dispatch_failure(
+      dispatch_with_deadline(schedule, request, model_load_request(node_id),
+        client_impl: @gate_client
+      ),
+      :runtime_incompatible
+    )
+
+    refute_receive :model_loaded
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "TensorFold unmanaged observed target is rejected before any model load" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    {schedule, node_id} = compatibility_single_wave_schedule(authority, :unmanaged_compatibility)
+    prior = Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
+
+    Application.put_env(:orchard_controller, :tensorfold_experiment_profile, %{
+      "authorized_node_ids" => ["different-node"]
+    })
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :tensorfold_experiment_profile, prior)
+    end)
+
+    request = %{execute_request(schedule.request_id) | tensorfold_history_projection_json: "{}"}
+
+    assert_dispatch_failure(
+      dispatch_with_deadline(schedule, request, model_load_request(node_id),
+        client_impl: @compatibility_single_wave_client
+      ),
+      :runtime_incompatible
+    )
+
+    refute_receive :model_loaded
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
   end
 
   test "SPEC 5.9 managed dispatch rejects cached capacity without fresh providers" do

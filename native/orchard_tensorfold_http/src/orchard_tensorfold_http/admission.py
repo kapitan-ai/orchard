@@ -14,6 +14,8 @@ from uuid import UUID
 
 from orchard_worker_mlx.backends import BackendError
 
+from orchard_tensorfold_http.rendering import normalize_history
+
 
 def positive_int(value: int, label: str) -> int:
     if type(value) is not int or value <= 0:
@@ -117,6 +119,23 @@ def _json(payload: bytes) -> Any:
         raise _invalid("invalid projection JSON") from exc
 
 
+def _request_identity(value: Any) -> None:
+    if not isinstance(value, str):
+        raise _invalid("invalid request identity")
+    identity = value
+    for prefix in ("chatcmpl-", "resp_"):
+        if identity.startswith(prefix):
+            identity = identity[len(prefix) :]
+            break
+    if len(identity) != 36:
+        raise _invalid("invalid request identity")
+    try:
+        if str(UUID(identity)) != identity:
+            raise ValueError("noncanonical UUID")
+    except ValueError as exc:
+        raise _invalid("invalid request identity") from exc
+
+
 def admit_history(
     request: Any,
     *,
@@ -143,10 +162,7 @@ def admit_history(
         raise _invalid("profile or incarnation binding mismatch")
     if (request.model_id, request.version) != (profile.model_id, profile.version):
         raise _invalid("request model binding mismatch")
-    try:
-        UUID(request.request_id)
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise _invalid("invalid request identity") from exc
+    _request_identity(request.request_id)
     if getattr(request, "return_logprobs", False) or getattr(request, "return_token_ids", False):
         raise _invalid("token/logprob output is not admitted by this experiment")
     has_field = getattr(request, "HasField", None)
@@ -160,18 +176,23 @@ def admit_history(
     for message in messages:
         if (
             type(message) is not dict
-            or message.get("role") not in {"system", "user", "assistant", "tool"}
-            or type(message.get("content")) is not str
+            or type(message.get("role")) is not str
+            or message["role"] not in {"system", "developer", "user", "assistant", "tool"}
         ):
             raise _invalid("unsupported canonical message")
-        if {"reasoning", "reasoning_content", "thinking"}.intersection(message):
+        if {"reasoning", "reasoning_content", "reasoning_details", "thinking"}.intersection(
+            message
+        ):
             raise _invalid("structured prior reasoning is unsupported")
     params = request.params
     tools_payload = getattr(params, "tools_json", b"")
     if len(tools_payload) > profile.max_projection_bytes or _json(tools_payload or b"[]") != tools:
         raise _invalid("tool schema binding mismatch")
-    if len(getattr(params, "tool_choice_json", b"")) > profile.max_projection_bytes:
+    tool_choice_payload = getattr(params, "tool_choice_json", b"")
+    if len(tool_choice_payload) > profile.max_projection_bytes:
         raise _invalid("tool choice exceeds bounded projection")
+    if _json(tool_choice_payload or b"null") is not None:
+        raise _invalid("tool choice controls are not admitted by this experiment")
     if getattr(params, "stop_sequences", ()):
         raise _invalid("stop controls are not admitted by this experiment")
     limit = params.max_output_tokens
@@ -195,6 +216,7 @@ def admit_history(
     if request.input_tokens != len(ids) or len(ids) + limit > profile.max_context_tokens:
         raise _invalid("context or input count mismatch")
     try:
+        messages = normalize_history(messages)
         text = render(messages, tools=tools, add_generation_prompt=True)
         history = render(messages, tools=tools, add_generation_prompt=False)
         rendered_ids = tuple(encode(text))

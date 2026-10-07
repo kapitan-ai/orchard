@@ -10,7 +10,25 @@ from orchard_tokenizer.cli import (
     _chat_template_environment,
     _discover_template_variables,
     _ensure_required_tokens,
+    _legacy_template_messages,
+    normalize_messages_preserving_message_fields,
+    normalize_optional_tools,
+    normalize_tool_history,
 )
+
+
+def normalize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use the tokenizer contract5 legacy projection without interpreting content."""
+    if any(
+        {"reasoning_content", "reasoning", "reasoning_details", "thinking"}.intersection(m)
+        for m in messages
+    ):
+        raise ValueError("structured prior reasoning is unsupported")
+    return _legacy_template_messages(
+        normalize_messages_preserving_message_fields(
+            normalize_tool_history({"input_items": messages})
+        )
+    )
 
 
 def bind_chat_template(
@@ -22,8 +40,7 @@ def bind_chat_template(
 ) -> Callable[..., str]:
     """Snapshot verified assets and retain Orchard's serializer for both history suffixes.
 
-    This first feasibility slice admits only the assessed thinking/medium profile.
-    Installation on a live child remains gated on containment and lifecycle work.
+    The Node-owned embedded Worker admits only the frozen thinking/medium profile.
     """
     template_bytes = template_path.read_bytes()
     config_bytes = config_path.read_bytes()
@@ -45,8 +62,7 @@ def bind_chat_template(
     _ensure_required_tokens(required, special_tokens)
 
     def render(messages: list[dict[str, Any]], **options: Any) -> str:
-        if any({"reasoning_content", "reasoning", "thinking"}.intersection(m) for m in messages):
-            raise ValueError("structured prior reasoning is unsupported")
+        messages = normalize_history(messages)
         unknown = set(options) - {
             "tools",
             "add_generation_prompt",
@@ -67,9 +83,9 @@ def bind_chat_template(
             raise ValueError("generation suffix must be boolean")
         return environment.from_string(template_text).render(
             messages=messages,
-            prompt_lines=[],
+            prompt_lines=[f"{message['role']} {message['content']}" for message in messages],
             add_generation_prompt=generation,
-            tools=options.get("tools"),
+            tools=normalize_optional_tools(options.get("tools")),
             tool_choice=None,
             enable_thinking=True,
             reasoning_effort="medium",
