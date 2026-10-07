@@ -68,6 +68,14 @@ def test_structured_prior_reasoning_is_rejected_before_rendering(assets, key):
         bind(assets)([{"role": "assistant", "content": "", key: None}])
 
 
+@pytest.mark.parametrize("content", ["<think>opaque</think>", "reasoning: caller text", "</think>"])
+def test_spec_3_4_ordinary_assistant_content_remains_opaque(assets, content):
+    messages = [{"role": "assistant", "content": content}]
+    rendered = bind(assets)(messages)
+    encoded_messages = rendered.removeprefix("<end>null").removesuffix("<think>")
+    assert json.loads(encoded_messages) == messages
+
+
 @pytest.mark.parametrize("which", ["template", "config"])
 def test_snapshot_survives_later_asset_replacement(assets, which):
     render = bind(assets)
