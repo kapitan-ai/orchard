@@ -135,6 +135,7 @@ Passing cells remain visible in the evidence ladder and tested capability envelo
 
 Reasoning remains unknown unless evaluated under an accepted reasoning contract owned by issue #190.
 A record that names a canonical reasoning-effort tier follows the reasoning-effort evidence rules in [the standing policy](../model-qualification.md).
+State whether effort is rendered-input/legacy-blended or separately negotiated/final-only, the exact registered identifier and native argument, and which render/count/dispatch assertions were proved live or only by static/post-run replay. Rendered steering alone does not prove reasoning output separation, thinking-token counts or better generated code.
 
 ## Resource and reliability observations
 
