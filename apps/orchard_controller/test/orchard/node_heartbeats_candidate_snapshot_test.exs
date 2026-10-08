@@ -555,6 +555,22 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
     assert %DateTime{} = snapshot.observed_at
   end
 
+  test "ADR 0017 database boundary does not depend on the session time zone" do
+    observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    node = insert_node!(last_heartbeat_at: observed_at)
+    target = target_for(node)
+    heartbeat = append_heartbeat!(node, target, observed_at)
+
+    Repo.query!("SET LOCAL TIME ZONE 'Asia/Singapore'")
+
+    assert {:ok, snapshot} = NodeHeartbeats.production_candidate_snapshot([target], [target])
+
+    assert snapshot.rejections == []
+    assert [%Candidate{heartbeat_id: heartbeat_id}] = snapshot.candidates
+    assert heartbeat_id == heartbeat.id
+    assert abs(DateTime.diff(snapshot.observed_at, DateTime.utc_now(), :second)) < 60
+  end
+
   test "ADR 0017 malformed database boundaries fail closed" do
     observed_at = DateTime.utc_now()
     node = insert_node!(last_heartbeat_at: observed_at)
@@ -614,7 +630,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   defp database_now do
     Repo.one(
       from(_value in fragment("SELECT 1"),
-        select: type(fragment("statement_timestamp()"), :utc_datetime_usec)
+        select: type(fragment("(statement_timestamp() AT TIME ZONE 'UTC')"), :utc_datetime_usec)
       )
     )
   end

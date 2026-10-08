@@ -242,7 +242,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
 
   defp database_boundary_query do
     from(_value in fragment("SELECT 1"),
-      select: type(fragment("statement_timestamp()"), :utc_datetime_usec)
+      select: type(fragment("(statement_timestamp() AT TIME ZONE 'UTC')"), :utc_datetime_usec)
     )
   end
 
@@ -268,7 +268,8 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
         select(
           base_query,
           [node, heartbeat],
-          {node, heartbeat, type(fragment("statement_timestamp()"), :utc_datetime_usec)}
+          {node, heartbeat,
+           type(fragment("(statement_timestamp() AT TIME ZONE 'UTC')"), :utc_datetime_usec)}
         )
 
       {:explicit, %DateTime{}} ->
