@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+set -eu
+
+# Dev-source wrapper for the default-off TensorFold experiment (SPEC.md §7.2.9).
+# It adds the explicit experiment flag and the Worker profile, then execs the
+# venv entrypoint directly so the BEAM port's os_pid is the Python process
+# itself (no intermediate `uv run` parent). Node arguments pass through as-is.
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PACKAGE_DIR="$SCRIPT_DIR/.."
+REPO_ROOT="$(CDPATH= cd -- "$PACKAGE_DIR/../.." && pwd)"
+VENV_ENTRY="$PACKAGE_DIR/.venv/bin/orchard-worker-tensorfold"
+
+profile="${ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE:-}"
+if [ -z "$profile" ]; then
+    echo "error: ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE is not set" >&2
+    exit 64
+fi
+case "$profile" in
+    /*) ;;
+    *) profile="$REPO_ROOT/$profile" ;;
+esac
+if [ ! -f "$profile" ] || [ ! -r "$profile" ]; then
+    echo "error: ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE is not a readable file: $profile" >&2
+    exit 64
+fi
+
+if [ ! -x "$VENV_ENTRY" ]; then
+    echo "error: venv entrypoint not found at $VENV_ENTRY" >&2
+    echo "       Run 'mise exec -- uv sync --locked --directory native/orchard_tensorfold_http --extra native'." >&2
+    exit 1
+fi
+
+exec "$VENV_ENTRY" --experimental-tensorfold --profile-file "$profile" "$@" 2>&1

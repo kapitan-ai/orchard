@@ -15,12 +15,23 @@ dependencies = [
   "sentencepiece==0.2.1",
 ]
 
+[project.optional-dependencies]
+# Opt-in native tuple for the source experiment on Apple Silicon (SPEC.md §7.2.9).
+# The default install stays model-free and does not advance foundation pins.
+native = [
+  "tensorfold ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx==0.32.3 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx-lm==0.32.0 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "transformers==5.14.1 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
 [project.scripts]
 orchard-worker-tensorfold = "orchard_tensorfold_http.cli:main"
 
 [tool.uv.sources]
 orchard-tokenizer = { path = "../orchard_tokenizer" }
 orchard-worker-mlx = { path = "../orchard_worker_mlx" }
+tensorfold = { git = "https://github.com/ashhart/TensorFold.git", rev = "cb2ebf0540f42604e2759b2ddef497861e928248" }
 
 [dependency-groups]
 dev = ["pytest==9.0.2", "pytest-cov==7.0.0", "ruff==0.15.7"]
