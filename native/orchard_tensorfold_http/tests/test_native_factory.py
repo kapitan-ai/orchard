@@ -76,6 +76,7 @@ def test_file_growing_after_inventory_cannot_extend_hashing_bound(tmp_path, monk
 
 @pytest.fixture
 def assembly(tmp_path, monkeypatch, profile, bounds):
+    bounds = native_bounds(bounds)
     template = tmp_path / "template.jinja"
     template.write_text("{{ messages | tojson }}{% if add_generation_prompt %}<think>{% endif %}")
     config = tmp_path / "tokenizer_config.json"
@@ -240,3 +241,49 @@ def test_custom_or_other_profile_refused_without_native_load(assembly, filename,
     with pytest.raises((BackendError, ModelLoaderError)):
         assembly.factory(str(assembly.path), profile, Mock())
     assembly.factory._assemble.assert_not_called()
+
+
+def native_bounds(bounds, *, leases=None, total=None):
+    """Bounds the pinned scheduler's per-request copy peak fits; overrides make them short."""
+    leases = (
+        native_factory.required_cache_leases(bounds.checkpoint_slots) if leases is None else leases
+    )
+    working = bounds.working_bytes
+    minimum = working + bounds.workspace_bytes + (leases + 1) * working
+    return replace(
+        bounds, max_cache_leases=leases, total_budget_bytes=minimum if total is None else total
+    )
+
+
+def build_factory(bounds, tmp_path):
+    return native_factory.NativeFactory(
+        bounds=bounds,
+        model_path=tmp_path,
+        max_bundle_files=10,
+        max_bundle_bytes=10000,
+        prefill_step=2,
+    )
+
+
+def test_required_cache_leases_covers_the_pinned_per_request_peak():
+    # retained slots + borrowed prefix copy + (history, stable and explicit boundary
+    # snapshots) + finished cache copy, under TensorFold 0.6.6 prompt_fill/scheduler.
+    assert native_factory.required_cache_leases(1) == 6
+    assert native_factory.required_cache_leases(2) == 8
+
+
+def test_factory_accepts_bounds_at_the_custody_minimum(bounds, tmp_path):
+    factory = build_factory(native_bounds(bounds), tmp_path)
+    assert factory.bounds.max_cache_leases == native_factory.required_cache_leases(1)
+
+
+def test_factory_refuses_a_lease_bound_below_the_per_request_peak(bounds, tmp_path):
+    short = native_bounds(bounds, leases=native_factory.required_cache_leases(1) - 1)
+    with pytest.raises(ValueError, match="cache lease bound is below"):
+        build_factory(short, tmp_path)
+
+
+def test_factory_refuses_a_budget_that_cannot_hold_the_lease_bound(bounds, tmp_path):
+    full = native_bounds(bounds)
+    with pytest.raises(ValueError, match="custody budget cannot hold"):
+        build_factory(replace(full, total_budget_bytes=full.total_budget_bytes - 1), tmp_path)

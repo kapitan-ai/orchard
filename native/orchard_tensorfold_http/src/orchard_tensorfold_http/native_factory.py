@@ -95,6 +95,26 @@ def verify_artifact(root: Path, expected: str, *, max_files: int, max_bytes: int
         raise ValueError("artifact identity is missing or changed")
 
 
+def required_cache_leases(checkpoint_slots: int) -> int:
+    """Leases one request can hold under the pinned scheduler's copy order.
+
+    TensorFold 0.6.6 keeps every retained checkpoint, copies the matched prefix,
+    snapshots the working cache at up to two chosen history boundaries plus one
+    per explicit boundary (at most ``checkpoint_slots``), and copies the
+    finished cache, all before the request retires and the store evicts.
+    """
+    return 2 * checkpoint_slots + 4
+
+
+def _validate_custody_bounds(bounds: DriverBounds) -> None:
+    if bounds.max_cache_leases < required_cache_leases(bounds.checkpoint_slots):
+        raise ValueError("cache lease bound is below the scheduler's per-request copy peak")
+    working = bounds.working_bytes
+    needed = working + bounds.workspace_bytes + (bounds.max_cache_leases + 1) * working
+    if bounds.total_budget_bytes < needed:
+        raise ValueError("custody budget cannot hold the cache lease bound")
+
+
 class NativeFactory:
     """No alternate loader/model/template is selected from a request field."""
 
@@ -107,6 +127,7 @@ class NativeFactory:
         max_bundle_bytes: int,
         prefill_step: int,
     ):
+        _validate_custody_bounds(bounds)
         self.bounds, self.model_path = bounds, model_path.absolute()
         self.max_bundle_files = positive_int(max_bundle_files, "bundle file bound")
         self.max_bundle_bytes = positive_int(max_bundle_bytes, "bundle byte bound")

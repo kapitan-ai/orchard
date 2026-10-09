@@ -18,6 +18,7 @@ from orchard_worker_mlx.generated.orchard.worker.v1 import (
 from test_admission import profile as profile
 from test_admission import request_for
 from test_backend import runtime as runtime
+from test_native_factory import native_bounds
 from test_tensorfold_driver import bounds as bounds
 
 from orchard_tensorfold_http import cli
@@ -226,7 +227,7 @@ def test_local_configuration_constructs_explicit_backend_without_loading(tmp_pat
     path = tmp_path / "profile.json"
     config = {
         "profile": asdict(profile),
-        "bounds": asdict(bounds),
+        "bounds": asdict(native_bounds(bounds)),
         "native": {
             "model_path": str(tmp_path / "model"),
             "max_bundle_files": 10,
@@ -244,4 +245,22 @@ def test_local_configuration_constructs_explicit_backend_without_loading(tmp_pat
         cli.configured_backend(path)
     path.write_bytes(b" " * 65537)
     with pytest.raises(ValueError, match="bound"):
+        cli.configured_backend(path)
+
+
+def test_local_configuration_refuses_a_lease_bound_below_the_copy_peak(tmp_path, profile, bounds):
+    path = tmp_path / "profile.json"
+    short = native_bounds(bounds, leases=bounds.max_cache_leases)
+    config = {
+        "profile": asdict(profile),
+        "bounds": asdict(short),
+        "native": {
+            "model_path": str(tmp_path / "model"),
+            "max_bundle_files": 10,
+            "max_bundle_bytes": 10000,
+            "prefill_step": 2,
+        },
+    }
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="cache lease bound is below"):
         cli.configured_backend(path)
