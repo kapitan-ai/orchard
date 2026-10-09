@@ -34,4 +34,4 @@
 - [x] Commit a direct-exec source-dev Worker wrapper and include its Workers in owned source-dev cleanup.
 - [x] Pin the native tuple as an optional Apple Silicon `native` extra without changing the default install.
 - [x] Document the operator flow in `docs/local-dev.md`.
-- [ ] Run an authorized real-native qualification through the documented flow.
+- [x] Run an authorized real-native qualification through the documented flow.
