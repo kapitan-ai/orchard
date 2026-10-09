@@ -656,3 +656,85 @@ def test_shutdown_does_not_dispose_or_admit_while_native_barrier_is_blocked(driv
     assert failures == []
     assert driver.normal_closed
     assert receipt.quarantines == 0
+
+
+DRIVER_LOGGER = "orchard_tensorfold_http.tensorfold_driver"
+
+
+def copy_failure_records(caplog):
+    return [
+        r
+        for r in caplog.records
+        if r.name == DRIVER_LOGGER and "cache copy custody failed" in r.getMessage()
+    ]
+
+
+def test_copy_envelope_failure_logs_custody_reason_and_snapshot(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+    driver._copy_bounds = lambda cache: (60, 20)
+    driver.start()
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    assert driver.quarantined
+    [record] = copy_failure_records(caplog)
+    assert record.levelname == "WARNING"
+    message = record.getMessage()
+    assert "reason=CacheCustodyError: cache copy exceeds reserved envelope" in message
+    for field in (
+        "requested=60+20",
+        "total_budget=100",
+        "workspace_reserved=30",
+        "working=20",
+        "held=0",
+        "leases=0",
+        "max_leases=5",
+        "checkpoints=0",
+        "quarantined=False",
+    ):
+        assert field in message
+
+
+def test_copy_lease_limit_failure_logs_custody_reason(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+    driver.start()
+    assert run(driver) == [[6, 7]]
+    driver._custody._max_leases = 1
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver, prompt=[1, 2, 3, 4], history=3)
+    message = copy_failure_records(caplog)[0].getMessage()
+    assert "reason=CacheCustodyError: cache lease limit exceeded" in message
+    assert "leases=1" in message and "held=10" in message and "checkpoints=1" in message
+
+
+def test_foreign_copy_exception_logs_only_its_class(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+
+    def failing_copy(cache):
+        raise KeyError("private prompt fragment 1 2 3")
+
+    driver._original_copy = failing_copy
+    driver.start()
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    message = copy_failure_records(caplog)[0].getMessage()
+    assert "reason=KeyError" in message
+    assert "private prompt fragment" not in message
+
+
+def test_request_start_logs_cached_prompt_and_checkpoint_counts(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+    driver.start()
+    assert run(driver) == [[6, 7]]
+    assert run(driver, prompt=[1, 2, 3, 4], history=3) == [[6, 7]]
+    starts = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == DRIVER_LOGGER and r.getMessage().startswith("tensorfold request started")
+    ]
+    assert starts == [
+        "tensorfold request started cached=0 prompt=3 checkpoints=0",
+        "tensorfold request started cached=2 prompt=4 checkpoints=1",
+    ]
+    for record in caplog.records:
+        assert "[1, 2" not in record.getMessage()
+        assert all(not isinstance(arg, list | tuple) for arg in record.args or ())
