@@ -144,16 +144,34 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
 
   test "SPEC 7.2.9 evidence identity detects untracked file corruption and restoration" do
     {root, 0} = System.cmd("git", ["rev-parse", "--show-toplevel"])
-    path = Path.join(String.trim(root), ".agentic-hash-control-#{Ecto.UUID.generate()}")
+    root = String.trim(root)
+    path = Path.join(root, ".agentic-hash-control-#{Ecto.UUID.generate()}")
     on_exit(fn -> File.rm(path) end)
-    clean = input_hash()
+    clean = input_hash(root, nil)
     File.write!(path, "baseline")
-    added = input_hash()
+    added = input_hash(root, nil)
     refute added == clean
     File.write!(path, "corrupted")
-    refute input_hash() == added
+    refute input_hash(root, nil) == added
     File.rm!(path)
-    assert input_hash() == clean
+    assert input_hash(root, nil) == clean
+  end
+
+  test "SPEC 7.2.9 evidence identity ignores its own results file" do
+    {root, 0} = System.cmd("git", ["rev-parse", "--show-toplevel"])
+    root = String.trim(root)
+    results = ".agentic-results-control-#{Ecto.UUID.generate()}.jsonl"
+    path = Path.join(root, results)
+    on_exit(fn -> File.rm(path) end)
+    clean_hash = input_hash(root, results)
+    clean_dirty? = worktree_dirty?(root, results)
+    File.write!(path, "{}\n")
+    assert input_hash(root, results) == clean_hash
+    assert worktree_dirty?(root, results) == clean_dirty?
+    File.write!(path, "{}\n{}\n", [:append])
+    assert input_hash(root, results) == clean_hash
+    refute input_hash(root, nil) == clean_hash
+    assert worktree_dirty?(root, nil)
   end
 
   test "SPEC 7.2.9 independent oracle rejects corrupted text, usage, terminals and JSON" do
@@ -1060,20 +1078,19 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
   defp report(scenario, mode, assertions) do
     if path = System.get_env("ORCHARD_AGENTIC_RESULTS") do
       {revision, 0} = System.cmd("git", ["rev-parse", "HEAD"])
-      {worktree, 0} = System.cmd("git", ["status", "--porcelain"])
+      {root, 0} = System.cmd("git", ["rev-parse", "--show-toplevel"])
+      root = String.trim(root)
+      # The results file is evidence output, not tested input.
+      results = Path.relative_to(Path.expand(path), root)
 
       result = %{
         corpus_version: @corpus["version"],
         orchard_revision: String.trim(revision),
-        worktree_dirty: worktree != "",
-        input_sha256: input_hash(),
+        worktree_dirty: worktree_dirty?(root, results),
+        input_sha256: input_hash(root, results),
         client_adapter: @corpus["client_adapter"],
         tokenizer_safe_mode: "reject",
-        runtime_fixture:
-          if(scenario["boundary"] == "public-api-through-scripted-managed-runtime",
-            do: "controller-managed-runtime-script/v1",
-            else: "native-worker-runtime/scripted-backend/v1"
-          ),
+        runtime_fixture: runtime_fixture(scenario["boundary"]),
         boundary: scenario["boundary"] || "public-api-through-native-worker",
         case: scenario["id"],
         mode: mode,
@@ -1085,9 +1102,23 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     end
   end
 
-  defp input_hash do
-    {root, 0} = System.cmd("git", ["rev-parse", "--show-toplevel"])
-    root = String.trim(root)
+  defp runtime_fixture("public-api-through-scripted-managed-runtime"),
+    do: "controller-managed-runtime-script/v1"
+
+  defp runtime_fixture("controller-policy"), do: "controller-policy-only/v1"
+  defp runtime_fixture(_boundary), do: "native-worker-runtime/scripted-backend/v1"
+
+  defp worktree_dirty?(root, results) do
+    {status, 0} =
+      System.cmd("git", ["status", "--porcelain", "--untracked-files=all", "-z"], cd: root)
+
+    status
+    |> String.split(<<0>>, trim: true)
+    |> Enum.reject(&(String.slice(&1, 3..-1//1) == results))
+    |> Enum.any?()
+  end
+
+  defp input_hash(root, results) do
     {diff, 0} = System.cmd("git", ["diff", "HEAD", "--binary"], cd: root)
 
     {untracked, 0} =
@@ -1096,6 +1127,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     files =
       untracked
       |> String.split(<<0>>, trim: true)
+      |> Enum.reject(&(&1 == results))
       |> Enum.sort()
       |> Enum.map(fn path -> [path, <<0>>, File.read!(Path.join(root, path)), <<0>>] end)
 

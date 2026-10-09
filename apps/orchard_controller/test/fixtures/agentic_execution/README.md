@@ -22,6 +22,12 @@ state and SHA-256 of the HEAD diff, untracked file names/bytes, and corpus,
 synthetic client, runtime fixture,
 endpoint/mode, output contract, and
 assertion statuses. They deliberately omit observed content and identifiers.
+The results file itself is excluded from the dirty-worktree state and input
+hash, so appending records does not change later records. The runtime fixture
+is `native-worker-runtime/scripted-backend/v1` for cases that run the native
+Worker, `controller-managed-runtime-script/v1` for the managed-retry lane, and
+`controller-policy-only/v1` for `controller-policy` cases, which call ranking,
+allocation or retry code directly and run no Worker.
 Use a fresh file for each invocation: the runner does not truncate existing
 evidence. JSONL records are ordered by test execution, so compare sorted records
 when changing the ExUnit seed. A failed invocation is not conformance evidence
