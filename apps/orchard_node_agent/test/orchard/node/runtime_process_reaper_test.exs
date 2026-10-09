@@ -106,6 +106,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
     {:ok, ref} = watch_owner(owner_pid, os_pid)
     RuntimeProcessReaper.mark_phase(ref, :loaded)
+    assert %{phase: :loaded} = :sys.get_state(RuntimeProcessReaper).leases[ref]
 
     log = capture_reap_log(fn -> Process.exit(owner_pid, :shutdown) end, os_pid)
 
