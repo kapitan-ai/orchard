@@ -496,6 +496,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          prefix_cache_max_bytes: prefix_cache_max_bytes,
          generation_mode: generation_mode,
          max_concurrent_generations: max_concurrent_generations,
+         auto_max_concurrent_generations: auto_max_concurrent_generations,
          memory_budget_mode: memory_budget_mode,
          memory_budget_utilization: memory_budget_utilization,
          memory_budget_overhead_bytes: memory_budget_overhead_bytes
@@ -507,6 +508,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         prefix_cache_max_bytes: prefix_cache_max_bytes,
         generation_mode: generation_mode,
         max_concurrent_generations: max_concurrent_generations,
+        auto_max_concurrent_generations: auto_max_concurrent_generations,
         memory_budget_mode: memory_budget_mode,
         memory_budget_utilization: memory_budget_utilization,
         memory_budget_overhead_bytes: memory_budget_overhead_bytes

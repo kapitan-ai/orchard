@@ -407,6 +407,70 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                  end
   end
 
+  # Mirrors native/orchard_tensorfold_http/tests/test_cli.py, which proves the
+  # bridge accepts exactly this argument list.
+  test "SPEC.md §7.2.9 TensorFold Worker settings serialize to the bridge's accepted arguments" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "tensorfold",
+        log_path: "/tmp/worker.log",
+        prefix_cache_mode: "disabled",
+        prefix_cache_max_entries: 8,
+        prefix_cache_max_bytes: 0,
+        generation_mode: "stream",
+        max_concurrent_generations: 1,
+        auto_max_concurrent_generations: 1,
+        memory_budget_mode: "disabled",
+        memory_budget_utilization: 0.9,
+        memory_budget_overhead_bytes: 0
+      )
+
+    assert args == [
+             "--socket-path",
+             "/tmp/worker.sock",
+             "--backend",
+             "tensorfold",
+             "--log-file",
+             "/tmp/worker.log",
+             "--prefix-cache-mode",
+             "disabled",
+             "--prefix-cache-max-entries",
+             "8",
+             "--prefix-cache-max-bytes",
+             "0",
+             "--generation-mode",
+             "stream",
+             "--max-concurrent-generations",
+             "1",
+             "--auto-max-concurrent-generations",
+             "1",
+             "--memory-budget-mode",
+             "disabled",
+             "--memory-budget-utilization",
+             "0.9",
+             "--memory-budget-overhead-bytes",
+             "0"
+           ]
+  end
+
+  test "SPEC.md §7.2.9 load_model forwards configured auto concurrency to the launched Worker" do
+    for {extra, expected} <- [
+          {[
+             generation_mode: "stream",
+             max_concurrent_generations: 1,
+             auto_max_concurrent_generations: 1,
+             memory_budget_mode: "disabled",
+             memory_budget_utilization: 0.9,
+             memory_budget_overhead_bytes: 0
+           ], "1"},
+          {[generation_mode: "batch", auto_max_concurrent_generations: 5], "5"}
+        ] do
+      args = launched_worker_args(extra)
+      assert flag_value(args, "--auto-max-concurrent-generations") == expected
+    end
+  end
+
   test "get_status maps prompt token id support from worker status proto" do
     with_worker_runtime_server(PromptTokenIdsSupportEndpoint, fn channel ->
       assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
@@ -1089,6 +1153,33 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
       deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
+  end
+
+  # Launches a fake Worker through the real load_model path; it records its
+  # arguments and exits, so loading fails after the arguments are captured.
+  defp launched_worker_args(extra_opts) do
+    root = Path.join("/tmp", "ofw-#{System.unique_integer([:positive])}")
+    capture = Path.join(root, "args")
+    executable = Path.join(root, "worker")
+    File.mkdir_p!(Path.join([root, "models", "test", "model", "v1"]))
+    File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"#{capture}\"\n")
+    File.chmod!(executable, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert {:error, _reason} =
+             WorkerRuntimeAdapter.load_model(
+               %ModelRef{model_id: "test/model", version: "v1"},
+               [
+                 executable: executable,
+                 backend: "stub",
+                 models_root: Path.join(root, "models"),
+                 socket_path: Path.join(root, "w.sock"),
+                 log_path: Path.join(root, "worker.log"),
+                 ready_timeout_ms: 2_000
+               ] ++ extra_opts
+             )
+
+    capture |> File.read!() |> String.split("\n", trim: true)
   end
 
   defp flag_value(args, flag) do
