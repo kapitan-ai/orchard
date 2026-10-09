@@ -295,8 +295,12 @@ class TensorFoldDriver:
                 self._records[id(wrapped)] = _CacheRecord(lease, wrapped, {owner}, size)
             return wrapped
         except BaseException as exc:
-            self._log_copy_failure(exc, size, transient)
-            self._quarantine()
+            try:
+                self._log_copy_failure(exc, size, transient)
+            except Exception:
+                logger.warning("tensorfold cache copy custody failed reason=unavailable")
+            finally:
+                self._quarantine()
             raise DriverError("cache copy custody failed") from None
 
     @staticmethod

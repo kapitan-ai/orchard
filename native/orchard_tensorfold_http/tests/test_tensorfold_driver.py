@@ -694,6 +694,18 @@ def test_copy_envelope_failure_logs_custody_reason_and_snapshot(driver, caplog):
         assert field in message
 
 
+def test_copy_failure_quarantines_even_when_logging_fails(driver, monkeypatch):
+    def broken_snapshot():
+        raise RuntimeError("snapshot unavailable")
+
+    driver._copy_bounds = lambda cache: (60, 20)
+    driver.start()
+    monkeypatch.setattr(driver._custody, "snapshot", broken_snapshot)
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    assert driver.quarantined
+
+
 def test_copy_lease_limit_failure_logs_custody_reason(driver, caplog):
     caplog.set_level("INFO", logger=DRIVER_LOGGER)
     driver.start()
