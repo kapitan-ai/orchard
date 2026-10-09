@@ -2029,14 +2029,8 @@ defmodule Orchard.Nodes do
 
       nil ->
         query
-        |> where(
-          [grant],
-          fragment("? <= (clock_timestamp() AT TIME ZONE 'UTC')", grant.not_before_at)
-        )
-        |> where(
-          [grant],
-          fragment("? > (clock_timestamp() AT TIME ZONE 'UTC')", grant.expires_at)
-        )
+        |> where([grant], fragment("? <= clock_timestamp()", grant.not_before_at))
+        |> where([grant], fragment("? > clock_timestamp()", grant.expires_at))
     end
   end
 
@@ -3136,11 +3130,8 @@ defmodule Orchard.Nodes do
     |> where([grant], grant.id == ^grant_id)
     |> where([grant], grant.node_id == ^peer.node_id)
     |> where([grant], grant.state == :active)
-    |> where(
-      [grant],
-      fragment("? <= (clock_timestamp() AT TIME ZONE 'UTC')", grant.not_before_at)
-    )
-    |> where([grant], fragment("? > (clock_timestamp() AT TIME ZONE 'UTC')", grant.expires_at))
+    |> where([grant], fragment("? <= clock_timestamp()", grant.not_before_at))
+    |> where([grant], fragment("? > clock_timestamp()", grant.expires_at))
     |> lock("FOR UPDATE")
     |> Repo.one()
   end

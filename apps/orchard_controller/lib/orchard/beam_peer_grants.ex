@@ -558,7 +558,7 @@ defmodule Orchard.BeamPeerGrants do
         |> update([candidate],
           set: [
             state: :active,
-            delivered_at: fragment("clock_timestamp() AT TIME ZONE 'UTC'"),
+            delivered_at: fragment("clock_timestamp()"),
             delivery_evidence: ^evidence
           ]
         )
@@ -606,14 +606,8 @@ defmodule Orchard.BeamPeerGrants do
     Grant
     |> where([candidate], candidate.id == ^grant_id)
     |> where([candidate], candidate.state in ^allowed_states)
-    |> where(
-      [candidate],
-      fragment("? <= (clock_timestamp() AT TIME ZONE 'UTC')", candidate.not_before_at)
-    )
-    |> where(
-      [candidate],
-      fragment("? > (clock_timestamp() AT TIME ZONE 'UTC')", candidate.expires_at)
-    )
+    |> where([candidate], fragment("? <= clock_timestamp()", candidate.not_before_at))
+    |> where([candidate], fragment("? > clock_timestamp()", candidate.expires_at))
   end
 
   defp delivery_payload(grant, secret) do

@@ -630,7 +630,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   defp database_now do
     Repo.one(
       from(_value in fragment("SELECT 1"),
-        select: type(fragment("(statement_timestamp() AT TIME ZONE 'UTC')"), :utc_datetime_usec)
+        select: fragment("statement_timestamp()")
       )
     )
   end

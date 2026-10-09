@@ -7,9 +7,10 @@ defmodule Orchard.Repo do
 
   @impl true
   def init(_context, config) do
-    # `:utc_datetime_usec` columns are `timestamp without time zone`, so PostgreSQL
-    # converts database clock values through the session zone. Pin it to UTC
-    # so a server configured for local time cannot shift those comparisons.
+    # Controller columns are `timestamptz` (SPEC.md §8.2), but Ecto still casts
+    # some timestamp values to `timestamp without time zone`, which PostgreSQL
+    # converts through the session zone. Pin it to UTC so a server configured
+    # for local time cannot shift those values.
     parameters = config |> Keyword.get(:parameters, []) |> Keyword.put(:timezone, "UTC")
     {:ok, Keyword.put(config, :parameters, parameters)}
   end
