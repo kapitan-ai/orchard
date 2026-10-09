@@ -11,6 +11,7 @@ import queue
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from threading import Event, RLock
 from typing import Any
@@ -29,6 +30,15 @@ _PACKAGE_DIR = str(Path(__file__).resolve().parent)
 
 class DriverError(RuntimeError):
     """A bounded driver operation could not establish its required state."""
+
+
+def _emit(log: Callable[[], None]) -> bool:
+    """Diagnostics are best effort and never change request or custody outcomes."""
+    try:
+        log()
+    except Exception:
+        return False
+    return True
 
 
 def _failure_reason(exc: BaseException) -> str:
@@ -296,9 +306,12 @@ class TensorFoldDriver:
             return wrapped
         except BaseException as exc:
             try:
-                self._log_copy_failure(exc, size, transient)
-            except Exception:
-                logger.warning("tensorfold cache copy custody failed reason=unavailable")
+                if not _emit(partial(self._log_copy_failure, exc, size, transient)):
+                    _emit(
+                        lambda: logger.warning(
+                            "tensorfold cache copy custody failed reason=unavailable"
+                        )
+                    )
             finally:
                 self._quarantine()
             raise DriverError("cache copy custody failed") from None
@@ -521,7 +534,7 @@ class TensorFoldDriver:
                 if chunk is None:
                     break
                 if output == 0:
-                    self._log_start(job, len(prompt_ids), retained_checkpoints)
+                    _emit(lambda: self._log_start(job, len(prompt_ids), retained_checkpoints))
                 output += len(chunk)
                 if output > max_tokens:
                     raise DriverError("scheduler exceeded admitted output bound")

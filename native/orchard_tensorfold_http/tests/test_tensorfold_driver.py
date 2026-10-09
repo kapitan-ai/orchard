@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from orchard_tensorfold_http import tensorfold_driver as driver_module
 from orchard_tensorfold_http.tensorfold_driver import DriverBounds, DriverError, TensorFoldDriver
 
 
@@ -704,6 +705,28 @@ def test_copy_failure_quarantines_even_when_logging_fails(driver, monkeypatch):
     with pytest.raises(DriverError, match="^cache copy custody failed$"):
         run(driver)
     assert driver.quarantined
+
+
+def test_copy_failure_keeps_fixed_error_when_log_sink_fails(driver, monkeypatch):
+    def broken_sink(*_args, **_kwargs):
+        raise RuntimeError("log sink unavailable")
+
+    driver._copy_bounds = lambda cache: (60, 20)
+    driver.start()
+    monkeypatch.setattr(driver_module.logger, "warning", broken_sink)
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    assert driver.quarantined
+
+
+def test_request_succeeds_when_start_log_sink_fails(driver, monkeypatch):
+    def broken_sink(*_args, **_kwargs):
+        raise RuntimeError("log sink unavailable")
+
+    driver.start()
+    monkeypatch.setattr(driver_module.logger, "info", broken_sink)
+    assert run(driver) == [[6, 7]]
+    assert driver.settled and not driver.quarantined
 
 
 def test_copy_lease_limit_failure_logs_custody_reason(driver, caplog):
