@@ -1275,13 +1275,34 @@ Run the command above again before a qualification run.
 
 ### 2. Prepare without the experiment
 
-Start source dev normally, then import the bundle and create the Tenant, API
-Token and Model access as in [Quick Start](#quick-start). Get the Node UUID
-from the Node Agent IEx session:
+Start source dev normally, then import the bundle and create the Tenant and
+API Token as in [Quick Start](#quick-start). Grant Model access through a
+routing policy that requires a loaded model. The default policy allows only a
+15000 ms cold start, which is too short for a first load of a large bundle, so
+the experiment preloads instead (step 5):
 
 ```elixir
+OrchardCLI.main(["models", "routing-policy", "create", "--tenant", "<tenant-slug>",
+  "--name", "tensorfold-preloaded", "--residency-preference", "required_loaded",
+  "--max-cold-start-ms", "180000", "--max-queue-wait-ms", "3000"])
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>",
+  "--tenant", "<tenant-slug>", "--routing-policy-id", "<returned-policy-id>"])
+```
+
+Read the identities the profiles need, and the Node UUID, in the same IEx
+session:
+
+```elixir
+model = Orchard.Models.get_model_by_identity("<model_id>", "<version>")
+{model.version, model.artifact_sha256}
+{:ok, bundle} = Orchard.Models.artifact_local_path(model)
+for file <- ["chat_template.jinja", "tokenizer_config.json"],
+    do: {file, :crypto.hash(:sha256, File.read!(Path.join(bundle, file))) |> Base.encode16(case: :lower)}
 Orchard.Node.node_id()
 ```
+
+The template and tokenizer configuration digests are of the files the bundle
+manifest names; the file names above are the usual ones.
 
 The Node caches the bundle at the real path of
 `<ORCHARD_MODELS_ROOT>/<model_id>/<version>` (default `tmp/dev/models`).
@@ -1367,13 +1388,52 @@ Startup fails when:
 Wrong identities or bounds are refused later, at Controller preparation, Node
 preparation or Worker load, without a fallback to an ordinary Worker.
 
-### 5. Send requests
+### 5. Preload the model
+
+Load the model through the Node Agent before the first request, so each
+request's deadline covers generation only. The first load in a new cache path
+does a full artifact verification. In the running IEx session, use the Node
+Agent port you started with (default `50071`):
+
+```elixir
+model = Orchard.Models.get_model_by_identity("<model_id>", "<version>")
+{:ok, channel} = GRPC.Stub.connect("127.0.0.1:50071")
+{:ok, status} = Orchard.Cluster.V1.NodeRuntimeService.Stub.get_status(
+  channel, %Orchard.Cluster.V1.StatusRequest{})
+request = %Orchard.Cluster.V1.EnsureModelLoadedRequest{
+  node_id: status.node_metadata.node_id, model_id: model.model_id, version: model.version,
+  artifact_sha256: model.artifact_sha256, artifact_source_uri: model.artifact_source_uri,
+  preload: true, deadline_unix_ms: System.system_time(:millisecond) + 270_000
+}
+{:ok, %{placement_state: :PLACEMENT_STATE_LOADED}} =
+  Orchard.Cluster.V1.NodeRuntimeService.Stub.ensure_model_loaded(channel, request,
+    timeout: 275_000)
+```
+
+A Worker setup failure appears in the Worker log under `tmp/dev/logs/workers`.
+
+### 6. Send requests
 
 Selected requests must set `reasoning_effort` (Chat Completions) or
 `reasoning.effort` (Responses) to `medium`. Seed, stop sequences, JSON
 response mode and explicit `tool_choice` are refused. A refused request
 returns `503 runtime_incompatible` before Worker execution. The Worker log
 records each admission rejection's code and reason, never request content.
+
+A failure after the request is accepted arrives as an SSE `error` event.
+Find its stage in the Controller's `dispatch_timing` line for the request:
+`outcome=model_load_failed` means the model was not loaded (go back to step 5),
+and a Worker-side failure leaves a `tensorfold admission rejected` line or a
+Worker error in the Worker log.
+
+### 7. Finish
+
+Revoke the API Token, then stop source dev:
+
+```elixir
+OrchardCLI.main(["api-keys", "revoke", "--api-key-id", "<api-key-id>"])
+System.stop()
+```
 
 ### Restart and rollback
 
