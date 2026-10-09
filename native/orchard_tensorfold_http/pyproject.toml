@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orchard-tensorfold-http"
+version = "0.1.0"
+description = "Default-off full-history TensorFold Worker source experiment"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "orchard-tokenizer==0.1.0",
+  "orchard-worker-mlx==0.1.0",
+  "Jinja2==3.1.6",
+  "tokenizers==0.22.2",
+  "sentencepiece==0.2.1",
+]
+
+[project.optional-dependencies]
+# Opt-in native tuple for the source experiment on Apple Silicon (SPEC.md §7.2.9).
+# The default install stays model-free and does not advance foundation pins.
+native = [
+  "tensorfold ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx==0.32.3 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx-lm==0.32.0 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "transformers==5.14.1 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[project.scripts]
+orchard-worker-tensorfold = "orchard_tensorfold_http.cli:main"
+
+[tool.uv.sources]
+orchard-tokenizer = { path = "../orchard_tokenizer" }
+orchard-worker-mlx = { path = "../orchard_worker_mlx" }
+tensorfold = { git = "https://github.com/ashhart/TensorFold.git", rev = "cb2ebf0540f42604e2759b2ddef497861e928248" }
+
+[dependency-groups]
+dev = ["pytest==9.0.2", "pytest-cov==7.0.0", "ruff==0.15.7"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/orchard_tensorfold_http"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orchard_tensorfold_http"]

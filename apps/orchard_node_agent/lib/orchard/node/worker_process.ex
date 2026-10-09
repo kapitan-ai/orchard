@@ -14,6 +14,7 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Node
   alias Orchard.Node.RuntimeAdapter
   alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
+  alias Orchard.Node.TensorFoldProjection
   alias Orchard.Node.WorkerCapabilityEvidence
 
   require Logger
@@ -57,6 +58,12 @@ defmodule Orchard.Node.WorkerProcess do
           :ok | {:error, term()}
   def start_request(pid, request_id, %ExecuteInferenceRequest{} = request, opts) do
     GenServer.call(pid, {:start_request, request_id, request, opts})
+  end
+
+  @spec prepare_request(pid(), ExecuteInferenceRequest.t()) ::
+          {:ok, ExecuteInferenceRequest.t()} | {:error, term()}
+  def prepare_request(pid, request) do
+    GenServer.call(pid, {:prepare_request, request}, 2_000)
   end
 
   @spec cancel_request(pid(), String.t()) :: :ok | {:error, term()}
@@ -194,6 +201,35 @@ defmodule Orchard.Node.WorkerProcess do
       true ->
         admit_request(request_id, request, subscriber, state)
     end
+  end
+
+  def handle_call({:prepare_request, request}, _from, state) do
+    config = TensorFoldProjection.config()
+    projection? = request.tensorfold_history_projection_json not in [nil, ""]
+    selected? = TensorFoldProjection.selected?(request, config)
+
+    result =
+      cond do
+        not state.loaded? ->
+          {:error, :model_not_loaded}
+
+        not projection? and not selected? ->
+          {:ok, request}
+
+        not projection? ->
+          {:error, :tensorfold_projection_rejected}
+
+        not selected? ->
+          {:error, :tensorfold_projection_rejected}
+
+        function_exported?(state.adapter, :prepare_request, 3) ->
+          state.adapter.prepare_request(state.adapter_state, request, [])
+
+        true ->
+          {:error, :tensorfold_projection_rejected}
+      end
+
+    {:reply, result, state}
   end
 
   def handle_call(:status, _from, state) do

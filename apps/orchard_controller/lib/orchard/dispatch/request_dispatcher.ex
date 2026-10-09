@@ -38,6 +38,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   capturing cold/warm classification, stream timing, and outcome.
   """
 
+  alias Orchard.Inference.TensorFoldProjection
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     ExecuteInferenceRequest
@@ -852,7 +854,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
-        ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+        case gate_tensorfold_route(context, metrics) do
+          :ok ->
+            ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+          {:error, reason} ->
+            handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
+        end
 
       {:error, reason, metrics} ->
         handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
@@ -1047,19 +1056,44 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp execute_loaded_request(context, ensure_load_meta, metrics) do
-    case gate_prompt_token_ids(
-           context.execute_request,
-           ensure_load_meta,
-           context.schedule,
-           context.model_load_request
-         ) do
-      {:ok, gated_execute_request} ->
-        execute_under_acceptance_gate(context, gated_execute_request, metrics)
-
+    with :ok <- gate_tensorfold_route(context, metrics),
+         {:ok, gated_execute_request} <-
+           gate_prompt_token_ids(
+             context.execute_request,
+             ensure_load_meta,
+             context.schedule,
+             context.model_load_request
+           ) do
+      execute_under_acceptance_gate(context, gated_execute_request, metrics)
+    else
       {:error, reason} ->
         {:error, {:dispatch_failed, reason}}
     end
   end
+
+  defp gate_tensorfold_route(context, metrics) do
+    request = context.execute_request
+
+    if request.tensorfold_history_projection_json in [nil, ""] do
+      :ok
+    else
+      with :ok <-
+             TensorFoldProjection.authorize_route(
+               metrics.node_id,
+               TensorFoldProjection.config()
+             ),
+           true <- authoritative_prompt_token_ids?(request) do
+        :ok
+      else
+        _failure -> {:error, :runtime_incompatible}
+      end
+    end
+  end
+
+  # SPEC.md §7.2.9: a selected TensorFold request must reach the bridge with the
+  # authoritative IDs the Controller rendered, or fail here before model load.
+  defp authoritative_prompt_token_ids?(%{prompt_token_ids: ids, input_tokens: count}),
+    do: is_list(ids) and ids != [] and length(ids) == count
 
   defp execute_under_acceptance_gate(context, gated_execute_request, metrics) do
     case acquire_dispatch_acceptance_gate(context) do
@@ -1418,6 +1452,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # inventory from status probes and must not be used as dispatch eligibility
   # authority. The Runtime Endpoint ensure-model-loaded result is the
   # authoritative capability gate.
+  # The TensorFold bridge needs the authoritative IDs whatever the safe mode, so a
+  # projected request keeps them and refuses a Worker that cannot accept them.
+  defp gate_prompt_token_ids(
+         %{tensorfold_history_projection_json: projection} = request,
+         ensure_result,
+         _schedule,
+         _model_load_request
+       )
+       when is_binary(projection) and projection != "" do
+    if Map.get(ensure_result, :worker_supports_prompt_token_ids) === true,
+      do: {:ok, request},
+      else: {:error, :runtime_incompatible}
+  end
+
   defp gate_prompt_token_ids(request, ensure_result, schedule, model_load_request) do
     mode = Inference.tokenizer_safe_mode()
     prompt_token_ids = request.prompt_token_ids || []
@@ -1749,6 +1797,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     delivery = AttemptEventDelivery.record(loop_ctx.delivery, terminal_event)
     {:ok, [terminal_event], metrics, delivery}
   end
+
+  # SPEC.md §7.2.9: the Node refuses a missing or mismatched TensorFold offer
+  # before Accepted. Keep that classified instead of a missing acceptance.
+  defp stream_done_result(
+         %{
+           accepted?: false,
+           cancellation_started_before_acceptance?: false,
+           terminal_event: %InferenceEvent{
+             event: %InferenceEvent.Failed{code: "tensorfold_projection_rejected"}
+           },
+           conformance_defect: :none
+         },
+         [],
+         _metrics
+       ),
+       do: {:error, {:dispatch_failed, :runtime_incompatible}}
 
   defp stream_done_result(loop_ctx, events, metrics),
     do: stream_terminal_result(loop_ctx, events, metrics)
@@ -2209,6 +2273,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       deadline_unix_ms: zero_to_nil(request.deadline_unix_ms),
       metadata_json: request.metadata_json || "{}",
       cache_affinity_fingerprint: blank_to_nil(request.cache_affinity_fingerprint),
+      tensorfold_history_projection_json:
+        blank_to_nil(request.tensorfold_history_projection_json),
       prompt_token_ids: request.prompt_token_ids || []
     )
   end

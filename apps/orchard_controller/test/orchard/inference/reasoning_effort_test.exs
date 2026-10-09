@@ -257,6 +257,27 @@ defmodule Orchard.Inference.ReasoningEffortTest do
     end
   end
 
+  test "SPEC §7.2.9 rendered effort keeps valid whole-prompt token IDs and rejects malformed ones" do
+    {:ok, request} = bound(:chat_completions, "medium")
+    valid = %{contract_version: 5, ok: true, result: proof(request)}
+    ids = [3, 1, 4, 1, 5, 9, 2]
+
+    configure(tokenizer_executable: helper(put_in(valid.result[:prompt_token_ids], ids)))
+    assert {:ok, tokenization} = Client.tokenize(request, options())
+    assert tokenization.prompt_token_ids == ids
+    assert :ok = ReasoningEffort.verify_tokenization(request, tokenization)
+
+    configure(tokenizer_executable: helper(valid))
+    assert {:ok, tokenization} = Client.tokenize(request, options())
+    refute Map.has_key?(tokenization, :prompt_token_ids)
+
+    for malformed <- [[], [1, 2, 3], [3, 1, 4, 1, 5, 9, -2], [3, 1, 4, 1, 5, 9, "2"], "1234567"] do
+      response = put_in(valid.result[:prompt_token_ids], malformed)
+      configure(tokenizer_executable: helper(response))
+      assert {:error, :invalid_response} = Client.tokenize(request, options())
+    end
+  end
+
   test "parallel mixed-effort requests retain distinct render and serialized identities" do
     tiers = Enum.take(Stream.cycle(["low", "medium", "high", "xhigh"]), 48)
 

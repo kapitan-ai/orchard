@@ -387,6 +387,10 @@ message ExecuteInferenceRequest {
   bool return_token_ids = 12;
   bool return_logprobs = 13;
   PreparationRedemption preparation_redemption = 14;
+  // Internal, versioned history for the explicitly selected TensorFold bridge.
+  // Empty preserves the baseline Worker contract. It is not part of negotiated
+  // FrozenExecutionInput and must not be combined with preparation_redemption.
+  bytes tensorfold_history_projection_json = 15;
 }
 
 message CancelInferenceRequest {

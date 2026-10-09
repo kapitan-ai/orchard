@@ -607,6 +607,11 @@ defmodule Orchard.Cluster.V1.ExecuteInferenceRequest do
     type: Orchard.Cluster.V1.PreparationRedemption,
     json_name: "preparationRedemption"
   )
+
+  field(:tensorfold_history_projection_json, 15,
+    type: :bytes,
+    json_name: "tensorfoldHistoryProjectionJson"
+  )
 end
 
 defmodule Orchard.Cluster.V1.CancelInferenceRequest do

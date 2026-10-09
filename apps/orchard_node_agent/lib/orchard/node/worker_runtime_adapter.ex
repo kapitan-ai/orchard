@@ -34,6 +34,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   }
 
   alias Orchard.Node.RuntimeProcessReaper
+  alias Orchard.Node.TensorFoldProjection
   alias Orchard.Node.WorkerCapabilityEvidence
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.PathUtils
@@ -106,6 +107,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   def get_status(_adapter_state, _opts), do: {:error, :worker_unavailable}
+
+  @impl true
+  def prepare_request(%{channel: channel, model_ref: model_ref}, request, _opts) do
+    config = TensorFoldProjection.config()
+
+    with true <- request.model_id == model_ref.model_id and request.version == model_ref.version,
+         {:ok, timeout} <- TensorFoldProjection.lookup_timeout(request, config),
+         {:ok, %{loaded: true, ready: true} = status} <- fetch_offer_status(channel, timeout) do
+      TensorFoldProjection.bind(request, status.tensorfold_profile_admission_json, config)
+    else
+      _other -> {:error, :tensorfold_projection_rejected}
+    end
+  end
+
+  def prepare_request(_state, _request, _opts), do: {:error, :tensorfold_projection_rejected}
+
+  defp fetch_offer_status(channel, timeout) do
+    WorkerRuntimeService.Stub.get_status(channel, %WorkerStatusRequest{}, timeout: timeout)
+  end
 
   @spec score_prefix_cache(state() | term(), ScorePrefixCacheRequest.t(), keyword()) ::
           {:ok, ScorePrefixCacheResponse.t()} | {:error, term()}
@@ -476,6 +496,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          prefix_cache_max_bytes: prefix_cache_max_bytes,
          generation_mode: generation_mode,
          max_concurrent_generations: max_concurrent_generations,
+         auto_max_concurrent_generations: auto_max_concurrent_generations,
          memory_budget_mode: memory_budget_mode,
          memory_budget_utilization: memory_budget_utilization,
          memory_budget_overhead_bytes: memory_budget_overhead_bytes
@@ -487,6 +508,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         prefix_cache_max_bytes: prefix_cache_max_bytes,
         generation_mode: generation_mode,
         max_concurrent_generations: max_concurrent_generations,
+        auto_max_concurrent_generations: auto_max_concurrent_generations,
         memory_budget_mode: memory_budget_mode,
         memory_budget_utilization: memory_budget_utilization,
         memory_budget_overhead_bytes: memory_budget_overhead_bytes

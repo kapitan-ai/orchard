@@ -150,6 +150,9 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
     do: build(:request_cancelled, source_code: "request_caller_disconnect")
 
+  def from_execute_error({:dispatch_failed, :runtime_incompatible}),
+    do: build(:tokenization_runtime_incompatible, [])
+
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
   @spec from_failed_event(InferenceEvent.t()) :: t()
@@ -598,6 +601,15 @@ defmodule Orchard.Inference.ChatError do
       http_status: 500,
       error_code: error.source_code || "request_interrupted",
       error_message: error.source_message || "Request interrupted"
+    }
+  end
+
+  def terminal_attrs(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: "runtime_incompatible",
+      error_message: "Runtime is incompatible"
     }
   end
 

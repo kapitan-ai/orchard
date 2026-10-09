@@ -54,6 +54,8 @@ defmodule Orchard.Node.ModelManager do
           controller_session_id: String.t() | nil,
           model_key: {String.t(), String.t()},
           phase: request_phase(),
+          original_request: ExecuteInferenceRequest.t(),
+          prepared_request: ExecuteInferenceRequest.t(),
           pid: pid(),
           subscriber: pid(),
           subscriber_monitor_ref: reference()
@@ -345,7 +347,16 @@ defmodule Orchard.Node.ModelManager do
         {:reply, {:error, :request_not_prepared}, state}
 
       {:ok, %{pid: pid, subscriber: subscriber} = active_request} ->
-        case safe_start_request(pid, request.request_id, request, subscriber) do
+        prepared_request = Map.get(active_request, :prepared_request, request)
+
+        result =
+          if Map.get(active_request, :original_request, request) === request do
+            safe_start_request(pid, request.request_id, prepared_request, subscriber)
+          else
+            {:error, :request_not_prepared}
+          end
+
+        case result do
           :ok ->
             next_state = put_request_phase(state, request.request_id, :running)
             {:reply, :ok, next_state}
@@ -428,31 +439,47 @@ defmodule Orchard.Node.ModelManager do
          model_at_request_capacity?(state.active_requests, key, request_limit) do
       {:reply, {:error, :model_busy}, state}
     else
-      subscriber_monitor_ref = Process.monitor(subscriber)
-
-      active_requests =
-        Map.put(state.active_requests, request.request_id, %{
-          controller_session_id: request.controller_session_id,
-          model_key: key,
-          phase: :prepared,
-          pid: pid,
-          subscriber: subscriber,
-          subscriber_monitor_ref: subscriber_monitor_ref
-        })
-
-      subscriber_refs =
-        Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
-
-      next_state =
-        %{
-          state
-          | active_requests: active_requests,
-            subscriber_refs: subscriber_refs
-        }
-        |> touch_worker_last_used(key)
-
-      {:reply, :ok, next_state}
+      bind_loaded_request(request, subscriber, key, pid, state)
     end
+  end
+
+  defp bind_loaded_request(request, subscriber, key, pid, state) do
+    case safe_worker_call(fn -> WorkerProcess.prepare_request(pid, request) end) do
+      {:ok, prepared_request} ->
+        retain_prepared_request(request, prepared_request, subscriber, key, pid, state)
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp retain_prepared_request(request, prepared_request, subscriber, key, pid, state) do
+    subscriber_monitor_ref = Process.monitor(subscriber)
+
+    active_requests =
+      Map.put(state.active_requests, request.request_id, %{
+        controller_session_id: request.controller_session_id,
+        model_key: key,
+        phase: :prepared,
+        original_request: request,
+        prepared_request: prepared_request,
+        pid: pid,
+        subscriber: subscriber,
+        subscriber_monitor_ref: subscriber_monitor_ref
+      })
+
+    subscriber_refs =
+      Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
+
+    next_state =
+      %{
+        state
+        | active_requests: active_requests,
+          subscriber_refs: subscriber_refs
+      }
+      |> touch_worker_last_used(key)
+
+    {:reply, :ok, next_state}
   end
 
   # -- handle_info -----------------------------------------------------------

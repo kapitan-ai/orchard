@@ -26,6 +26,7 @@ defmodule Orchard.Node.RuntimeServer do
                            :model_not_loaded,
                            :request_already_active,
                            :request_not_prepared,
+                           :tensorfold_projection_rejected,
                            :worker_unavailable
                          ])
 
@@ -142,6 +143,9 @@ defmodule Orchard.Node.RuntimeServer do
   defp normalize_failure_reason(:worker_unavailable),
     do: {"worker_unavailable", "worker process became unavailable"}
 
+  defp normalize_failure_reason(:tensorfold_projection_rejected),
+    do: {"tensorfold_projection_rejected", "selected experiment history admission failed"}
+
   defp normalize_failure_reason(reason),
     do: {"runtime_error", "runtime request failed: #{inspect(reason)}"}
 
@@ -165,6 +169,7 @@ defmodule Orchard.Node.RuntimeServer do
            "model_not_loaded",
            "request_already_active",
            "request_not_prepared",
+           "tensorfold_projection_rejected",
            "worker_unavailable"
          ] do
         value
