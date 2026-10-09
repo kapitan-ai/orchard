@@ -1643,6 +1643,41 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
+  test "SPEC §7.2.9 Node refusal of a TensorFold offer before Accepted stays runtime_incompatible" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "chatcmpl-" <> Ecto.UUID.generate()
+    authorize_tensorfold_node(node_id)
+
+    @terminal_before_accepted_client.configure(
+      Orchard.InferenceEvent.failed(
+        "tensorfold_projection_rejected",
+        "selected experiment history admission failed",
+        false
+      )
+    )
+
+    outcome =
+      assert_dispatch_failure(
+        dispatch_with_deadline(
+          capacity_schedule(authority, node_id, request_id),
+          tensorfold_request(request_id, "{}"),
+          model_load_request(node_id),
+          client_impl: @terminal_before_accepted_client
+        ),
+        :runtime_incompatible
+      )
+
+    # The shape TensorFoldProjection.refused_before_acceptance?/3 maps to a public 503.
+    assert %AttemptOutcome{
+             accepted: false,
+             events: [],
+             failure: %{"failure_code" => "runtime_incompatible"}
+           } = outcome
+
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
   test "SPEC 5.9 stream error after a pre-Accepted delta fails with the transport reason" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()

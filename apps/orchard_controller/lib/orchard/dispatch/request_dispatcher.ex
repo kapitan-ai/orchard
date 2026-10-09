@@ -1798,6 +1798,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     {:ok, [terminal_event], metrics, delivery}
   end
 
+  # SPEC.md §7.2.9: the Node refuses a missing or mismatched TensorFold offer
+  # before Accepted. Keep that classified instead of a missing acceptance.
+  defp stream_done_result(
+         %{
+           accepted?: false,
+           cancellation_started_before_acceptance?: false,
+           terminal_event: %InferenceEvent{
+             event: %InferenceEvent.Failed{code: "tensorfold_projection_rejected"}
+           },
+           conformance_defect: :none
+         },
+         [],
+         _metrics
+       ),
+       do: {:error, {:dispatch_failed, :runtime_incompatible}}
+
   defp stream_done_result(loop_ctx, events, metrics),
     do: stream_terminal_result(loop_ctx, events, metrics)
 
