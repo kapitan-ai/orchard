@@ -72,7 +72,7 @@ def assets(tmp_path, monkeypatch):
     return template, config, template_digest
 
 
-def helper_tokenization(assets, messages, tools):
+def helper_tokenization(assets, messages, tools, tool_choice=None):
     template, config, template_digest = assets
     return execute_contract(
         {
@@ -89,7 +89,7 @@ def helper_tokenization(assets, messages, tools):
             "request": {
                 "input_items": messages,
                 "tools": tools,
-                "tool_choice": None,
+                "tool_choice": tool_choice,
                 "reasoning": {
                     "generation_policy": "enabled",
                     "projection": "legacy_blended",
@@ -199,3 +199,18 @@ def test_single_changed_id_is_rejected_as_prompt_mismatch(assets):
 
     with pytest.raises(BackendError, match="authoritative rendered prompt mismatch"):
         admit(assets, request, profile)
+
+
+def test_spec_7_2_9_auto_tool_choice_renders_and_is_admitted_like_omission(assets):
+    messages = HISTORIES["tool_continuation"]
+    omitted = helper_tokenization(assets, messages, TOOLS)
+    auto = helper_tokenization(assets, messages, TOOLS, tool_choice="auto")
+    profile = profile_for(assets)
+    request = bound_request(profile, auto, messages, TOOLS)
+    request.params.tool_choice_json = b'"auto"'
+
+    admitted = admit(assets, request, profile)
+
+    assert auto["rendered_prompt"] == omitted["rendered_prompt"]
+    assert auto["prompt_token_ids"] == omitted["prompt_token_ids"]
+    assert list(admitted.prompt_ids) == omitted["prompt_token_ids"]

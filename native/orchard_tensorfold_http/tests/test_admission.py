@@ -259,6 +259,22 @@ def test_unprojected_tool_choice_cannot_be_ignored_by_template(profile, choice):
         admit(request, profile)
 
 
+def test_spec_7_2_9_auto_tool_choice_with_declared_tools_is_admitted(profile):
+    tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+    request = request_for(profile, tools=tools)
+    request.params.tool_choice_json = b'"auto"'
+    assert admit(request, profile).prompt_ids == tuple(request.prompt_token_ids)
+
+
+@pytest.mark.parametrize("choice", [b'"required"', b'"none"', b'{"name":"read"}', b'"AUTO"'])
+def test_explicit_tool_choice_with_declared_tools_stays_refused(profile, choice):
+    tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+    request = request_for(profile, tools=tools)
+    request.params.tool_choice_json = choice
+    with pytest.raises(BackendError, match="tool choice controls"):
+        admit(request, profile)
+
+
 def test_full_natural_tool_history_and_schema_binding(profile):
     tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
     messages = [

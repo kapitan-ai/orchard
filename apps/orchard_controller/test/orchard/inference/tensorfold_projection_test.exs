@@ -7,7 +7,8 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     ReasoningEffort,
     ResponsesRequestNormalizer,
     ResponsesRequestValidator,
-    TensorFoldProjection
+    TensorFoldProjection,
+    ToolRegistryResolver
   }
 
   alias Orchard.{CanonicalRequest, ModelManifest}
@@ -76,6 +77,7 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
       %{request | sampling: %{request.sampling | stop: ["END"]}},
       %{request | response_format: %{request.response_format | type: :json_object}},
       %{request | tooling: %{request.tooling | tool_choice: "auto"}},
+      %{request | tooling: %{request.tooling | tool_choice: "required"}},
       %{
         request
         | input_items: [
@@ -155,6 +157,77 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     end
   end
 
+  test "SPEC §7.2.9 tool_choice auto with declared tools is the admitted default on both endpoints" do
+    for endpoint <- [:chat_completions_with_tools, :responses] do
+      request = bound(endpoint)
+      {:ok, tooling} = ToolRegistryResolver.resolve(request.tooling)
+      request = %{request | tooling: tooling}
+      assert [_ | _] = request.tooling.tools
+      auto = %{request | tooling: %{request.tooling | tool_choice: "auto"}}
+
+      assert :ok = TensorFoldProjection.validate(auto, profile())
+      assert {:ok, auto_json} = issue(auto)
+      assert {:ok, ^auto_json} = issue(request)
+
+      for choice <- [
+            "none",
+            "required",
+            %{"type" => "function", "function" => %{"name" => "lookup"}}
+          ] do
+        explicit = %{request | tooling: %{request.tooling | tool_choice: choice}}
+        assert {:error, _} = TensorFoldProjection.validate(explicit, profile())
+      end
+    end
+  end
+
+  test "SPEC §7.2.9 OpenCode title, tool and continuation request shapes are admitted" do
+    for body <- opencode_requests() do
+      assert {:ok, params} = ChatRequestValidator.validate(body)
+      assert {:ok, request} = ChatRequestNormalizer.normalize(params)
+      assert {:ok, tooling} = ToolRegistryResolver.resolve(request.tooling)
+      request = bind(%{request | tooling: tooling})
+
+      deadline = %{timeout_at: DateTime.add(DateTime.utc_now(), 1_799_000, :millisecond)}
+
+      assert :ok = TensorFoldProjection.validate(request, opencode_profile())
+      assert {:ok, json} = issue(request, opencode_profile(), "node-one", deadline)
+      assert Jason.decode!(json)["tools"] == request.tooling.tools
+    end
+  end
+
+  test "SPEC §7.2.9 frozen profile token limits are refused before dispatch" do
+    request = bound(:chat_completions)
+    sized = %{request | sampling: %{request.sampling | max_output_tokens: 32_000}}
+
+    limits = %{
+      "max_input_tokens" => 3,
+      "max_output_tokens" => 32_000,
+      "max_context_tokens" => 32_003
+    }
+
+    limited = Map.merge(profile(), limits)
+
+    assert :ok = TensorFoldProjection.validate(sized, limited)
+    assert {:ok, _json} = issue(sized, limited)
+    assert :ok = TensorFoldProjection.validate(request, limited)
+
+    for {key, value} <- [
+          {"max_input_tokens", 2},
+          {"max_output_tokens", 31_999},
+          {"max_context_tokens", 32_002}
+        ] do
+      assert {:error, {:tokenization, {:runtime_incompatible, _}}} =
+               TensorFoldProjection.validate(sized, Map.put(limited, key, value))
+    end
+
+    defaulted = Map.put(limited, "max_output_tokens", 4_095)
+    assert {:error, _} = TensorFoldProjection.validate(request, defaulted)
+
+    for key <- Map.keys(limits), invalid <- [0, -1, "3", 1.5, 1_048_577] do
+      assert {:error, _} = TensorFoldProjection.validate(sized, Map.put(limited, key, invalid))
+    end
+  end
+
   test "SPEC §7.2.9 selection follows the configured model only" do
     request = bound(:chat_completions)
     assert TensorFoldProjection.selected?(request, profile())
@@ -230,11 +303,93 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     request
   end
 
-  defp bound(endpoint) do
+  defp normalized(:chat_completions_with_tools) do
+    params = %{
+      "model" => "qwen@#{@version}",
+      "messages" => [%{"role" => "user", "content" => "lookup it"}],
+      "tools" => [lookup_tool()]
+    }
+
+    assert {:ok, params} = ChatRequestValidator.validate(params)
+    {:ok, request} = ChatRequestNormalizer.normalize(params)
+    request
+  end
+
+  defp bound(endpoint), do: endpoint |> normalized() |> bind()
+
+  defp bind(request) do
     {:ok, reasoning} = ReasoningEffort.resolve(:medium, @artifact, @template)
 
-    %{normalized(endpoint) | reasoning: reasoning}
+    %{request | reasoning: reasoning}
     |> CanonicalRequest.with_tokenization("rendered medium", 3, [11, 12, 13])
+  end
+
+  defp lookup_tool do
+    %{
+      "type" => "function",
+      "function" => %{
+        "name" => "lookup",
+        "description" => "Look up a value",
+        "parameters" => %{
+          "$schema" => "https://json-schema.org/draft/2020-12/schema",
+          "type" => "object",
+          "properties" => %{"q" => %{"type" => "string"}, "limit" => %{"type" => "integer"}},
+          "required" => ["q"]
+        }
+      }
+    }
+  end
+
+  # Placeholder content in the request shapes OpenCode 1.18.34 sends through
+  # the pinned pilot configuration: a title request without tools, then a tool
+  # request and its continuation with tool_choice "auto".
+  defp opencode_requests do
+    controls = %{
+      "model" => "qwen@#{@version}",
+      "max_tokens" => 32_000,
+      "temperature" => 1,
+      "top_p" => 0.95,
+      "reasoning_effort" => "medium",
+      "stream" => true,
+      "stream_options" => %{"include_usage" => true}
+    }
+
+    system = %{"role" => "system", "content" => "You are a coding agent."}
+    task = %{"role" => "user", "content" => "Fix the failing test."}
+
+    call = %{
+      "id" => "call_one",
+      "type" => "function",
+      "function" => %{"name" => "lookup", "arguments" => ~s({"q":"value"})}
+    }
+
+    tools = %{"tools" => [lookup_tool()], "tool_choice" => "auto"}
+
+    [
+      Map.put(controls, "messages", [
+        %{"role" => "system", "content" => "Generate a short title."},
+        %{"role" => "user", "content" => "Title request"},
+        task
+      ]),
+      controls |> Map.merge(tools) |> Map.put("messages", [system, task]),
+      controls
+      |> Map.merge(tools)
+      |> Map.put("messages", [
+        system,
+        task,
+        %{"role" => "assistant", "content" => "", "tool_calls" => [call]},
+        %{"role" => "tool", "tool_call_id" => "call_one", "content" => "result"}
+      ])
+    ]
+  end
+
+  defp opencode_profile do
+    Map.merge(profile(), %{
+      "max_input_tokens" => 65_536,
+      "max_output_tokens" => 32_768,
+      "max_context_tokens" => 98_304,
+      "max_request_seconds" => 1_800
+    })
   end
 
   defp profile do

@@ -1333,9 +1333,10 @@ The Controller and Node profiles share these keys:
 ```
 
 - The Controller profile also requires `authorized_node_ids` (the Node UUIDs
-  from step 2) and accepts `max_request_seconds`. Set it to the Worker
-  profile's `max_request_seconds` so the Controller refuses a deadline the
-  Worker would reject.
+  from step 2) and accepts `max_request_seconds`, `max_input_tokens`,
+  `max_output_tokens` and `max_context_tokens`. Set each to the matching
+  Worker profile value so the Controller refuses a deadline or token count the
+  Worker would reject, before the request reaches the Node.
 - The Node profile requires `max_projection_bytes` and accepts
   `offer_timeout_ms` (1 to 1000).
 - Both validators ignore keys they do not use, so one file can serve as both
@@ -1416,7 +1417,8 @@ A Worker setup failure appears in the Worker log under `tmp/dev/logs/workers`.
 
 Selected requests must set `reasoning_effort` (Chat Completions) or
 `reasoning.effort` (Responses) to `medium`. Seed, stop sequences, JSON
-response mode and explicit `tool_choice` are refused. A refused request
+response mode and explicit `tool_choice` are refused. `tool_choice: "auto"`
+with declared tools is the default and is admitted. A refused request
 returns `503 runtime_incompatible` before Worker execution. The Worker log
 records each admission rejection's code and reason, never request content.
 

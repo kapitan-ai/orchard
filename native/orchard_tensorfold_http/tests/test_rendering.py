@@ -175,6 +175,44 @@ def test_exact_qwen_template_matches_contract5_history_and_role_admission(assets
     )
 
 
+def test_spec_7_2_9_exact_qwen_template_renders_auto_tool_choice_like_omission(assets):
+    template, config = assets
+    fixture_root = (
+        Path(__file__).resolve().parents[3] / "apps/orchard_controller/test/fixtures/tokenizer"
+    )
+    template.write_bytes((fixture_root / "qwen3_8_effort/chat_template.jinja").read_bytes())
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        }
+    ]
+    messages = [{"role": "system", "content": "Be exact"}, {"role": "user", "content": "lookup"}]
+    normalized = _legacy_template_messages(
+        normalize_messages_preserving_message_fields(
+            normalize_tool_history({"input_items": messages})
+        )
+    )
+
+    def helper(tool_choice):
+        return render_prompt(
+            normalized,
+            [f"{m['role']} {m['content']}" for m in normalized],
+            template,
+            config,
+            tools=tools,
+            tool_choice=tool_choice,
+            template_arguments={"enable_thinking": True, "reasoning_effort": "medium"},
+            strict_template_arguments=True,
+        )
+
+    assert helper("auto") == helper(None) == bind(assets)(messages, tools=tools)
+
+
 def test_history_is_exact_prompt_prefix_without_generation_suffix(assets):
     render = bind(assets)
     options = {"enable_thinking": True, "reasoning_effort": "medium"}

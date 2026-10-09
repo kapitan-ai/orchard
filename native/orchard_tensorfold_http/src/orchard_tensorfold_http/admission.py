@@ -191,7 +191,9 @@ def admit_history(
     tool_choice_payload = getattr(params, "tool_choice_json", b"")
     if len(tool_choice_payload) > profile.max_projection_bytes:
         raise _invalid("tool choice exceeds bounded projection")
-    if _json(tool_choice_payload or b"null") is not None:
+    # "auto" with declared tools is the default and renders like an omitted choice.
+    tool_choice = _json(tool_choice_payload or b"null")
+    if tool_choice is not None and not (tool_choice == "auto" and tools):
         raise _invalid("tool choice controls are not admitted by this experiment")
     if getattr(params, "stop_sequences", ()):
         raise _invalid("stop controls are not admitted by this experiment")
