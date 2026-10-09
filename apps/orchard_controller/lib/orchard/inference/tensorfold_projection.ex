@@ -2,13 +2,15 @@ defmodule Orchard.Inference.TensorFoldProjection do
   @moduledoc false
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Inference.{CacheAffinity, ReasoningEffort}
+  alias Orchard.Inference.{CacheAffinity, ReasoningEffort, RequestPreparation}
   alias Orchard.Models.ModelRenderAssets
 
   @binding_keys ~w(schema_version profile_id model_id version artifact_sha256 template_sha256 tokenizer_config_sha256 enable_thinking reasoning_effort output_projection)
   @max_bytes 1_048_576
   @max_config_bytes 4_194_304
   @max_request_seconds 3_600
+  @max_tokens 1_048_576
+  @token_limit_keys ~w(max_input_tokens max_output_tokens max_context_tokens)
 
   @spec config() :: map() | nil
   def config, do: Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
@@ -97,6 +99,7 @@ defmodule Orchard.Inference.TensorFoldProjection do
          true <- reasoning.source == :explicit_public,
          true <- contract.mode == :rendered,
          true <- authoritative_tokenization?(request),
+         true <- within_token_limits?(request, profile),
          true <- contract.model_artifact_digest == profile["artifact_sha256"],
          true <- contract.chat_template_digest == profile["template_sha256"],
          {:ok, ^reasoning} <-
@@ -107,7 +110,7 @@ defmodule Orchard.Inference.TensorFoldProjection do
            ),
          true <- is_nil(request.sampling.seed) and request.sampling.stop == [],
          true <- request.response_format.type == :text,
-         true <- is_nil(request.tooling.tool_choice),
+         true <- default_tool_choice?(request.tooling),
          false <-
            CacheAffinity.live_fingerprint_match_enabled?(
              Orchard.Inference.cache_affinity_config()
@@ -120,11 +123,18 @@ defmodule Orchard.Inference.TensorFoldProjection do
   end
 
   defp valid_profile?(profile) do
+    valid_binding?(profile) and valid_names?(profile) and valid_digests?(profile) and
+      valid_nodes?(profile) and valid_bounds?(profile)
+  end
+
+  defp valid_binding?(profile) do
     profile["schema_version"] == 1 and profile["enable_thinking"] == true and
-      profile["reasoning_effort"] == "medium" and profile["output_projection"] == "legacy_blended" and
-      valid_names?(profile) and valid_digests?(profile) and valid_nodes?(profile) and
-      valid_limit?(Map.get(profile, "max_projection_bytes", 262_144)) and
-      valid_request_seconds?(profile)
+      profile["reasoning_effort"] == "medium" and profile["output_projection"] == "legacy_blended"
+  end
+
+  defp valid_bounds?(profile) do
+    valid_limit?(Map.get(profile, "max_projection_bytes", 262_144)) and
+      valid_request_seconds?(profile) and valid_token_limits?(profile)
   end
 
   # SPEC.md §7.2.9: the bridge admits only the authoritative rendered bytes and
@@ -159,6 +169,36 @@ defmodule Orchard.Inference.TensorFoldProjection do
   end
 
   defp within_request_limit(_schedule, _profile), do: :ok
+
+  defp valid_token_limits?(profile) do
+    profile
+    |> Map.take(@token_limit_keys)
+    |> Enum.all?(fn {_key, limit} -> is_integer(limit) and limit in 1..@max_tokens end)
+  end
+
+  # The bridge refuses a request beyond its frozen token limits only after
+  # acceptance, so a configured limit is checked before dispatch.
+  defp within_token_limits?(request, profile) do
+    input = request.input_token_count
+    output = RequestPreparation.effective_max_output_tokens(request.sampling)
+
+    within_limit?(profile, "max_input_tokens", input) and
+      within_limit?(profile, "max_output_tokens", output) and
+      within_limit?(profile, "max_context_tokens", input + output)
+  end
+
+  defp within_limit?(profile, key, value) do
+    case Map.fetch(profile, key) do
+      {:ok, limit} -> value <= limit
+      :error -> true
+    end
+  end
+
+  # SPEC.md §7.2.9: "auto" with declared tools is the default tool behavior,
+  # not an explicit control, and renders exactly as an omitted choice.
+  defp default_tool_choice?(%{tool_choice: nil}), do: true
+  defp default_tool_choice?(%{tool_choice: "auto", tools: [_ | _]}), do: true
+  defp default_tool_choice?(_tooling), do: false
 
   defp valid_names?(profile) do
     Enum.all?(~w(profile_id model_id), fn key ->

@@ -177,9 +177,10 @@ defmodule Orchard.Inference.RequestPreparation do
     end
   end
 
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
-       when is_integer(n) and n > 0,
-       do: n
+  @spec effective_max_output_tokens(CanonicalRequest.Sampling.t()) :: pos_integer()
+  def effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
+      when is_integer(n) and n > 0,
+      do: n
 
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{}), do: @default_max_output_tokens
+  def effective_max_output_tokens(%CanonicalRequest.Sampling{}), do: @default_max_output_tokens
 end

@@ -35,3 +35,9 @@
 - [x] Pin the native tuple as an optional Apple Silicon `native` extra without changing the default install.
 - [x] Document the operator flow in `docs/local-dev.md`.
 - [x] Run an authorized real-native qualification through the documented flow.
+
+## 7. Coding-client admission
+- [x] Admit `tool_choice` "auto" with declared tools on both public endpoints and at the bridge, render it exactly like an omitted choice, and keep refusing every other explicit tool choice.
+- [x] Refuse requests beyond optional Controller profile input, output and context token limits before dispatch as `runtime_incompatible`.
+- [x] Prove the OpenCode 1.18.34 title, tool and continuation request shapes are admitted with model-free fixtures.
+- [ ] Freeze a profile sized for a coding-agent session and run the authorized paired OpenCode workflow on real hardware.
