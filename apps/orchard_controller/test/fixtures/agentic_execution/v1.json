@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "client_adapter": "orchard-synthetic-client/v1",
+  "modes": ["chat_sync", "chat_stream", "responses_sync", "responses_stream"],
+  "stream_expectations": {
+    "retryable-before-output-unmanaged": {"text_deltas": []},
+    "retryable-after-output": {"text_deltas": ["committed"]},
+    "unknown-runtime-error": {"text_deltas": []},
+    "missing-terminal": {"text_deltas": ["partial"]},
+    "duplicate-terminal": {"text_deltas": []},
+    "post-terminal-text": {"text_deltas": []},
+    "typed-text": {"text_deltas": ["north ", "south-east"]},
+    "legacy-reasoning": {"text_deltas": ["<think>private-looking", "</think> final"]},
+    "json-object": {"text_deltas": ["{\"west\":3,", "\"east\":[7,false]}"]},
+    "multiple-calls-continuation": {"text_deltas": ["15 then 35"]},
+    "multiple-calls": {"chat_call_deltas": [
+      {"index": 0, "id": "call_z", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":"}},
+      {"index": 0, "id": "call_z", "function": {"arguments": "3}"}},
+      {"index": 1, "id": "call_a", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":7}"}}
+    ]},
+    "generated-schema-violation": {"chat_call_deltas": [
+      {"index": 0, "id": "call_bad", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":1}"}}
+    ]}
+  },
+  "cases": [
+    {
+      "id": "retryable-before-output-unmanaged",
+      "output_contract": "runtime_failure",
+      "request": {},
+      "events": [{"fail": "worker_down", "retryable": true}],
+      "expected": {"retry_decision": "no_alternative_node", "public_error": "internal_error", "stream_public_error": "worker_down"}
+    },
+    {
+      "id": "retryable-after-output",
+      "output_contract": "runtime_failure",
+      "request": {},
+      "events": [{"text": "committed"}, {"fail": "worker_down", "retryable": true}],
+      "expected": {"retry_decision": "output_committed", "public_error": "internal_error", "stream_public_error": "worker_down"}
+    },
+    {
+      "id": "unknown-runtime-error",
+      "output_contract": "runtime_failure",
+      "request": {},
+      "events": [{"fail": "made_up_retryable", "retryable": true}],
+      "expected": {"retry_decision": "not_retryable", "public_error": "internal_error"}
+    },
+    {
+      "id": "typed-text",
+      "output_contract": "text",
+      "request": {},
+      "events": [{"text": "north "}, {"text": "south-east"}, {"complete": "stop", "tokens": [11, 7]}],
+      "expected": {"finish_reason": "stop", "text": "north south-east", "state": "completed", "runtime_terminals": 1, "usage": [11, 7, 18], "calls": [], "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "legacy-reasoning",
+      "output_contract": "model_default+legacy_blended",
+      "request": {},
+      "events": [{"text": "<think>private-looking"}, {"text": "</think> final"}, {"complete": "stop", "tokens": [11, 9]}],
+      "expected": {"finish_reason": "stop", "text": "<think>private-looking</think> final", "state": "completed", "runtime_terminals": 1, "usage": [11, 9, 20], "calls": [], "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "known-zero",
+      "output_contract": "text",
+      "request": {},
+      "events": [{"complete": "stop", "tokens": [0, 0]}],
+      "expected": {"finish_reason": "stop", "text": "", "state": "completed", "runtime_terminals": 1, "usage": [0, 0, 0], "calls": [], "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "parallel-rejected",
+      "output_contract": "rejection",
+      "request": {"parallel_tool_calls": true},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_parameter", "param": "parallel_tool_calls", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "structured-reasoning-rejected",
+      "modes": ["chat_sync", "chat_stream"],
+      "output_contract": "rejection",
+      "request": {"reasoning": {"summary": "auto"}},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_parameter", "param": "reasoning", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "structured-reasoning-summary-rejected",
+      "modes": ["responses_sync", "responses_stream"],
+      "output_contract": "rejection",
+      "request": {"reasoning": {"summary": "auto"}},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_parameter", "param": "reasoning.summary", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "unregistered-effort-rejected",
+      "modes": ["chat_sync", "chat_stream"],
+      "output_contract": "rejection",
+      "request": {"reasoning_effort": "low"},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_reasoning_control", "param": "reasoning_effort", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "unregistered-effort-rejected-responses",
+      "modes": ["responses_sync", "responses_stream"],
+      "output_contract": "rejection",
+      "request": {"reasoning": {"effort": "low"}},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_reasoning_control", "param": "reasoning.effort", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "final-only",
+      "output_contract": "final_only",
+      "dependency_blocked": "No accepted public final_only input field (SPEC 7.2.9)",
+      "request": null,
+      "events": [],
+      "expected": null
+    },
+    {
+      "id": "json-object",
+      "modes": ["chat_sync", "chat_stream"],
+      "output_contract": "json_object",
+      "request": {"response_format": {"type": "json_object"}},
+      "events": [{"text": "{\"west\":3,"}, {"text": "\"east\":[7,false]}"}, {"complete": "stop", "tokens": [11, 13]}],
+      "expected": {"finish_reason": "stop", "text": "{\"west\":3,\"east\":[7,false]}", "object": {"west": 3, "east": [7, false]}, "state": "completed", "runtime_terminals": 1, "usage": [11, 13, 24], "calls": [], "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "json-schema-rejected",
+      "modes": ["chat_sync", "chat_stream"],
+      "output_contract": "rejection",
+      "request": {"response_format": {"type": "json_schema"}},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_parameter", "param": "response_format.type=json_schema", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "responses-selector-rejected",
+      "modes": ["responses_sync", "responses_stream"],
+      "output_contract": "rejection",
+      "request": {"text": {"format": {"type": "json_object"}}},
+      "events": [],
+      "expected": {"status": 400, "code": "unsupported_parameter", "param": "text", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "multiple-calls",
+      "output_contract": "client_tools",
+      "request": {"tools": [{"type": "function", "function": {"name": "scale", "parameters": {"type": "object", "properties": {"n": {"type": "integer", "minimum": 2}}, "required": ["n"], "additionalProperties": false}}}]},
+      "events": [
+        {"call_id": "call_z", "delta": {"index": 0, "type": "function", "function": {"name": "scale", "arguments_delta": "{\"n\":"}}},
+        {"call_id": "call_z", "delta": {"index": 0, "function": {"arguments_delta": "3}"}}},
+        {"call_id": "call_a", "delta": {"index": 1, "type": "function", "function": {"name": "scale", "arguments_delta": "{\"n\":7}"}}},
+        {"complete": "tool_calls", "tokens": [11, 17]}
+      ],
+      "expected": {
+        "finish_reason": "tool_calls",
+        "text": "", "state": "completed", "runtime_terminals": 1, "usage": [11, 17, 28],
+        "calls": [
+          {"id": "call_z", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":3}"}},
+          {"id": "call_a", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":7}"}}
+        ],
+        "client_decisions": [["call_z", "execute"], ["call_a", "execute"]],
+        "side_effects": [["call_z", 15], ["call_a", 35]]
+      },
+      "continuation": {
+        "id": "multiple-calls-continuation",
+        "output_contract": "text",
+        "expected_history": [
+          {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_z", "type": "function", "function": {"name": "scale", "arguments": {"n": 3}}}
+          ]},
+          {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_a", "type": "function", "function": {"name": "scale", "arguments": {"n": 7}}}
+          ]},
+          {"role": "tool", "tool_call_id": "call_z", "content": "15"},
+          {"role": "tool", "tool_call_id": "call_a", "content": "35"}
+        ],
+        "events": [{"text": "15 then 35"}, {"complete": "stop", "tokens": [31, 5]}],
+        "expected": {"finish_reason": "stop", "text": "15 then 35", "state": "completed", "runtime_terminals": 1, "usage": [31, 5, 36], "calls": [], "client_decisions": [], "side_effects": []}
+      }
+    },
+    {
+      "id": "generated-schema-violation",
+      "output_contract": "client_tools",
+      "request": {"tools": [{"type": "function", "function": {"name": "scale", "parameters": {"type": "object", "properties": {"n": {"type": "integer", "minimum": 2}}, "required": ["n"], "additionalProperties": false}}}]},
+      "events": [{"call_id": "call_bad", "delta": {"index": 0, "type": "function", "function": {"name": "scale", "arguments_delta": "{\"n\":1}"}}}, {"complete": "tool_calls", "tokens": [11, 4]}],
+      "expected": {"finish_reason": "tool_calls", "text": "", "state": "completed", "runtime_terminals": 1, "usage": [11, 4, 15], "calls": [{"id": "call_bad", "type": "function", "function": {"name": "scale", "arguments": "{\"n\":1}"}}], "client_decisions": [["call_bad", "reject"]], "side_effects": []}
+    },
+    {
+      "id": "malformed-caller-schema",
+      "output_contract": "rejection",
+      "request": {"tools": [{"type": "function", "function": {"name": "scale", "parameters": []}}]},
+      "events": [],
+      "expected": {"status": 400, "code": "invalid_value", "param": "tools", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "missing-terminal",
+      "output_contract": "failure",
+      "fault": "missing_terminal",
+      "request": {},
+      "events": [{"usage": [11, 2]}, {"text": "partial"}, {"usage": [11, 5]}, {"complete": "stop", "tokens": [11, 7]}],
+      "expected": {"state": "failed", "runtime_terminals": 0, "error_code": "runtime_endpoint_missing_terminal", "public_error": "internal_error", "output_tokens": 5, "output_usage_status": "lower_bound", "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "duplicate-terminal",
+      "output_contract": "failure",
+      "fault": "duplicate_terminal",
+      "request": {},
+      "events": [{"usage": [11, 3]}, {"complete": "stop", "tokens": [11, 3]}],
+      "expected": {"state": "failed", "runtime_terminals": 2, "public_error": "internal_error", "output_tokens": 3, "output_usage_status": "lower_bound", "client_decisions": [], "side_effects": []}
+    },
+    {
+      "id": "post-terminal-text",
+      "output_contract": "failure",
+      "fault": "post_terminal_text",
+      "request": {},
+      "events": [{"usage": [11, 3]}, {"complete": "stop", "tokens": [11, 3]}],
+      "expected": {"state": "failed", "runtime_terminals": 1, "public_error": "internal_error", "output_tokens": 3, "output_usage_status": "lower_bound", "client_decisions": [], "side_effects": []}
+    }
+  ]
+}

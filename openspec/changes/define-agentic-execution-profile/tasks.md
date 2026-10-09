@@ -13,6 +13,27 @@
 - [ ] 2.3 Add applicable positive, negative, and dependency-blocked cases for typed final text, reasoning, tool calls and continuation, structured output, caller/generated schema handling, attempt-scoped usage, scoped terminal outcomes, disconnect cancellation and proven native drain, bounded cache identity/affinity, retry/errors, and `parallel_tool_calls=true` rejection.
 - [ ] 2.4 Produce a sanitized machine-readable result that identifies corpus version, Orchard revision, endpoint/mode, client adapter identity, and every pass/fail assertion without prompts, generated content, credentials, local paths, or tool/session identifiers.
 
+The initial runner and synthetic client live with the Controller tests under
+`test/fixtures/agentic_execution` and `test/support/agentic_execution_*`.
+The runner now crosses the production Worker Runtime adapter, Unix-socket gRPC
+transport and native service using a model-free scripted generation backend.
+It covers incremental success and failure traces, full successful Responses item
+contents, public disconnect with scripted native drain and Node occupancy,
+bounded fingerprint identity, native failure mapping, unmanaged retry refusal,
+and separately labelled ranking/capacity/quarantine and retry-policy checks.
+Managed two-attempt retry, exhaustion and pinned dispatch identity use the
+existing scripted Controller Runtime Endpoint fixture, not two native workers.
+The public/native disconnect lane uses scripted capacity-policy inputs and the
+real allocation authority: cooperative drain retains allocation, while the
+timeout case requires quarantine and refuses reuse before native drain.
+This is not a completed profile. Native two-Node retry, verified quarantine
+reconciliation, exhaustive trace mutations and complete assertion-level JSONL
+reporting remain open. These integration gaps are not blocked by #329.
+Synthesized usage assertions must remain failures until #329 satisfies the
+accounting contract; they are not unsupported-public-input `dependency_blocked`
+cases. Unknown-code public streaming normalization and Controller allocation
+reuse before native drain are separate failing profile gates.
+
 ## 3. First conformance client
 
 - [ ] 3.1 Adapt one exact OpenCode version and configuration to the corpus without adding client-specific semantics to the profile.
