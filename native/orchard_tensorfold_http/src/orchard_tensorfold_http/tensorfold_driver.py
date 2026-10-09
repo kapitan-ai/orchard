@@ -5,20 +5,59 @@ settlement callbacks require qualification for that exact model implementation;
 the driver does not infer completion from HTTP, queue terminals, or cache size.
 """
 
+import logging
 import math
 import queue
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from threading import Event, RLock
 from typing import Any
 
-from orchard_tensorfold_http.cache_custody import CacheCopyCustody, CacheLease, CacheOwner
+from orchard_tensorfold_http.cache_custody import (
+    CacheCopyCustody,
+    CacheCustodyError,
+    CacheLease,
+    CacheOwner,
+)
 from orchard_tensorfold_http.token_buffer import TokenChunkBuffer
+
+logger = logging.getLogger(__name__)
+_PACKAGE_DIR = str(Path(__file__).resolve().parent)
 
 
 class DriverError(RuntimeError):
     """A bounded driver operation could not establish its required state."""
+
+
+def _emit(log: Callable[[], None]) -> bool:
+    """Diagnostics are best effort and never change request or custody outcomes."""
+    try:
+        log()
+    except Exception:
+        return False
+    return True
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Name a copy failure; show messages only for fixed Orchard reasons."""
+    name = type(exc).__name__
+    if isinstance(exc, CacheCustodyError | DriverError) or (
+        isinstance(exc, ValueError) and _raised_in_package(exc)
+    ):
+        return f"{name}: {exc}"
+    return name
+
+
+def _raised_in_package(exc: BaseException) -> bool:
+    tb = exc.__traceback__
+    if tb is None:
+        return False
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    return tb.tb_frame.f_code.co_filename.startswith(_PACKAGE_DIR)
 
 
 @dataclass(frozen=True)
@@ -240,6 +279,7 @@ class TensorFoldDriver:
             record.owners.add(owner)
 
     def _copy(self, cache: list[Any], owner: CacheOwner) -> list[Any]:
+        size = transient = 0
         try:
             with self._lock:
                 self._available(allow_closing=True)
@@ -264,9 +304,52 @@ class TensorFoldDriver:
                 self._available(allow_closing=True)
                 self._records[id(wrapped)] = _CacheRecord(lease, wrapped, {owner}, size)
             return wrapped
-        except BaseException:
-            self._quarantine()
+        except BaseException as exc:
+            try:
+                if not _emit(partial(self._log_copy_failure, exc, size, transient)):
+                    _emit(
+                        lambda: logger.warning(
+                            "tensorfold cache copy custody failed reason=unavailable"
+                        )
+                    )
+            finally:
+                self._quarantine()
             raise DriverError("cache copy custody failed") from None
+
+    @staticmethod
+    def _log_start(job: Any, prompt_tokens: int, retained: int) -> None:
+        cached = job.cached_tokens
+        if type(cached) is not int or not 0 <= cached <= prompt_tokens:
+            cached = -1
+        logger.info(
+            "tensorfold request started cached=%d prompt=%d checkpoints=%d",
+            cached,
+            prompt_tokens,
+            retained,
+        )
+
+    def _log_copy_failure(self, exc: BaseException, size: Any, transient: Any) -> None:
+        # Only fixed Orchard reasons and byte counts; never request content.
+        snapshot = self._custody.snapshot()
+        logger.warning(
+            "tensorfold cache copy custody failed reason=%s requested=%s+%s total_budget=%d "
+            "workspace_reserved=%d working=%d held=%d leases=%d max_leases=%d pending=%d+%d "
+            "available=%d checkpoints=%d quarantined=%s",
+            _failure_reason(exc),
+            size if type(size) is int else "invalid",
+            transient if type(transient) is int else "invalid",
+            self.bounds.total_budget_bytes,
+            snapshot.workspace_bytes,
+            self.bounds.working_bytes,
+            snapshot.held_bytes,
+            snapshot.leases,
+            self.bounds.max_cache_leases,
+            snapshot.copy_bytes,
+            snapshot.transient_bytes,
+            snapshot.available_bytes,
+            len(self.checkpoints._entries),
+            snapshot.quarantined,
+        )
 
     def start(self) -> None:
         with self._lock:
@@ -427,6 +510,7 @@ class TensorFoldDriver:
                 cancellation=self._cancellation_factory(),
             )
             self._active = job
+            retained_checkpoints = len(self.checkpoints._entries)
         output = 0
         completed = False
         cancelling = False
@@ -449,6 +533,8 @@ class TensorFoldDriver:
                     continue
                 if chunk is None:
                     break
+                if output == 0:
+                    _emit(lambda: self._log_start(job, len(prompt_ids), retained_checkpoints))
                 output += len(chunk)
                 if output > max_tokens:
                     raise DriverError("scheduler exceeded admitted output bound")
