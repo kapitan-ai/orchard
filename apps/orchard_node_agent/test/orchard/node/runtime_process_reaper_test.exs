@@ -9,6 +9,8 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcessLifecycle
@@ -91,6 +93,43 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
            )
 
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "SPEC.md §4.9 owner shutdown reap logs the current phase at info, not as an orphan" do
+    {port, os_pid} = start_sleeper_port!()
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      Process.exit(owner_pid, :kill)
+      CustodyTestHelpers.stop_child(port, os_pid)
+    end)
+
+    {:ok, ref} = watch_owner(owner_pid, os_pid)
+    RuntimeProcessReaper.mark_phase(ref, :loaded)
+    assert %{phase: :loaded} = :sys.get_state(RuntimeProcessReaper).leases[ref]
+
+    log = capture_reap_log(fn -> Process.exit(owner_pid, :shutdown) end, os_pid)
+
+    assert log =~ "[info] reaping worker process after its owner stopped"
+    assert log =~ "phase: :loaded"
+    refute log =~ "orphan"
+  end
+
+  test "SPEC.md §4.9 owner crash reap still warns about an orphaned worker" do
+    {port, os_pid} = start_sleeper_port!()
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      Process.exit(owner_pid, :kill)
+      CustodyTestHelpers.stop_child(port, os_pid)
+    end)
+
+    {:ok, _ref} = watch_owner(owner_pid, os_pid)
+
+    log = capture_reap_log(fn -> Process.exit(owner_pid, :kill) end, os_pid)
+
+    assert log =~ "[warning] reaping orphaned worker process"
+    assert log =~ "phase: :loading"
   end
 
   test "watch returns an error when the reaper name is unavailable" do
@@ -461,6 +500,32 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     }
 
     RuntimeProcessReaper.watch(self(), os_pid, Map.merge(base, Map.new(meta)))
+  end
+
+  defp watch_owner(owner_pid, os_pid) do
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    RuntimeProcessReaper.watch(owner_pid, os_pid, %{
+      shutdown_timeout_ms: @short_timeout_ms,
+      model_ref: nil,
+      os_identity: os_identity,
+      phase: :loading
+    })
+  end
+
+  defp capture_reap_log(stop_owner, os_pid) do
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+
+    try do
+      capture_log([level: :info], fn ->
+        stop_owner.()
+        assert wait_until_dead(os_pid, 2_000) == :ok
+        CustodyTestHelpers.assert_reaper_empty!(1_000)
+      end)
+    after
+      Logger.configure(level: previous_level)
+    end
   end
 
   defp unique_root(label) do

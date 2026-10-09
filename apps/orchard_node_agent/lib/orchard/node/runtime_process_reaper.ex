@@ -31,13 +31,14 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   require Logger
 
   @type lease_ref :: reference()
+  @type phase :: :loading | :loaded | :unloading
 
   @type lease_meta :: %{
           optional(:os_identity) => WorkerProcessLifecycle.custody_identity() | nil,
           optional(:socket_path) => String.t() | nil,
           shutdown_timeout_ms: pos_integer(),
           model_ref: term(),
-          phase: :loading | :loaded | :unloading
+          phase: phase()
         }
 
   @type lease :: %{
@@ -46,7 +47,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           os_pid: pos_integer(),
           os_identity: WorkerProcessLifecycle.custody_identity() | nil,
           model_ref: term(),
-          phase: :loading | :loaded | :unloading,
+          phase: phase(),
           shutdown_timeout_ms: pos_integer(),
           socket_path: String.t() | nil,
           term_deadline: integer() | nil,
@@ -88,6 +89,11 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @spec release(lease_ref()) :: :ok
   def release(ref) do
     GenServer.cast(__MODULE__, {:release, ref})
+  end
+
+  @spec mark_phase(lease_ref(), phase()) :: :ok
+  def mark_phase(ref, phase) when phase in [:loading, :loaded, :unloading] do
+    GenServer.cast(__MODULE__, {:mark_phase, ref, phase})
   end
 
   @spec reap(lease_ref(), term()) :: :ok
@@ -141,6 +147,14 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   def handle_cast({:reap, ref, reason}, state) do
     {:noreply, start_reaping(state, ref, {:requested, reason})}
+  end
+
+  def handle_cast({:mark_phase, ref, phase}, state) do
+    if Map.has_key?(state.leases, ref) do
+      {:noreply, put_in(state, [Access.key(:leases), ref, :phase], phase)}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -242,7 +256,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         state
 
       %{os_pid: os_pid, shutdown_timeout_ms: timeout, timer_ref: nil} = lease ->
-        log_orphan_reap(lease, reason)
+        log_reap(lease, reason)
         _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
@@ -292,19 +306,27 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     end
   end
 
-  defp log_orphan_reap(lease, {:owner_down, reason}) do
-    Logger.warning(
-      "reaping orphaned worker process " <>
-        inspect(%{
-          model_ref: lease.model_ref,
-          os_pid: lease.os_pid,
-          owner_reason: reason,
-          phase: lease.phase
-        })
-    )
+  defp log_reap(lease, {:owner_down, reason}) do
+    details =
+      inspect(%{
+        model_ref: lease.model_ref,
+        os_pid: lease.os_pid,
+        owner_reason: reason,
+        phase: lease.phase
+      })
+
+    if owner_stopped?(reason) do
+      Logger.info("reaping worker process after its owner stopped " <> details)
+    else
+      Logger.warning("reaping orphaned worker process " <> details)
+    end
   end
 
-  defp log_orphan_reap(_lease, _reason), do: :ok
+  defp log_reap(_lease, _reason), do: :ok
+
+  defp owner_stopped?(:shutdown), do: true
+  defp owner_stopped?({:shutdown, _detail}), do: true
+  defp owner_stopped?(_reason), do: false
 
   defp lease_identity(meta) do
     case Map.get(meta, :os_identity) do

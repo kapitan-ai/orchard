@@ -161,6 +161,63 @@ defmodule Orchard.Node.WorkerCustodyTest do
            )
   end
 
+  test "SPEC.md §4.9 loaded runtime lease reports the loaded phase", context do
+    state = load_stub_runtime!(context)
+    on_exit(fn -> CustodyTestHelpers.stop_child(state.port, state.os_pid) end)
+
+    assert %{phase: :loaded} = :sys.get_state(RuntimeProcessReaper).leases[state.reaper_ref]
+    assert :ok = WorkerRuntimeAdapter.unload_model(state, [])
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 owner shutdown during unload reaps with the unloading phase", context do
+    parent = self()
+
+    owner =
+      spawn(fn ->
+        state = load_stub_runtime!(context)
+        send(parent, {:loaded, state})
+
+        receive do
+          :unload -> WorkerRuntimeAdapter.unload_model(state, [])
+        end
+      end)
+
+    assert_receive {:loaded, state}, 10_000
+    on_exit(fn -> CustodyTestHelpers.stop_child(state.port, state.os_pid) end)
+
+    # A stopped Worker holds the unload RPC open, so the owner exits mid-unload.
+    {_output, 0} = System.cmd("kill", ["-STOP", Integer.to_string(state.os_pid)])
+    send(owner, :unload)
+
+    assert CustodyTestHelpers.wait_until(
+             fn ->
+               match?(
+                 %{phase: :unloading},
+                 :sys.get_state(RuntimeProcessReaper).leases[state.reaper_ref]
+               )
+             end,
+             500
+           )
+
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+
+    log =
+      try do
+        capture_log([level: :info], fn ->
+          Process.exit(owner, :shutdown)
+          CustodyTestHelpers.assert_os_pid_dead!(state.os_pid, 2_000)
+          CustodyTestHelpers.assert_reaper_empty!(1_000)
+        end)
+      after
+        Logger.configure(level: previous_level)
+      end
+
+    assert log =~ "[info] reaping worker process after its owner stopped"
+    assert log =~ "phase: :unloading"
+  end
+
   test "SPEC.md §4.9 closed BEAM port still reaps its live recorded PID", context do
     state = load_stub_runtime!(context)
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
@@ -492,11 +549,12 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
     assert WorkerProcessLifecycle.os_process_alive?(state.os_pid)
     assert File.exists?(state.socket_path)
-    assert :ok = Application.stop(:orchard_node_agent)
+    log = capture_log(fn -> assert :ok = Application.stop(:orchard_node_agent) end)
 
     CustodyTestHelpers.assert_os_pid_dead!(state.os_pid, 2_000)
     refute File.exists?(state.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    refute log =~ "orphan"
   end
 
   # Cost of one custody-gated escalation with no waiting left, so the closed-Port

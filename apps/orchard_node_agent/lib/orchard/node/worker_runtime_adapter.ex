@@ -384,6 +384,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     emit_runtime_start([:orchard, :node, :worker_runtime, :unload, :start], unload_meta)
     start_time = System.monotonic_time(:millisecond)
 
+    if is_reference(state[:reaper_ref]),
+      do: RuntimeProcessReaper.mark_phase(state.reaper_ref, :unloading)
+
     unload_result = if skip_rpc?, do: :ok, else: unload_model_rpc(state.channel, state.model_ref)
 
     stop_result =
@@ -616,6 +619,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp load_model_or_cleanup(channel, port, os_pid, reaper_ref, params) do
     case load_model_rpc(channel, params.model_ref, params.model_path, params.load_timeout_ms) do
       :ok ->
+        RuntimeProcessReaper.mark_phase(reaper_ref, :loaded)
+
         {:ok,
          %{
            backend: params.backend,
