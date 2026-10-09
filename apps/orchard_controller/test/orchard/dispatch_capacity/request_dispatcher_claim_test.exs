@@ -110,6 +110,24 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.NoTokenIdsClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+  defdelegate status(channel, opts), to: GateClient
+  defdelegate execute_inference(channel, request, opts), to: GateClient
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+
+  def ensure_model_loaded(channel, %Operation.EnsureModelLoadedRequest{} = request, opts) do
+    {:ok, result} = GateClient.ensure_model_loaded(channel, request, opts)
+    {:ok, %{result | worker_supports_prompt_token_ids: false}}
+  end
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.SlowLoadClient do
   @moduledoc false
 
@@ -830,7 +848,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.NodeHeartbeats.CandidateSnapshot
   alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
   alias Orchard.Nodes.{AdmissionDecision, Node}
-  alias Orchard.RuntimeEndpoint.{Operation, Placement, PlacementCapacity, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Placement, PlacementCapacity, Target}
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
@@ -843,6 +861,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     GateClient,
     MonitorSnapshotClient,
     NoisyCancelClient,
+    NoTokenIdsClient,
     NonterminalThenErrorClient,
     PreAcceptanceCancelClient,
     RaisingAfterConnectClient,
@@ -1251,9 +1270,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     end)
 
     projection = ~s({"messages":[{"role":"assistant","content":"opaque\\n<think>"}]})
-    request = %{execute_request(request_id) | tensorfold_history_projection_json: projection}
+    request = tensorfold_request(request_id, projection)
     schedule = capacity_schedule(authority, node_id, request_id)
     request = %{request | deadline_unix_ms: DateTime.to_unix(schedule.timeout_at, :millisecond)}
+
+    # SPEC.md §7.2.9: the authoritative IDs survive even with tokenizer safe mode :off.
+    assert Orchard.Inference.tokenizer_safe_mode() == :off
 
     assert %AttemptOutcome{attempt_outcome: :completed} =
              dispatch_with_deadline(schedule, request, model_load_request(node_id),
@@ -1262,11 +1284,85 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     assert_receive {:execute_request, operation}
     assert operation.tensorfold_history_projection_json == projection
+    assert operation.prompt_token_ids == request.prompt_token_ids
+    assert operation.input_tokens == request.input_tokens
+    assert operation.rendered_prompt_utf8 == request.rendered_prompt_utf8
+
+    wire =
+      operation
+      |> GrpcMapping.execute_request_to_proto()
+      |> ExecuteInferenceRequest.encode()
+      |> ExecuteInferenceRequest.decode()
+
+    assert {wire.prompt_token_ids, wire.input_tokens, wire.tensorfold_history_projection_json} ==
+             {request.prompt_token_ids, request.input_tokens, projection}
+
     assert operation.request_id == request_id
     assert operation.controller_session_id == request.controller_session_id
     assert operation.deadline_unix_ms == DateTime.to_unix(schedule.timeout_at, :millisecond)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
     assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "SPEC §7.2.9 TensorFold request without authoritative IDs is refused before model load" do
+    for ids <- [[], [101]] do
+      authority = start_supervised!({AllocationAuthority, name: nil}, id: make_ref())
+      node_id = claim_node_id()
+      request_id = "chatcmpl-" <> Ecto.UUID.generate()
+      authorize_tensorfold_node(node_id)
+
+      request = %{tensorfold_request(request_id, "{}") | prompt_token_ids: ids}
+      schedule = capacity_schedule(authority, node_id, request_id)
+
+      assert_dispatch_failure(
+        dispatch_with_deadline(schedule, request, model_load_request(node_id),
+          client_impl: @gate_client
+        ),
+        :runtime_incompatible
+      )
+
+      refute_receive :model_loaded
+      refute_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+  end
+
+  test "SPEC §7.2.9 TensorFold request is refused when the Worker cannot accept its IDs" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "chatcmpl-" <> Ecto.UUID.generate()
+    authorize_tensorfold_node(node_id)
+
+    request = tensorfold_request(request_id, "{}")
+    schedule = capacity_schedule(authority, node_id, request_id)
+
+    assert_dispatch_failure(
+      dispatch_with_deadline(schedule, request, model_load_request(node_id),
+        client_impl: NoTokenIdsClient
+      ),
+      :runtime_incompatible
+    )
+
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "SPEC §7.2.9 non-TensorFold requests keep safe mode :off ID clearing" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "chatcmpl-" <> Ecto.UUID.generate()
+    request = %{execute_request(request_id) | prompt_token_ids: [101, 102]}
+    schedule = capacity_schedule(authority, node_id, request_id)
+
+    assert %AttemptOutcome{attempt_outcome: :completed} =
+             dispatch_with_deadline(schedule, request, model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    assert_receive {:execute_request, operation}
+    assert operation.prompt_token_ids in [nil, []]
   end
 
   test "TensorFold actual dispatcher refuses changed target authority before execution" do
@@ -3188,6 +3284,26 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       rendered_prompt_utf8: "hello orchard",
       input_tokens: 2
     }
+  end
+
+  defp tensorfold_request(request_id, projection) do
+    %{
+      execute_request(request_id)
+      | tensorfold_history_projection_json: projection,
+        prompt_token_ids: [101, 102]
+    }
+  end
+
+  defp authorize_tensorfold_node(node_id) do
+    prior = Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
+
+    Application.put_env(:orchard_controller, :tensorfold_experiment_profile, %{
+      "authorized_node_ids" => [node_id]
+    })
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :tensorfold_experiment_profile, prior)
+    end)
   end
 
   defp model_load_request(node_id) do

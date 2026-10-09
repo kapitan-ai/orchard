@@ -1,6 +1,7 @@
 """Default-off Worker Backend with Orchard's existing output/tool event pipeline."""
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -14,6 +15,8 @@ from orchard_worker_mlx.generation import GenerationDeps, generate_events
 
 from orchard_tensorfold_http.admission import AdmittedHistory, ExperimentProfile, admit_history
 from orchard_tensorfold_http.tensorfold_driver import DriverError, TensorFoldDriver
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -214,22 +217,32 @@ class TensorFoldBackend:
         if assets is None:
             raise BackendError("model_not_loaded", "model is not loaded", False)
         envelope_limit = 4 * self.profile.max_projection_bytes + 8 * self.profile.max_input_tokens
-        if request.ByteSize() > envelope_limit:
-            raise BackendError(
-                "invalid_history_projection", "request envelope exceeds profile", False
+        try:
+            if request.ByteSize() > envelope_limit:
+                raise BackendError(
+                    "invalid_history_projection", "request envelope exceeds profile", False
+                )
+            snapshot = type(request)()
+            snapshot.CopyFrom(request)
+            request = snapshot
+            admitted = admit_history(
+                request,
+                profile=self.profile,
+                incarnation=incarnation,
+                render=assets.render,
+                encode=assets.encode,
+                wall_seconds=self._wall_clock(),
+                monotonic_seconds=self._monotonic_clock(),
             )
-        snapshot = type(request)()
-        snapshot.CopyFrom(request)
-        request = snapshot
-        admitted = admit_history(
-            request,
-            profile=self.profile,
-            incarnation=incarnation,
-            render=assets.render,
-            encode=assets.encode,
-            wall_seconds=self._wall_clock(),
-            monotonic_seconds=self._monotonic_clock(),
-        )
+        except BackendError as exc:
+            # Admission reasons are fixed literals, so this never logs request content.
+            logger.warning(
+                "tensorfold admission rejected request_id=%s code=%s reason=%s",
+                request.request_id,
+                exc.code,
+                exc.message,
+            )
+            raise
         done = threading.Event()
 
         def expire() -> None:

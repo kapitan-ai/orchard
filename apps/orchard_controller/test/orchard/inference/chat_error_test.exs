@@ -145,6 +145,19 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.9 a dispatch-time runtime_incompatible terminalizes as a classified 503" do
+    error = ChatError.from_execute_error({:dispatch_failed, :runtime_incompatible})
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 503,
+             error_code: "runtime_incompatible",
+             error_message: "Runtime is incompatible"
+           }
+
+    assert ChatError.api_mapping(error).code == "runtime_incompatible"
+  end
+
   test "tokenization internal mapping preserves controller-owned internal_error response" do
     mapping =
       {:tokenization, {:boom, "tokenizer crashed"}}

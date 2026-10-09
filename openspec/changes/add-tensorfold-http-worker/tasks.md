@@ -19,3 +19,10 @@
 - [x] Bind fresh loaded offers at Node preparation before Accepted, retain exact bound bytes for start, and reject altered redemption with capacity cleanup.
 - [x] Exercise public IDs, canonical tool continuations, fake owned-channel offers and real Controller envelopes through the bridge; recheck sealed historical parity.
 - [x] Run affected application/database, transport, Node and Worker model-free checks; full repository/CI and actual native qualification remain distinct outstanding gates.
+
+## 5. Authoritative token ID correction
+- [x] Return whole-prompt `prompt_token_ids` from the rendered-effort helper, validate and retain them in the Controller, and require them before projection issue.
+- [x] Preserve selected IDs through dispatch regardless of safe mode, require current Worker token-ID capability, and refuse missing IDs before model load with a classified `runtime_incompatible`.
+- [x] Refuse a deadline beyond an optional frozen profile request limit before dispatch, and log bridge admission rejections without request content.
+- [x] Prove helper IDs are admitted by the real bridge renderer and encoder for plain and tool-continuation histories, and that cleared IDs reproduce the earlier rejection.
+- [ ] Establish helper-versus-family-loader token parity on the real frozen artifact in a separately authorized lane.

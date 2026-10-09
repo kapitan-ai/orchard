@@ -1258,7 +1258,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
        ) do
     cond do
       outcome.delivery_state == :failed ->
-        {:error, public_dispatch_reason(outcome),
+        {:error, public_dispatch_reason(outcome, canonical),
          terminal_evidence(context, outcome, retry_decision)}
 
       Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
@@ -1272,7 +1272,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
         )
 
       true ->
-        {:error, public_dispatch_reason(outcome),
+        {:error, public_dispatch_reason(outcome, canonical),
          terminal_evidence(context, outcome, retry_decision)}
     end
   end
@@ -2123,6 +2123,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     _kind, _reason ->
       log_warn("dispatch threw")
       {:error, orchestration_crash(:dispatch, :throw)}
+  end
+
+  defp public_dispatch_reason(%AttemptOutcome{} = outcome, canonical) do
+    if TensorFoldProjection.refused_before_acceptance?(canonical, outcome),
+      do: {:dispatch_failed, :runtime_incompatible},
+      else: public_dispatch_reason(outcome)
   end
 
   defp public_dispatch_reason(%AttemptOutcome{

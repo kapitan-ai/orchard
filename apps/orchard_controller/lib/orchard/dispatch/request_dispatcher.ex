@@ -1072,18 +1072,28 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp gate_tensorfold_route(context, metrics) do
-    if context.execute_request.tensorfold_history_projection_json in [nil, ""] do
+    request = context.execute_request
+
+    if request.tensorfold_history_projection_json in [nil, ""] do
       :ok
     else
-      case TensorFoldProjection.authorize_route(
-             metrics.node_id,
-             TensorFoldProjection.config()
-           ) do
-        :ok -> :ok
-        {:error, _reason} -> {:error, :runtime_incompatible}
+      with :ok <-
+             TensorFoldProjection.authorize_route(
+               metrics.node_id,
+               TensorFoldProjection.config()
+             ),
+           true <- authoritative_prompt_token_ids?(request) do
+        :ok
+      else
+        _failure -> {:error, :runtime_incompatible}
       end
     end
   end
+
+  # SPEC.md §7.2.9: a selected TensorFold request must reach the bridge with the
+  # authoritative IDs the Controller rendered, or fail here before model load.
+  defp authoritative_prompt_token_ids?(%{prompt_token_ids: ids, input_tokens: count}),
+    do: is_list(ids) and ids != [] and length(ids) == count
 
   defp execute_under_acceptance_gate(context, gated_execute_request, metrics) do
     case acquire_dispatch_acceptance_gate(context) do
@@ -1442,6 +1452,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # inventory from status probes and must not be used as dispatch eligibility
   # authority. The Runtime Endpoint ensure-model-loaded result is the
   # authoritative capability gate.
+  # The TensorFold bridge needs the authoritative IDs whatever the safe mode, so a
+  # projected request keeps them and refuses a Worker that cannot accept them.
+  defp gate_prompt_token_ids(
+         %{tensorfold_history_projection_json: projection} = request,
+         ensure_result,
+         _schedule,
+         _model_load_request
+       )
+       when is_binary(projection) and projection != "" do
+    if Map.get(ensure_result, :worker_supports_prompt_token_ids) === true,
+      do: {:ok, request},
+      else: {:error, :runtime_incompatible}
+  end
+
   defp gate_prompt_token_ids(request, ensure_result, schedule, model_load_request) do
     mode = Inference.tokenizer_safe_mode()
     prompt_token_ids = request.prompt_token_ids || []

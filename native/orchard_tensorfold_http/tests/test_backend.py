@@ -280,6 +280,26 @@ def test_missing_or_stale_projection_never_submits(runtime):
     assert not runtime.assets.driver.scheduler.jobs
 
 
+def test_admission_rejection_logs_code_without_request_content(runtime, caplog):
+    request = request_for(runtime.backend.profile, runtime.backend.incarnation)
+    secret = "do-not-log-this-prompt"
+    request.rendered_prompt_utf8 = request.rendered_prompt_utf8 + secret.encode()
+    del request.prompt_token_ids[:]
+
+    with caplog.at_level("WARNING", logger="orchard_tensorfold_http.backend"):
+        assert kinds(list(generate(runtime, request))) == ["failed"]
+
+    records = [
+        r.getMessage() for r in caplog.records if r.name == "orchard_tensorfold_http.backend"
+    ]
+    assert records == [
+        f"tensorfold admission rejected request_id={request.request_id} "
+        "code=invalid_history_projection reason=invalid authoritative token IDs"
+    ]
+    assert secret not in caplog.text
+    assert not runtime.assets.driver.scheduler.jobs
+
+
 def test_c1_capacity_rejects_parallel_work_and_unload(runtime):
     runtime.backend.start_generation()
     with pytest.raises(BackendError, match="C1"):

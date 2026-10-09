@@ -8,9 +8,36 @@ defmodule Orchard.Inference.TensorFoldProjection do
   @binding_keys ~w(schema_version profile_id model_id version artifact_sha256 template_sha256 tokenizer_config_sha256 enable_thinking reasoning_effort output_projection)
   @max_bytes 1_048_576
   @max_config_bytes 4_194_304
+  @max_request_seconds 3_600
 
   @spec config() :: map() | nil
   def config, do: Application.get_env(:orchard_controller, :tensorfold_experiment_profile)
+
+  @spec selected?(CanonicalRequest.t(), map() | nil) :: boolean()
+  def selected?(request, profile \\ config())
+
+  def selected?(%CanonicalRequest{model_ref: %{model_id: model_id}}, %{"model_id" => model_id}),
+    do: true
+
+  def selected?(_request, _profile), do: false
+
+  @doc """
+  Whether the dispatcher refused a selected request before Node acceptance.
+
+  Such a refusal keeps its classified `runtime_incompatible` error instead of
+  surfacing as an opaque failure code.
+  """
+  @spec refused_before_acceptance?(CanonicalRequest.t(), map(), map() | nil) :: boolean()
+  def refused_before_acceptance?(request, outcome, profile \\ config())
+
+  def refused_before_acceptance?(
+        request,
+        %{accepted: false, events: [], failure: %{"failure_code" => "runtime_incompatible"}},
+        profile
+      ),
+      do: selected?(request, profile)
+
+  def refused_before_acceptance?(_request, _outcome, _profile), do: false
 
   @spec validate(CanonicalRequest.t(), map() | nil) :: :ok | {:error, term()}
   def validate(request, profile \\ config())
@@ -34,6 +61,7 @@ defmodule Orchard.Inference.TensorFoldProjection do
   def issue(request, model, schedule, profile, opts) when is_map(profile) do
     if request.model_ref.model_id == profile["model_id"] do
       with :ok <- validate_selected(request, profile),
+           :ok <- within_request_limit(schedule, profile),
            :ok <- authorize_route(Map.get(schedule, :node_id), profile),
            true <- model.artifact_sha256 == profile["artifact_sha256"],
            {:ok, assets} <- assets(model, opts),
@@ -68,6 +96,7 @@ defmodule Orchard.Inference.TensorFoldProjection do
          true <- reasoning.reasoning_effort == :medium,
          true <- reasoning.source == :explicit_public,
          true <- contract.mode == :rendered,
+         true <- authoritative_tokenization?(request),
          true <- contract.model_artifact_digest == profile["artifact_sha256"],
          true <- contract.chat_template_digest == profile["template_sha256"],
          {:ok, ^reasoning} <-
@@ -94,8 +123,42 @@ defmodule Orchard.Inference.TensorFoldProjection do
     profile["schema_version"] == 1 and profile["enable_thinking"] == true and
       profile["reasoning_effort"] == "medium" and profile["output_projection"] == "legacy_blended" and
       valid_names?(profile) and valid_digests?(profile) and valid_nodes?(profile) and
-      valid_limit?(Map.get(profile, "max_projection_bytes", 262_144))
+      valid_limit?(Map.get(profile, "max_projection_bytes", 262_144)) and
+      valid_request_seconds?(profile)
   end
+
+  # SPEC.md §7.2.9: the bridge admits only the authoritative rendered bytes and
+  # their whole-prompt token IDs, so a selected request without them is refused
+  # here instead of failing opaquely inside the Worker.
+  defp authoritative_tokenization?(%CanonicalRequest{
+         rendered_prompt: prompt,
+         input_token_count: count,
+         prompt_token_ids: ids
+       }) do
+    is_binary(prompt) and prompt != "" and is_list(ids) and ids != [] and length(ids) == count
+  end
+
+  defp valid_request_seconds?(%{"max_request_seconds" => seconds}),
+    do: is_number(seconds) and seconds > 0 and seconds <= @max_request_seconds
+
+  defp valid_request_seconds?(_profile), do: true
+
+  # The bridge refuses a deadline further away than its frozen request limit.
+  defp within_request_limit(schedule, %{"max_request_seconds" => seconds}) do
+    case Map.get(schedule, :timeout_at) do
+      %DateTime{} = timeout_at ->
+        remaining_ms = DateTime.diff(timeout_at, DateTime.utc_now(), :millisecond)
+
+        if remaining_ms > 0 and remaining_ms <= seconds * 1000,
+          do: :ok,
+          else: incompatible()
+
+      _missing ->
+        incompatible()
+    end
+  end
+
+  defp within_request_limit(_schedule, _profile), do: :ok
 
   defp valid_names?(profile) do
     Enum.all?(~w(profile_id model_id), fn key ->

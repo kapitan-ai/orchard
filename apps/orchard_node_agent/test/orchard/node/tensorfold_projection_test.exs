@@ -34,6 +34,9 @@ defmodule Orchard.Node.TensorFoldProjectionTest do
       model_id: binding["model_id"],
       version: binding["version"],
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      rendered_prompt_utf8: "rendered medium",
+      input_tokens: 3,
+      prompt_token_ids: [11, 12, 13],
       tensorfold_history_projection_json: Jason.encode!(history)
     }
 
@@ -49,6 +52,11 @@ defmodule Orchard.Node.TensorFoldProjectionTest do
 
     assert bound.request_id == ctx.request.request_id
     assert bound.deadline_unix_ms == ctx.request.deadline_unix_ms
+    # SPEC.md §7.2.9: binding changes only the projection, never the authoritative tokens.
+    assert {bound.rendered_prompt_utf8, bound.input_tokens, bound.prompt_token_ids} ==
+             {ctx.request.rendered_prompt_utf8, ctx.request.input_tokens,
+              ctx.request.prompt_token_ids}
+
     assert {:ok, 150} = TensorFoldProjection.lookup_timeout(ctx.request, ctx.config)
   end
 

@@ -10,7 +10,7 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     TensorFoldProjection
   }
 
-  alias Orchard.ModelManifest
+  alias Orchard.{CanonicalRequest, ModelManifest}
 
   @artifact "48ba838e9c9c86b10ab68630ec0d8e1b6dfd760c98c2111432c56f94804d5af9"
   @template "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
@@ -113,6 +113,78 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
              )
   end
 
+  test "SPEC §7.2.9 selected requests require the authoritative rendered token IDs" do
+    request = bound(:chat_completions)
+    untokenized = %{request | rendered_prompt: nil, input_token_count: nil, prompt_token_ids: nil}
+
+    rejected = [
+      untokenized,
+      CanonicalRequest.with_tokenization(request, "rendered medium", 3),
+      CanonicalRequest.with_tokenization(request, "rendered medium", 0, []),
+      CanonicalRequest.with_tokenization(request, "", 3, [11, 12, 13]),
+      %{request | prompt_token_ids: [11, 12]}
+    ]
+
+    for candidate <- rejected do
+      assert {:error, {:tokenization, {:runtime_incompatible, _}}} =
+               TensorFoldProjection.validate(candidate, profile())
+
+      assert {:error, {:tokenization, {:runtime_incompatible, _}}} = issue(candidate)
+    end
+  end
+
+  test "SPEC §7.2.9 a deadline beyond the frozen request limit is refused before dispatch" do
+    request = bound(:chat_completions)
+    limited = Map.put(profile(), "max_request_seconds", 90)
+    in_limit = %{timeout_at: DateTime.add(DateTime.utc_now(), 89_500, :millisecond)}
+    default_timeout = %{timeout_at: DateTime.add(DateTime.utc_now(), 120_000, :millisecond)}
+    expired = %{timeout_at: DateTime.add(DateTime.utc_now(), -1, :second)}
+
+    assert {:ok, _json} = issue(request, limited, "node-one", in_limit)
+    assert {:error, _} = issue(request, limited, "node-one", default_timeout)
+    assert {:error, _} = issue(request, limited, "node-one", expired)
+    assert {:error, _} = issue(request, limited, "node-one", %{})
+    assert {:ok, _json} = issue(request, profile(), "node-one", default_timeout)
+
+    for invalid <- [0, -1, "90", 3_601] do
+      assert {:error, _} =
+               TensorFoldProjection.validate(
+                 request,
+                 Map.put(profile(), "max_request_seconds", invalid)
+               )
+    end
+  end
+
+  test "SPEC §7.2.9 selection follows the configured model only" do
+    request = bound(:chat_completions)
+    assert TensorFoldProjection.selected?(request, profile())
+    refute TensorFoldProjection.selected?(request, nil)
+    refute TensorFoldProjection.selected?(request, Map.put(profile(), "model_id", "other"))
+  end
+
+  test "SPEC §7.2.9 only a selected request refused before acceptance keeps the classified error" do
+    request = bound(:chat_completions)
+    other = %{request | model_ref: %{request.model_ref | model_id: "other"}}
+
+    refused = %{
+      accepted: false,
+      events: [],
+      failure: %{"failure_code" => "runtime_incompatible"}
+    }
+
+    assert TensorFoldProjection.refused_before_acceptance?(request, refused, profile())
+    refute TensorFoldProjection.refused_before_acceptance?(other, refused, profile())
+    refute TensorFoldProjection.refused_before_acceptance?(request, refused, nil)
+
+    for changed <- [
+          %{refused | accepted: true},
+          %{refused | events: [:accepted]},
+          %{refused | failure: %{"failure_code" => "internal_error"}}
+        ] do
+      refute TensorFoldProjection.refused_before_acceptance?(request, changed, profile())
+    end
+  end
+
   test "SPEC §3.4 unconfigured models retain baseline dispatch" do
     request = bound(:chat_completions)
     request = %{request | model_ref: %{request.model_ref | model_id: "other"}}
@@ -160,7 +232,9 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
 
   defp bound(endpoint) do
     {:ok, reasoning} = ReasoningEffort.resolve(:medium, @artifact, @template)
+
     %{normalized(endpoint) | reasoning: reasoning}
+    |> CanonicalRequest.with_tokenization("rendered medium", 3, [11, 12, 13])
   end
 
   defp profile do
@@ -180,7 +254,7 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     }
   end
 
-  defp issue(request, profile \\ profile(), node_id \\ "node-one") do
+  defp issue(request, profile \\ profile(), node_id \\ "node-one", schedule \\ %{}) do
     root =
       Path.join(System.tmp_dir!(), "orchard-projection-#{System.unique_integer([:positive])}")
 
@@ -199,7 +273,7 @@ defmodule Orchard.Inference.TensorFoldProjectionTest do
     TensorFoldProjection.issue(
       request,
       %{artifact_sha256: @artifact},
-      %{node_id: node_id},
+      Map.put(schedule, :node_id, node_id),
       profile,
       assets_loader: loader
     )
