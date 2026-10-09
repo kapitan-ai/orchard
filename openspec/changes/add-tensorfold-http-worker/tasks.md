@@ -25,4 +25,13 @@
 - [x] Preserve selected IDs through dispatch regardless of safe mode, require current Worker token-ID capability, and refuse missing IDs before model load with a classified `runtime_incompatible`.
 - [x] Refuse a deadline beyond an optional frozen profile request limit before dispatch, and log bridge admission rejections without request content.
 - [x] Prove helper IDs are admitted by the real bridge renderer and encoder for plain and tool-continuation histories, and that cleared IDs reproduce the earlier rejection.
-- [ ] Establish helper-versus-family-loader token parity on the real frozen artifact in a separately authorized lane.
+- [x] Establish helper-versus-family-loader token parity on the real frozen artifact in a separately authorized lane.
+
+## 6. Documented source-dev operation
+- [x] Load Controller, Node and Worker profiles from documented source-dev files per role, keeping absence default-off and failing startup on unreadable, oversized or non-object files.
+- [x] Derive the bridge-compatible Worker settings for `ORCHARD_WORKER_BACKEND=tensorfold`, refuse conflicting explicit overrides, and wire the missing source-dev memory, prefix-cache and Controller model-load variables.
+- [x] Forward the configured automatic concurrency through the actual Worker launch path.
+- [x] Commit a direct-exec source-dev Worker wrapper and include its Workers in owned source-dev cleanup.
+- [x] Pin the native tuple as an optional Apple Silicon `native` extra without changing the default install.
+- [x] Document the operator flow in `docs/local-dev.md`.
+- [ ] Run an authorized real-native qualification through the documented flow.

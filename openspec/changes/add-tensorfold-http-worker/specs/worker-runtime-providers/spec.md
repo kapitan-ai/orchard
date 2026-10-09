@@ -40,6 +40,10 @@ The Controller SHALL issue a bounded canonical-history projection only under exp
 - **WHEN** a selected rendered explicit medium request is prepared and dispatched with tokenizer safe mode `:off`
 - **THEN** the helper's whole-prompt IDs reach bridge admission unchanged, and a request without valid IDs is refused before model load as `runtime_incompatible`
 
+#### Scenario: Documented source-dev selection
+- **WHEN** an operator sets `ORCHARD_WORKER_BACKEND=tensorfold` and the documented profile files for the stock source-dev launchers
+- **THEN** each role loads only its own profiles, the Node launches the bridge with its accepted Worker settings, and a conflicting setting or malformed profile fails startup instead of being silently replaced
+
 #### Scenario: Ineligible route or controls
 - **WHEN** the selected Node/profile/offer is absent or mismatched, or an admitted public control is unsupported by the experiment
 - **THEN** the request is rejected without ordinary-Worker fallback or native submission, and reserved preparation capacity is cleaned up
