@@ -454,8 +454,9 @@ class TensorFoldDriver:
                     raise DriverError("scheduler exceeded admitted output bound")
                 if cancel_event is not None and cancel_event.is_set():
                     self.cancel()
-                if self._cancel_requested:
+                if self._cancel_requested and not cancelling:
                     cancelling = True
+                    deadline = min(deadline, time.monotonic() + self.bounds.cancel_seconds)
                 if not cancelling:
                     yield chunk
             self._settle(job)

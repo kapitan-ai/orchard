@@ -117,6 +117,9 @@ class Scheduler:
             return
         if self.behavior == "hang":
             return
+        if self.behavior == "hang_after_chunk":
+            job.chunks.put([6, 7])
+            return
         if self.behavior == "overflow":
             job.chunks.put([1, 2, 3, 4])
         else:
@@ -435,6 +438,28 @@ def test_external_cancel_after_first_chunk_can_settle_safely(driver):
     assert list(iterator) == []
     assert driver.completion.cancelled
     assert driver.settled
+
+
+class LateCancel:
+    # Unset at the loop top; set by the time the first chunk arrives.
+    def __init__(self):
+        self.checks = 0
+
+    def is_set(self):
+        self.checks += 1
+        return self.checks > 1
+
+
+def test_cancel_observed_after_a_chunk_still_bounds_unsettled_cancellation(driver, receipt):
+    driver.bounds = replace(driver.bounds, request_seconds=5.0)
+    driver.scheduler.behavior = "hang_after_chunk"
+    driver.start()
+    started = time.monotonic()
+    with pytest.raises(DriverError, match="bounded completion"):
+        run(driver, cancel_event=LateCancel())
+    assert time.monotonic() - started < 1.0
+    assert driver.scheduler.cancel_calls == 1
+    assert driver.quarantined and receipt.quarantines == 1
 
 
 def test_job_error_after_positive_settlement_does_not_publish_success_metadata(driver, monkeypatch):
