@@ -89,7 +89,7 @@
       "expected": {"status": 400, "code": "unsupported_parameter", "param": "reasoning.summary", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
     },
     {
-      "id": "unregistered-effort-rejected",
+      "id": "effort-route-unavailable-rejected",
       "modes": ["chat_sync", "chat_stream"],
       "output_contract": "rejection",
       "request": {"reasoning_effort": "low"},
@@ -97,7 +97,7 @@
       "expected": {"status": 400, "code": "unsupported_reasoning_control", "param": "reasoning_effort", "runtime_terminals": 0, "client_decisions": [], "side_effects": []}
     },
     {
-      "id": "unregistered-effort-rejected-responses",
+      "id": "effort-route-unavailable-rejected-responses",
       "modes": ["responses_sync", "responses_stream"],
       "output_contract": "rejection",
       "request": {"reasoning": {"effort": "low"}},

@@ -80,14 +80,19 @@ Node occupancy remains held until the gate opens; the logical Request cancels
 once without retry. A scripted capacity-policy scheduler connects the production
 allocation authority to this route. Cooperative drain retains Controller
 allocation; timeout checks require quarantine and reject allocation reuse while
-native generation is still held. Current source fails those three timeout
-assertions even though Node occupancy remains held. The runner records them as
-known gaps linked to #417: JSONL keeps `status: fail` with `known_gap`, and the
-test fails if one starts to pass, so the gap is promoted rather than hidden.
-They do not claim the base transport-resolution contract already proves native
-drain.
+native generation is still held, and that quarantine persists after the drain
+gate opens. Current source fails those three timeout assertions even though Node
+occupancy remains held. They are SPEC §7.2.9 profile gates, stricter than the
+§4.6.2 base contract, which lets affirmative stream closure resolve execution
+and quarantines only admitted Nodes. This fixture uses an unadmitted Node, so
+the failures are not established §4.6.2 defects. The runner records them as
+known gaps under investigation in #417: JSONL keeps `status: fail` with
+`known_gap`, and the test fails if one starts to pass, so the gap is promoted
+rather than hidden. The persistence assertion can only pass after quarantine,
+so it is not independent evidence.
 This proves scripted native cooperation, not real-provider drain or real TCP
-disconnection. Verified quarantine reconciliation remains an integration gap.
+disconnection. Verified quarantine reconciliation is not exercised and remains
+an integration gap.
 
 Cache tests compare the dispatched fingerprint and native received fingerprint
 against an independent HMAC calculation, including result-only changes on both
@@ -121,9 +126,11 @@ or convert a failure to a skip. Unknown runtime error codes must map to
 Reasoning cases follow each endpoint's accepted input. A structured
 `reasoning` object is an unsupported Chat parameter, and `reasoning.summary` is
 an unsupported Responses parameter. An explicit effort (`reasoning_effort` or
-`reasoning.effort`) on this fixture model, which has no registered effort
-contract, returns `unsupported_reasoning_control`. Positive rendered-effort
-application on a registered template is not part of this fixture.
+`reasoning.effort`) returns `unsupported_reasoning_control`. The corpus runs
+with tokenizer safe mode `reject`, and the rendered-effort route needs `off`, so
+these cases prove the unavailable-route refusal, not a missing registration.
+Positive rendered-effort application on a registered template is not part of
+this fixture.
 
 Hardware, OpenCode, Qwen, native-provider qualification,
 production activation, and support claims remain outside this fixture.

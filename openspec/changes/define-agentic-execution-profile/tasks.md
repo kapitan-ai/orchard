@@ -31,8 +31,9 @@ reconciliation, exhaustive trace mutations, positive rendered-effort application
 on a registered template and complete assertion-level JSONL reporting remain
 open. Synthesized lower-bound usage and unknown-code public streaming
 normalization now pass on current source. Controller quarantine and allocation
-refusal before native drain still fail; the runner records them as known gaps
-linked to #417 and fails if one starts to pass, so it is promoted.
+refusal before native drain still fail. They are §7.2.9 profile gates rather
+than established §4.6.2 defects; the runner records them as known gaps under
+investigation in #417 and fails if one starts to pass, so it is promoted.
 
 ## 3. First conformance client
 

@@ -112,7 +112,7 @@ defmodule Orchard.TestSupport.AgenticExecutionCorpus do
            "quarantine_before_native_drain",
            "no_allocation_reuse_before_native_drain",
            "node_occupancy_before_native_drain",
-           "quarantine_requires_verified_reconciliation"
+           "quarantine_persists_after_native_drain"
          ] do
         Map.merge(result, %{actual: actual, expected: expected_value})
       else

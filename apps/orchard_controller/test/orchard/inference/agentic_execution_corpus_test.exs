@@ -24,12 +24,14 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
 
   @corpus AgenticExecutionCorpus.load!()
 
-  # Profile gates that current source does not meet. Each stays a recorded
-  # failure; a gate that starts to pass fails the test until it is promoted.
+  # SPEC 7.2.9 profile gates, stricter than the SPEC 4.6.2 base contract, that
+  # current source does not meet. #417 investigates them; they are not
+  # established 4.6.2 defects. Each stays a recorded failure, and a gate that
+  # starts to pass fails the test until it is promoted.
   @known_gaps %{
     "quarantine_before_native_drain" => "#417",
     "no_allocation_reuse_before_native_drain" => "#417",
-    "quarantine_requires_verified_reconciliation" => "#417"
+    "quarantine_persists_after_native_drain" => "#417"
   }
 
   setup do
@@ -444,7 +446,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
           {"quarantine_before_native_drain", quarantined?, true},
           {"no_allocation_reuse_before_native_drain", denied?, true},
           {"node_occupancy_before_native_drain", node_occupancy, 1},
-          {"quarantine_requires_verified_reconciliation",
+          {"quarantine_persists_after_native_drain",
            node_id in AllocationAuthority.quarantined_nodes(authority), true}
         ])
       else
