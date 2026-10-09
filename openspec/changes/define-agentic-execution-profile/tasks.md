@@ -8,8 +8,8 @@
 
 ## 2. Deterministic reusable corpus
 
-- [ ] 2.1 Define a versioned corpus format for request inputs, scripted provider-neutral events, expected public events, terminal outcomes, usage, client decisions, and tool side effects.
-- [ ] 2.2 Implement the scripted provider-neutral fixture and corpus runner before any hardware qualification.
+- [x] 2.1 Define a versioned corpus format for request inputs, scripted provider-neutral events, expected public events, terminal outcomes, usage, client decisions, and tool side effects.
+- [x] 2.2 Implement the scripted provider-neutral fixture and corpus runner before any hardware qualification.
 - [ ] 2.3 Add applicable positive, negative, and dependency-blocked cases for typed final text, reasoning, tool calls and continuation, structured output, caller/generated schema handling, attempt-scoped usage, scoped terminal outcomes, disconnect cancellation and proven native drain, bounded cache identity/affinity, retry/errors, and `parallel_tool_calls=true` rejection.
 - [ ] 2.4 Produce a sanitized machine-readable result that identifies corpus version, Orchard revision, endpoint/mode, client adapter identity, and every pass/fail assertion without prompts, generated content, credentials, local paths, or tool/session identifiers.
 
@@ -27,12 +27,12 @@ The public/native disconnect lane uses scripted capacity-policy inputs and the
 real allocation authority: cooperative drain retains allocation, while the
 timeout case requires quarantine and refuses reuse before native drain.
 This is not a completed profile. Native two-Node retry, verified quarantine
-reconciliation, exhaustive trace mutations and complete assertion-level JSONL
-reporting remain open. These integration gaps are not blocked by #329.
-Synthesized usage assertions must remain failures until #329 satisfies the
-accounting contract; they are not unsupported-public-input `dependency_blocked`
-cases. Unknown-code public streaming normalization and Controller allocation
-reuse before native drain are separate failing profile gates.
+reconciliation, exhaustive trace mutations, positive rendered-effort application
+on a registered template and complete assertion-level JSONL reporting remain
+open. Synthesized lower-bound usage and unknown-code public streaming
+normalization now pass on current source. Controller quarantine and allocation
+refusal before native drain still fail; the runner records them as known gaps
+linked to #417 and fails if one starts to pass, so it is promoted.
 
 ## 3. First conformance client
 
