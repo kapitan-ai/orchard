@@ -333,6 +333,35 @@ def test_disconnect_after_delta_keeps_custody_and_denies_reuse(runtime):
     assert runtime.assets.driver._custody.snapshot().held_bytes == 10
 
 
+def cancel_mid_chunk(runtime):
+    # The Node Cancel lands while the bridge still yields tokens from one received chunk.
+    backend = runtime.backend
+    request = request_for(backend.profile, backend.incarnation)
+    service = WorkerRuntimeServicer(backend, memory_sampler=lambda: None)
+    context = Mock()
+    context.add_callback.return_value = True
+    stream = service.Generate(request, context)
+    assert next(e for e in stream if e.HasField("output_text_delta")).output_text_delta.delta
+    service.Cancel(runtime_pb2.CancelInferenceRequest(request_id=request.request_id), context)
+    return list(stream)
+
+
+def test_node_cancel_mid_chunk_settles_and_admits_a_later_request(runtime):
+    events = cancel_mid_chunk(runtime)
+    assert kinds(events)[-1] == "failed" and events[-1].failed.code == "cancelled"
+    assert runtime.assets.driver.settled and not runtime.assets.driver.quarantined
+    assert runtime.backend.health()["ready"]
+    assert kinds(list(generate(runtime)))[-1] == "completed"
+
+
+def test_node_cancel_mid_chunk_without_settlement_still_quarantines(runtime):
+    runtime.settle = False
+    events = cancel_mid_chunk(runtime)
+    assert events[-1].failed.code == "runtime_quarantined"
+    assert runtime.assets.driver.quarantined and not runtime.backend.health()["ready"]
+    assert runtime.assets.driver._custody.snapshot().held_bytes == 10
+
+
 def test_raw_accumulation_bound_stops_hidden_tool_buffer_growth(runtime):
     runtime.backend.profile = replace(
         runtime.backend.profile, max_output_bytes=8, max_event_bytes=8

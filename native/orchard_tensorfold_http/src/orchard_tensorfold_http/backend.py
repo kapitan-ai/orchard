@@ -395,4 +395,12 @@ class TensorFoldBackend:
             elif tail:
                 raise DriverError("detokenizer returned text without tokens")
         finally:
-            chunks.close()
+            try:
+                if cancel_event.is_set():
+                    # A cancelled consumer can close this stream mid-chunk. Drain
+                    # through the driver's bounded settlement instead of abandoning
+                    # it; the driver yields nothing further once it sees the cancel.
+                    for _ in chunks:
+                        pass
+            finally:
+                chunks.close()
