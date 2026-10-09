@@ -236,6 +236,7 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
              {"preparation_redemption", 14, PreparationRedemption, false},
              {"tensorfold_history_projection_json", 15, :bytes, false}
            ]
+
     assert execution_input == field_signatures(FrozenExecutionInput)
   end
 
@@ -243,8 +244,8 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
     projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
     request = %ExecuteInferenceRequest{tensorfold_history_projection_json: projection}
 
-    assert Protobuf.decode(Protobuf.encode(request), ExecuteInferenceRequest).
-             tensorfold_history_projection_json == projection
+    assert Protobuf.decode(Protobuf.encode(request), ExecuteInferenceRequest).tensorfold_history_projection_json ==
+             projection
 
     assert Protobuf.encode(%ExecuteInferenceRequest{request_id: "legacy"}) == <<10, 6, "legacy">>
   end
@@ -253,8 +254,8 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
     offer = ~s({"schema_version":1,"service_incarnation":"fixture"})
     status = %WorkerStatusResponse{ready: true, tensorfold_profile_admission_json: offer}
 
-    assert Protobuf.decode(Protobuf.encode(status), WorkerStatusResponse).
-             tensorfold_profile_admission_json == offer
+    decoded = Protobuf.decode(Protobuf.encode(status), WorkerStatusResponse)
+    assert decoded.tensorfold_profile_admission_json == offer
 
     assert Protobuf.encode(%WorkerStatusResponse{ready: true}) == <<24, 1>>
   end

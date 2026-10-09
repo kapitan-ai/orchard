@@ -29,17 +29,16 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
     projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
     baseline = Operation.ExecuteRequest.new!(attrs)
 
-    projected =
-      Operation.ExecuteRequest.new!(Map.put(attrs, :tensorfold_history_projection_json, projection))
+    projected_attrs = Map.put(attrs, :tensorfold_history_projection_json, projection)
+    projected = Operation.ExecuteRequest.new!(projected_attrs)
 
-    assert RuntimeEndpointMapper.execute_request_to_proto(baseline).
-             tensorfold_history_projection_json == ""
+    baseline_proto = RuntimeEndpointMapper.execute_request_to_proto(baseline)
+    assert baseline_proto.tensorfold_history_projection_json == ""
 
     proto = RuntimeEndpointMapper.execute_request_to_proto(projected)
     assert proto.tensorfold_history_projection_json == projection
-    assert ExecuteInferenceRequest.decode(
-             ExecuteInferenceRequest.encode(proto)
-           ).tensorfold_history_projection_json == projection
+    decoded = ExecuteInferenceRequest.decode(ExecuteInferenceRequest.encode(proto))
+    assert decoded.tensorfold_history_projection_json == projection
   end
 
   test "maps node-agent status to Runtime Endpoint observation with placement capacity" do
