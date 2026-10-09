@@ -161,6 +161,15 @@ defmodule Orchard.Node.WorkerCustodyTest do
            )
   end
 
+  test "SPEC.md §4.9 loaded runtime lease reports the loaded phase", context do
+    state = load_stub_runtime!(context)
+    on_exit(fn -> CustodyTestHelpers.stop_child(state.port, state.os_pid) end)
+
+    assert %{phase: :loaded} = :sys.get_state(RuntimeProcessReaper).leases[state.reaper_ref]
+    assert :ok = WorkerRuntimeAdapter.unload_model(state, [])
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
   test "SPEC.md §4.9 closed BEAM port still reaps its live recorded PID", context do
     state = load_stub_runtime!(context)
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
@@ -492,11 +501,12 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
     assert WorkerProcessLifecycle.os_process_alive?(state.os_pid)
     assert File.exists?(state.socket_path)
-    assert :ok = Application.stop(:orchard_node_agent)
+    log = capture_log(fn -> assert :ok = Application.stop(:orchard_node_agent) end)
 
     CustodyTestHelpers.assert_os_pid_dead!(state.os_pid, 2_000)
     refute File.exists?(state.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    refute log =~ "orphan"
   end
 
   # Cost of one custody-gated escalation with no waiting left, so the closed-Port
