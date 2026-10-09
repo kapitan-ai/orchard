@@ -756,6 +756,32 @@ def test_foreign_copy_exception_logs_only_its_class(driver, caplog):
     assert "private prompt fragment" not in message
 
 
+def test_foreign_value_error_logs_only_its_class(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+
+    def failing_copy(cache):
+        raise ValueError("private prompt fragment 4 5 6")
+
+    driver._original_copy = failing_copy
+    driver.start()
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    message = copy_failure_records(caplog)[0].getMessage()
+    assert "reason=ValueError requested=" in message
+    assert "private prompt fragment" not in message
+
+
+def test_package_value_error_logs_its_fixed_message(driver, caplog):
+    caplog.set_level("INFO", logger=DRIVER_LOGGER)
+    driver._copy_bounds = lambda cache: (-1, 0)
+    driver.start()
+    with pytest.raises(DriverError, match="^cache copy custody failed$"):
+        run(driver)
+    message = copy_failure_records(caplog)[0].getMessage()
+    assert "reason=ValueError: copy bound must be a bounded positive integer" in message
+    assert "requested=-1+0" in message
+
+
 def test_request_start_logs_cached_prompt_and_checkpoint_counts(driver, caplog):
     caplog.set_level("INFO", logger=DRIVER_LOGGER)
     driver.start()
