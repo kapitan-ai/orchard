@@ -233,7 +233,7 @@ def test_local_configuration_constructs_explicit_backend_without_loading(tmp_pat
             "max_bundle_files": 10,
             "max_bundle_bytes": 10000,
             "prefill_step": 2,
-            "cache_limit_bytes": 64,
+            "cache_limit_bytes": 1073741824,
         },
     }
     path.write_text(json.dumps(config))
@@ -260,7 +260,7 @@ def test_local_configuration_refuses_a_lease_bound_below_the_copy_peak(tmp_path,
             "max_bundle_files": 10,
             "max_bundle_bytes": 10000,
             "prefill_step": 2,
-            "cache_limit_bytes": 64,
+            "cache_limit_bytes": 1073741824,
         },
     }
     path.write_text(json.dumps(config))

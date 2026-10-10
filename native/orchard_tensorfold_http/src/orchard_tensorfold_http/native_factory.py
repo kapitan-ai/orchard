@@ -34,6 +34,8 @@ from orchard_tensorfold_http.tensorfold_driver import (
 
 _TUPLE = {"tensorfold": "0.6.6", "mlx": "0.32.3", "mlx-lm": "0.32.0", "transformers": "5.14.1"}
 MIN_CHUNK = 256
+MIN_CACHE_LIMIT = 1024**3
+MAX_CACHE_LIMIT = 2**63 - 1
 
 
 class _ThinkingOnProbe:
@@ -169,6 +171,10 @@ class NativeFactory:
         self.max_bundle_bytes = positive_int(max_bundle_bytes, "bundle byte bound")
         self.prefill_step = positive_int(prefill_step, "prefill step")
         self.cache_limit_bytes = positive_int(cache_limit_bytes, "MLX cache limit")
+        # Bytes, not GiB: a unit slip would leave MLX almost no cache. The top
+        # bound keeps the value inside the size_t that MLX accepts.
+        if not MIN_CACHE_LIMIT <= cache_limit_bytes <= MAX_CACHE_LIMIT:
+            raise ValueError("MLX cache limit is outside its admitted range")
 
     def __call__(
         self, path: str, profile: ExperimentProfile, quarantine: Callable[[], None]

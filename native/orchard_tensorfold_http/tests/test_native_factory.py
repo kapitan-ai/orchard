@@ -112,7 +112,7 @@ def assembly(tmp_path, monkeypatch, profile, bounds):
         max_bundle_files=10,
         max_bundle_bytes=10000,
         prefill_step=2,
-        cache_limit_bytes=64,
+        cache_limit_bytes=1024**3,
     )
     factory._assemble = Mock(return_value="fake-native-assets")
     return SimpleNamespace(factory=factory, profile=profile, manifest=manifest, path=tmp_path)
@@ -310,7 +310,7 @@ def build_factory(bounds, tmp_path):
         max_bundle_files=10,
         max_bundle_bytes=10000,
         prefill_step=2,
-        cache_limit_bytes=64,
+        cache_limit_bytes=1024**3,
     )
 
 
@@ -368,12 +368,12 @@ def test_native_assembly_bounds_the_mlx_cache_before_weights_load(assembly, fake
     native_factory.NativeFactory._assemble(
         assembly.factory, assembly.path, assembly.profile, Mock(), Mock()
     )
-    fake_native.mx.set_cache_limit.assert_called_once_with(64)
+    fake_native.mx.set_cache_limit.assert_called_once_with(1024**3)
     assert fake_native.load_calls == [1]
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "64", None])
-def test_factory_refuses_a_cache_limit_that_is_not_a_positive_integer(bounds, tmp_path, value):
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "64", None, 16, 1024**3 - 1, 2**63, 2**64])
+def test_factory_refuses_a_cache_limit_outside_whole_bytes_in_range(bounds, tmp_path, value):
     with pytest.raises(ValueError, match="MLX cache limit"):
         native_factory.NativeFactory(
             bounds=native_bounds(bounds),
