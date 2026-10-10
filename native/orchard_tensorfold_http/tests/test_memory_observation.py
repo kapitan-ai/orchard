@@ -1,12 +1,15 @@
 """Memory diagnostics only observe: no limits, no clearing, no failure propagation."""
 
 import logging
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
+from orchard_tensorfold_http import memory_observation
 from orchard_tensorfold_http.memory_observation import LogWriter, MemoryObserver
 
 CUSTODY = SimpleNamespace(leases=3, held_bytes=36)
@@ -184,3 +187,55 @@ def test_observers_share_one_writer_thread_per_process():
     writers = [t for t in threading.enumerate() if t.name == "tensorfold-memory-log"]
     assert len({id(watch._writer) for watch in observers}) == 1
     assert len([t for t in writers if t is observers[0]._writer._thread]) == 1
+
+
+def test_flush_waits_for_queued_samples_and_gives_up_at_its_deadline():
+    gate = threading.Event()
+
+    class Blocking(logging.Handler):
+        def emit(self, record):
+            gate.wait(5)
+
+    log = logging.getLogger("orchard_tensorfold_http.memory_observation")
+    handler = Blocking()
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        writer = LogWriter()
+        observer(Counters(), writer=writer).phase("settled_after_release", CUSTODY, 0)
+        started = time.monotonic()
+        assert writer.flush(0.2) is False
+        assert time.monotonic() - started < 1.0
+        gate.set()
+        assert writer.flush(5) is True
+    finally:
+        gate.set()
+        log.removeHandler(handler)
+
+
+def test_the_shared_writer_registers_one_bounded_exit_flush(monkeypatch):
+    registered = []
+    monkeypatch.setattr(memory_observation, "_shared_writer", None)
+    monkeypatch.setattr(
+        memory_observation.atexit, "register", lambda *args: registered.append(args)
+    )
+    first = memory_observation.shared_writer()
+    assert memory_observation.shared_writer() is first
+    assert registered == [(first.flush, memory_observation.EXIT_FLUSH_SECONDS)]
+
+
+def test_samples_queued_just_before_a_normal_exit_are_still_logged():
+    script = (
+        "import logging, sys\n"
+        "from types import SimpleNamespace\n"
+        "from orchard_tensorfold_http.memory_observation import MemoryObserver\n"
+        "logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(message)s')\n"
+        "one = lambda: 1\n"
+        "watch = MemoryObserver(active=one, cache=one, peak=one, reset_peak=lambda: None,\n"
+        "    footprint=one, estimate=lambda cache: 1)\n"
+        "watch.phase('settled_after_release', SimpleNamespace(leases=0, held_bytes=0), 0)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=True
+    )
+    assert "tensorfold memory phase=settled_after_release" in result.stdout

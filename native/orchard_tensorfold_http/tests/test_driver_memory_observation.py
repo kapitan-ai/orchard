@@ -4,8 +4,10 @@ They observe custody; they never change it, quarantine on their own failure, or
 add native work.
 """
 
+import gc
 import logging
 import threading
+import weakref
 
 import pytest
 from test_tensorfold_driver import (
@@ -44,7 +46,7 @@ class Recorder:
             raise RuntimeError("observer failed")
 
 
-def make_driver(bounds, receipt, observer):
+def make_driver(bounds, receipt, observer, engine=None):
     def quarantine():
         receipt.quarantines += 1
 
@@ -57,7 +59,7 @@ def make_driver(bounds, receipt, observer):
         return receipt.settle
 
     driver = TensorFoldDriver(
-        Engine(),
+        Engine() if engine is None else engine,
         scheduler_factory=Scheduler,
         job_factory=job_factory,
         checkpoint_factory=Checkpoints,
@@ -183,3 +185,56 @@ def test_a_blocked_log_handler_cannot_delay_settlement(bounds, receipt):
     finally:
         gate.set()
         log.removeHandler(handler)
+
+
+class Layer(dict):
+    """A copied cache layer that a weak reference can watch."""
+
+
+class TrackingEngine(Engine):
+    def __init__(self):
+        super().__init__()
+        self.layers = []
+
+    def copy_single_cache(self, cache):
+        self.copies += 1
+        copied = [Layer(layer) for layer in cache]
+        self.layers.extend(weakref.ref(layer) for layer in copied)
+        return copied
+
+
+def test_released_copies_are_unreachable_when_the_after_release_sample_is_taken(bounds, receipt):
+    live = []
+
+    class AfterRelease(Recorder):
+        def phase(self, name, custody, checkpoints, stream=None):
+            if name == "settled_after_release":
+                gc.collect()
+                live.append(sum(1 for ref in driver.engine.layers if ref() is not None))
+            super().phase(name, custody, checkpoints, stream)
+
+    driver = make_driver(bounds, receipt, AfterRelease(), TrackingEngine())
+    assert run(driver) == [[6, 7]]
+    # The second request borrows a copy and evicts the first snapshot; both are
+    # released at settlement, so only the new retained snapshot stays alive.
+    assert run(driver, prompt=[1, 2, 3, 4], history=3) == [[6, 7]]
+    assert live == [1, 1]
+
+
+def test_a_snapshot_the_store_rejects_is_unreachable_at_the_after_release_sample(bounds, receipt):
+    live = []
+
+    class AfterRelease(Recorder):
+        def phase(self, name, custody, checkpoints, stream=None):
+            if name == "settled_after_release":
+                gc.collect()
+                live.append(sum(1 for ref in driver.engine.layers if ref() is not None))
+            super().phase(name, custody, checkpoints, stream)
+
+    driver = make_driver(bounds, receipt, AfterRelease(), TrackingEngine())
+    # Over the checkpoint budget: the store refuses the snapshot, so its copy
+    # is the last record released at settlement.
+    driver._copy_bounds = lambda cache: (30, 5)
+    assert run(driver) == [[6, 7]]
+    assert not driver.checkpoints._entries
+    assert live == [0]

@@ -6,15 +6,17 @@ zero, so a request's peak is the highest active memory seen at an allocation
 since submission, not bytes the request owned. Copy sizes are array-byte
 estimates, never physical allocations. Nothing here logs request content.
 
-The calling thread only reads counters and queues a tuple of numbers; a
-background writer formats and logs it. A slow or blocked log handler therefore
-cannot hold the engine thread past a settlement deadline. When the bounded
-queue is full, the sample is dropped and counted.
+The calling thread only reads counters and queues a tuple of numbers; one
+background writer per process formats and logs it, so diagnostics never log on
+the settlement path. When the bounded queue is full, the sample is dropped and
+counted. The writer still shares the Worker's log handlers and stream.
 """
 
+import atexit
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 Counter = Callable[[], int | None]
 UNAVAILABLE = "unavailable"
+EXIT_FLUSH_SECONDS = 2.0
 _FORMAT = (
     "tensorfold memory phase=%s seq=%d active=%s cache=%s peak=%s footprint=%s "
     "leases=%d held=%d checkpoints=%d copies=%d copy_bytes_est=%s "
@@ -54,6 +57,17 @@ class LogWriter:
         """Wait until every queued sample has been logged (tests and shutdown only)."""
         self._lines.join()
 
+    def flush(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds for queued samples; never called on a request path."""
+        deadline = time.monotonic() + timeout
+        with self._lines.all_tasks_done:
+            while self._lines.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._lines.all_tasks_done.wait(remaining)
+        return True
+
     def _drain(self) -> None:
         while True:
             line = self._lines.get()
@@ -75,6 +89,8 @@ def shared_writer() -> LogWriter:
     with _shared_lock:
         if _shared_writer is None:
             _shared_writer = LogWriter()
+            # Best effort: log samples still queued at a normal exit.
+            atexit.register(_shared_writer.flush, EXIT_FLUSH_SECONDS)
         return _shared_writer
 
 

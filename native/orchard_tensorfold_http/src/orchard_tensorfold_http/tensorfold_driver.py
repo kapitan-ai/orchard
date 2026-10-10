@@ -476,25 +476,30 @@ class TensorFoldDriver:
             if self._request_settlement(engine) is not True:
                 return False
             self._observe("settled_before_release", job)
-            with self._lock:
-                self._available()
-                retained = {id(entry.cache) for entry in self.checkpoints._entries}
-                if any(cache_id not in self._records for cache_id in retained):
-                    raise DriverError("retained cache lacks owned custody")
-                if job.stream is not None:
-                    job.stream.history_checkpoints = []
-                for cache_id, record in list(self._records.items()):
-                    desired = {"retained"} if cache_id in retained else set()
-                    for owner in record.owners - desired:
-                        record.lease.dispose(owner)
-                    record.owners.intersection_update(desired)
-                    if not desired:
-                        del self._records[cache_id]
+            self._release_unretained(job)
+            # Sampled after the helper returns, so none of its locals keep a
+            # released cache alive.
             self._observe("settled_after_release", job)
             return True
 
         if self.scheduler.on_engine(finish, timeout=self.bounds.settlement_seconds) is not True:
             raise DriverError("native request settlement was not confirmed")
+
+    def _release_unretained(self, job: Any) -> None:
+        with self._lock:
+            self._available()
+            retained = {id(entry.cache) for entry in self.checkpoints._entries}
+            if any(cache_id not in self._records for cache_id in retained):
+                raise DriverError("retained cache lacks owned custody")
+            if job.stream is not None:
+                job.stream.history_checkpoints = []
+            for cache_id, record in list(self._records.items()):
+                desired = {"retained"} if cache_id in retained else set()
+                for owner in record.owners - desired:
+                    record.lease.dispose(owner)
+                record.owners.intersection_update(desired)
+                if not desired:
+                    del self._records[cache_id]
 
     def generate(
         self,
