@@ -161,12 +161,14 @@ class NativeFactory:
         max_bundle_files: int,
         max_bundle_bytes: int,
         prefill_step: int,
+        cache_limit_bytes: int,
     ):
         _validate_custody_bounds(bounds)
         self.bounds, self.model_path = bounds, model_path.absolute()
         self.max_bundle_files = positive_int(max_bundle_files, "bundle file bound")
         self.max_bundle_bytes = positive_int(max_bundle_bytes, "bundle byte bound")
         self.prefill_step = positive_int(prefill_step, "prefill step")
+        self.cache_limit_bytes = positive_int(cache_limit_bytes, "MLX cache limit")
 
     def __call__(
         self, path: str, profile: ExperimentProfile, quarantine: Callable[[], None]
@@ -266,6 +268,9 @@ class NativeFactory:
         from tensorfold.families.qwen3_5 import load
         from tensorfold.server.memory_budget import cache_nbytes, process_footprint
 
+        # Bound MLX's freed-buffer cache before weights load. Its default is
+        # close to RAM, so freed prefill buffers would otherwise stay held.
+        mx.set_cache_limit(self.cache_limit_bytes)
         family, tokenizer = load(entrypoint, drafter="", vision=False, vision_urls=False)
         tokenizer._chat_template = render
         plan = _prefill_plan(tokenizer, self.prefill_step)

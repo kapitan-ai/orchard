@@ -32,7 +32,13 @@ def configured_backend(path: Path) -> TensorFoldBackend:
     profile = ExperimentProfile(**config["profile"])
     bounds = DriverBounds(**config["bounds"])
     native = config["native"]
-    if set(native) != {"model_path", "max_bundle_files", "max_bundle_bytes", "prefill_step"}:
+    if set(native) != {
+        "model_path",
+        "max_bundle_files",
+        "max_bundle_bytes",
+        "prefill_step",
+        "cache_limit_bytes",
+    }:
         raise ValueError("unsupported native configuration")
     factory = NativeFactory(bounds=bounds, **{**native, "model_path": Path(native["model_path"])})
     return TensorFoldBackend(profile, factory, enabled=True)
