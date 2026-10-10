@@ -24,6 +24,7 @@ from orchard_worker_mlx.model_loader import (
 
 from orchard_tensorfold_http.admission import ExperimentProfile, positive_int
 from orchard_tensorfold_http.backend import RuntimeAssets
+from orchard_tensorfold_http.memory_observation import MemoryObserver
 from orchard_tensorfold_http.rendering import bind_chat_template
 from orchard_tensorfold_http.tensorfold_driver import (
     DriverBounds,
@@ -263,6 +264,7 @@ class NativeFactory:
         from tensorfold.engine.exact_sampling import Sampling, seed_for
         from tensorfold.engine.lane_engine import LaneEngine
         from tensorfold.families.qwen3_5 import load
+        from tensorfold.server.memory_budget import cache_nbytes, process_footprint
 
         family, tokenizer = load(entrypoint, drafter="", vision=False, vision_urls=False)
         tokenizer._chat_template = render
@@ -307,6 +309,14 @@ class NativeFactory:
             request_settlement=request_settlement,
             on_quarantine=quarantine,
             eos_ids=frozenset(eos),
+            memory_observer=MemoryObserver(
+                active=mx.get_active_memory,
+                cache=mx.get_cache_memory,
+                peak=mx.get_peak_memory,
+                reset_peak=mx.reset_peak_memory,
+                footprint=process_footprint,
+                estimate=cache_nbytes,
+            ),
         )
         session = SimpleNamespace(
             model=family,

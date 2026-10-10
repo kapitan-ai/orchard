@@ -162,7 +162,16 @@ def fake_native(monkeypatch):
         def __init__(self, **values):
             self.__dict__.update(values)
 
-    mx = module("mlx.core", array=Array, eval=Mock(), synchronize=Mock())
+    mx = module(
+        "mlx.core",
+        array=Array,
+        eval=Mock(),
+        synchronize=Mock(),
+        get_active_memory=Mock(return_value=11),
+        get_cache_memory=Mock(return_value=22),
+        get_peak_memory=Mock(return_value=33),
+        reset_peak_memory=Mock(),
+    )
     module("mlx", core=mx)
     module("mlx_lm.models.cache", ArraysCache=Cache, KVCache=Cache)
     module("tensorfold.engine.alternating_kv", AlternatingKVCache=Cache)
@@ -176,6 +185,11 @@ def fake_native(monkeypatch):
     tokenizer = SimpleNamespace(eos_token_ids=[1], encode=Mock(return_value=[2]))
     family = object()
     module("tensorfold.families.qwen3_5", load=Mock(return_value=(family, tokenizer)))
+    module(
+        "tensorfold.server.memory_budget",
+        cache_nbytes=Mock(return_value=44),
+        process_footprint=Mock(return_value=55),
+    )
     constructor = Mock(return_value="fake-driver")
     monkeypatch.setattr(native_factory.TensorFoldDriver, "from_tensorfold", constructor)
     return SimpleNamespace(
@@ -313,3 +327,24 @@ def test_factory_refuses_a_budget_that_cannot_hold_the_lease_bound(bounds, tmp_p
     full = native_bounds(bounds)
     with pytest.raises(ValueError, match="custody budget cannot hold"):
         build_factory(replace(full, total_budget_bytes=full.total_budget_bytes - 1), tmp_path)
+
+
+def test_native_assembly_observes_memory_without_limits_or_clearing(assembly, fake_native, caplog):
+    # Diagnostics only: MLX counters and TensorFold's footprint and size
+    # estimates feed the observer; no limit, cache clear or extra barrier.
+    caplog.set_level("INFO", logger="orchard_tensorfold_http.memory_observation")
+    native_factory.NativeFactory._assemble(
+        assembly.factory, assembly.path, assembly.profile, Mock(), Mock()
+    )
+    observer = fake_native.constructor.call_args.kwargs["memory_observer"]
+    observer.request_start(SimpleNamespace(leases=0, held_bytes=0), 0)
+    observer.copied([object()])
+    observer.phase("settled_after_release", SimpleNamespace(leases=1, held_bytes=12), 1)
+    observer._writer.join()
+    messages = [r.getMessage() for r in caplog.records]
+    assert "active=11 cache=22 peak=33 footprint=55" in messages[0]
+    assert "copies=1 copy_bytes_est=44" in messages[-1]
+    fake_native.mx.reset_peak_memory.assert_called_once()
+    for name in ("set_memory_limit", "set_cache_limit", "set_wired_limit", "clear_cache"):
+        assert name not in vars(fake_native.mx)
+    assert fake_native.mx.synchronize.call_count == 0

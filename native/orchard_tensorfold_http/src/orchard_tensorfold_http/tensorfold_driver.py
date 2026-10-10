@@ -22,6 +22,7 @@ from orchard_tensorfold_http.cache_custody import (
     CacheLease,
     CacheOwner,
 )
+from orchard_tensorfold_http.memory_observation import MemoryObserver
 from orchard_tensorfold_http.token_buffer import TokenChunkBuffer
 
 logger = logging.getLogger(__name__)
@@ -174,8 +175,10 @@ class TensorFoldDriver:
         request_settlement: Callable[[Any], bool],
         on_quarantine: Callable[[], None],
         eos_ids: frozenset[int],
+        memory_observer: MemoryObserver | None = None,
     ):
         self.engine, self.bounds = engine, bounds
+        self._observer = memory_observer
         self._job_factory, self._cancellation_factory = job_factory, cancellation_factory
         self._copy_bounds, self._copy_settlement = copy_bounds, copy_settlement
         self._request_settlement, self._on_quarantine = request_settlement, on_quarantine
@@ -328,6 +331,9 @@ class TensorFoldDriver:
             with self._lock:
                 self._available(allow_closing=True)
                 self._records[id(wrapped)] = _CacheRecord(lease, wrapped, {owner}, size)
+            if self._observer is not None:
+                observer, value = self._observer, lease.value
+                _emit(lambda: observer.copied(value))
             return wrapped
         except BaseException as exc:
             try:
@@ -340,6 +346,18 @@ class TensorFoldDriver:
             finally:
                 self._quarantine()
             raise DriverError("cache copy custody failed") from None
+
+    def _observe(self, phase: str, job: Any) -> None:
+        observer = self._observer
+        if observer is not None:
+            _emit(
+                lambda: observer.phase(
+                    phase,
+                    self._custody.snapshot(),
+                    len(self.checkpoints._entries),
+                    getattr(job, "stream", None),
+                )
+            )
 
     @staticmethod
     def _log_start(job: Any, prompt_tokens: int, retained: int) -> None:
@@ -457,24 +475,31 @@ class TensorFoldDriver:
                 return False
             if self._request_settlement(engine) is not True:
                 return False
-            with self._lock:
-                self._available()
-                retained = {id(entry.cache) for entry in self.checkpoints._entries}
-                if any(cache_id not in self._records for cache_id in retained):
-                    raise DriverError("retained cache lacks owned custody")
-                if job.stream is not None:
-                    job.stream.history_checkpoints = []
-                for cache_id, record in list(self._records.items()):
-                    desired = {"retained"} if cache_id in retained else set()
-                    for owner in record.owners - desired:
-                        record.lease.dispose(owner)
-                    record.owners.intersection_update(desired)
-                    if not desired:
-                        del self._records[cache_id]
+            self._observe("settled_before_release", job)
+            self._release_unretained(job)
+            # Sampled after the helper returns, so none of its locals keep a
+            # released cache alive.
+            self._observe("settled_after_release", job)
             return True
 
         if self.scheduler.on_engine(finish, timeout=self.bounds.settlement_seconds) is not True:
             raise DriverError("native request settlement was not confirmed")
+
+    def _release_unretained(self, job: Any) -> None:
+        with self._lock:
+            self._available()
+            retained = {id(entry.cache) for entry in self.checkpoints._entries}
+            if any(cache_id not in self._records for cache_id in retained):
+                raise DriverError("retained cache lacks owned custody")
+            if job.stream is not None:
+                job.stream.history_checkpoints = []
+            for cache_id, record in list(self._records.items()):
+                desired = {"retained"} if cache_id in retained else set()
+                for owner in record.owners - desired:
+                    record.lease.dispose(owner)
+                record.owners.intersection_update(desired)
+                if not desired:
+                    del self._records[cache_id]
 
     def generate(
         self,
@@ -543,6 +568,11 @@ class TensorFoldDriver:
         completed = False
         cancelling = False
         try:
+            if self._observer is not None:
+                observer = self._observer
+                _emit(
+                    lambda: observer.request_start(self._custody.snapshot(), retained_checkpoints)
+                )
             self.scheduler.submit(job)
             while True:
                 with self._lock:
@@ -592,9 +622,12 @@ class TensorFoldDriver:
             if not completed:
                 with self._lock:
                     closing = self._closing or self._normal_closed
-                if not closing:
-                    self._quarantine()
-                    self.cancel()
+                try:
+                    if not closing:
+                        self._quarantine()
+                        self.cancel()
+                finally:
+                    self._observe("request_uncertain", job)
 
     def shutdown(self, timeout: float | None = None) -> None:
         """Close under a native barrier and prove both scheduler threads stopped.
