@@ -250,7 +250,7 @@ def test_local_configuration_constructs_explicit_backend_without_loading(tmp_pat
 
 def test_local_configuration_refuses_a_lease_bound_below_the_copy_peak(tmp_path, profile, bounds):
     path = tmp_path / "profile.json"
-    short = native_bounds(bounds, leases=bounds.max_cache_leases)
+    short = native_bounds(bounds, leases=bounds.max_cache_leases - 1)
     config = {
         "profile": asdict(profile),
         "bounds": asdict(short),

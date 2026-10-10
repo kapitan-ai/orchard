@@ -25,7 +25,11 @@ from orchard_worker_mlx.model_loader import (
 from orchard_tensorfold_http.admission import ExperimentProfile, positive_int
 from orchard_tensorfold_http.backend import RuntimeAssets
 from orchard_tensorfold_http.rendering import bind_chat_template
-from orchard_tensorfold_http.tensorfold_driver import DriverBounds, TensorFoldDriver
+from orchard_tensorfold_http.tensorfold_driver import (
+    DriverBounds,
+    TensorFoldDriver,
+    required_cache_leases,
+)
 
 _TUPLE = {"tensorfold": "0.6.6", "mlx": "0.32.3", "mlx-lm": "0.32.0", "transformers": "5.14.1"}
 
@@ -95,18 +99,11 @@ def verify_artifact(root: Path, expected: str, *, max_files: int, max_bytes: int
         raise ValueError("artifact identity is missing or changed")
 
 
-def required_cache_leases(checkpoint_slots: int) -> int:
-    """Leases one request can hold under the pinned scheduler's copy order.
-
-    TensorFold 0.6.6 keeps every retained checkpoint, copies the matched prefix,
-    snapshots the working cache at up to two chosen history boundaries plus one
-    per explicit boundary (at most ``checkpoint_slots``), and copies the
-    finished cache, all before the request retires and the store evicts.
-    """
-    return 2 * checkpoint_slots + 4
-
-
 def _validate_custody_bounds(bounds: DriverBounds) -> None:
+    # The backend sends only the history boundary, so startup checks the peak
+    # without extra boundaries; admission refuses a request that needs more.
+    # The last copy needs its own and a transient reservation beside the
+    # working reservation and every other lease.
     if bounds.max_cache_leases < required_cache_leases(bounds.checkpoint_slots):
         raise ValueError("cache lease bound is below the scheduler's per-request copy peak")
     working = bounds.working_bytes

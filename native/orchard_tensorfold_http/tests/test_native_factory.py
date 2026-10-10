@@ -266,10 +266,11 @@ def build_factory(bounds, tmp_path):
 
 
 def test_required_cache_leases_covers_the_pinned_per_request_peak():
-    # retained slots + borrowed prefix copy + (history, stable and explicit boundary
-    # snapshots) + finished cache copy, under TensorFold 0.6.6 prompt_fill/scheduler.
-    assert native_factory.required_cache_leases(1) == 6
-    assert native_factory.required_cache_leases(2) == 8
+    # retained slots + borrowed prefix copy + history and stable-prefix snapshots
+    # + interrupted-prefill progress copy, under TensorFold 0.6.6 prompt_fill.
+    assert native_factory.required_cache_leases(1) == 5
+    assert native_factory.required_cache_leases(2) == 6
+    assert native_factory.required_cache_leases(2, 1) == 7
 
 
 def test_factory_accepts_bounds_at_the_custody_minimum(bounds, tmp_path):
