@@ -60,6 +60,31 @@ def _raised_in_package(exc: BaseException) -> bool:
     return tb.tb_frame.f_code.co_filename.startswith(_PACKAGE_DIR)
 
 
+def required_cache_leases(checkpoint_slots: int, extra_boundaries: int = 0) -> int:
+    """Cache leases one request can hold at once under the pinned scheduler.
+
+    Under TensorFold 0.6.6 as Orchard configures it, a request holds:
+
+    - ``checkpoint_slots``: every retained checkpoint. A checkpoint evicted
+      during the request keeps its lease until the request settles.
+    - 1: the borrowed copy of the matched prefix. Without prompt memory the
+      store copies the entry and never transfers it.
+    - 2: snapshots at the history boundary and at the stable prefix shared
+      with the matched entry's last prompt. These are the only candidates
+      that ``choose_checkpoints`` returns.
+    - ``extra_boundaries``: one snapshot for each explicit boundary that is
+      not the history boundary. The backend sends only the history boundary,
+      so it adds no snapshot.
+    - 1: the progress snapshot that an interrupted prefill takes after its
+      last boundary snapshot.
+
+    The finished-cache copy cannot occur: the engine keeps a decoded cache
+    only without a prefill plan and with ``retain_finished_caches``. Orchard
+    sets a prefill plan and disables finished-cache retention.
+    """
+    return checkpoint_slots + 1 + 2 + extra_boundaries + 1
+
+
 @dataclass(frozen=True)
 class DriverBounds:
     total_budget_bytes: int
@@ -412,6 +437,9 @@ class TensorFoldDriver:
             raise ValueError("checkpoint boundaries exceed admitted bounds")
         if any(type(n) is not int or not 0 < n < len(prompt) for n in boundaries):
             raise ValueError("checkpoint boundary is unsupported")
+        extra = len(set(boundaries) - {history})
+        if extra and required_cache_leases(b.checkpoint_slots, extra) > b.max_cache_leases:
+            raise ValueError("checkpoint boundaries exceed the cache lease bound")
         return size
 
     def _settle(self, job: Any) -> None:
