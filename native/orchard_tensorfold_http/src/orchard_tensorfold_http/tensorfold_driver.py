@@ -176,9 +176,11 @@ class TensorFoldDriver:
         on_quarantine: Callable[[], None],
         eos_ids: frozenset[int],
         memory_observer: MemoryObserver | None = None,
+        after_release: Callable[[], Any] | None = None,
     ):
         self.engine, self.bounds = engine, bounds
         self._observer = memory_observer
+        self._after_release = after_release
         self._job_factory, self._cancellation_factory = job_factory, cancellation_factory
         self._copy_bounds, self._copy_settlement = copy_bounds, copy_settlement
         self._request_settlement, self._on_quarantine = request_settlement, on_quarantine
@@ -480,6 +482,9 @@ class TensorFoldDriver:
             # Sampled after the helper returns, so none of its locals keep a
             # released cache alive.
             self._observe("settled_after_release", job)
+            if self._after_release is not None:
+                self._after_release()
+                self._observe("settled_after_clear", job)
             return True
 
         if self.scheduler.on_engine(finish, timeout=self.bounds.settlement_seconds) is not True:

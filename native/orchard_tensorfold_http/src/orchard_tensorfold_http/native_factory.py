@@ -24,6 +24,7 @@ from orchard_worker_mlx.model_loader import (
 
 from orchard_tensorfold_http.admission import ExperimentProfile, positive_int
 from orchard_tensorfold_http.backend import RuntimeAssets
+from orchard_tensorfold_http.memory_ab import apply_switches, read_switches
 from orchard_tensorfold_http.memory_observation import MemoryObserver
 from orchard_tensorfold_http.rendering import bind_chat_template
 from orchard_tensorfold_http.tensorfold_driver import (
@@ -266,6 +267,8 @@ class NativeFactory:
         from tensorfold.families.qwen3_5 import load
         from tensorfold.server.memory_budget import cache_nbytes, process_footprint
 
+        switches = read_switches()
+        apply_switches(mx, switches)
         family, tokenizer = load(entrypoint, drafter="", vision=False, vision_urls=False)
         tokenizer._chat_template = render
         plan = _prefill_plan(tokenizer, self.prefill_step)
@@ -309,6 +312,7 @@ class NativeFactory:
             request_settlement=request_settlement,
             on_quarantine=quarantine,
             eos_ids=frozenset(eos),
+            after_release=mx.clear_cache if switches.clear_after_release else None,
             memory_observer=MemoryObserver(
                 active=mx.get_active_memory,
                 cache=mx.get_cache_memory,
