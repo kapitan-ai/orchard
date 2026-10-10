@@ -65,6 +65,19 @@ class LogWriter:
                 self._lines.task_done()
 
 
+_shared_lock = threading.Lock()
+_shared_writer: LogWriter | None = None
+
+
+def shared_writer() -> LogWriter:
+    """The one writer thread for this process, started on first use."""
+    global _shared_writer
+    with _shared_lock:
+        if _shared_writer is None:
+            _shared_writer = LogWriter()
+        return _shared_writer
+
+
 class MemoryObserver:
     """Samples memory at request phases; never raises and never blocks on logging."""
 
@@ -81,7 +94,7 @@ class MemoryObserver:
     ):
         self._active, self._cache, self._peak = active, cache, peak
         self._reset_peak, self._footprint, self._estimate = reset_peak, footprint, estimate
-        self._writer = LogWriter() if writer is None else writer
+        self._writer = shared_writer() if writer is None else writer
         self._sequence = 0
         self._peak_valid = False
         # (copies, estimated bytes or None once an estimate fails), replaced whole.

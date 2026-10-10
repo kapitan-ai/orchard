@@ -174,3 +174,13 @@ def test_totals_read_during_an_estimate_stay_consistent(caplog, writer):
     _, during, after = lines(caplog, writer)
     assert "copies=0 copy_bytes_est=0" in during
     assert "copies=1 copy_bytes_est=9" in after
+
+
+def test_observers_share_one_writer_thread_per_process():
+    observers = [observer(Counters()) for _ in range(5)]
+    for watch in observers:
+        watch.phase("settled_after_release", CUSTODY, 0)
+    observers[0]._writer.join()
+    writers = [t for t in threading.enumerate() if t.name == "tensorfold-memory-log"]
+    assert len({id(watch._writer) for watch in observers}) == 1
+    assert len([t for t in writers if t is observers[0]._writer._thread]) == 1
