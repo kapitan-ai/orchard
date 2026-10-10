@@ -112,6 +112,7 @@ def assembly(tmp_path, monkeypatch, profile, bounds):
         max_bundle_files=10,
         max_bundle_bytes=10000,
         prefill_step=2,
+        cache_limit_bytes=1024**3,
     )
     factory._assemble = Mock(return_value="fake-native-assets")
     return SimpleNamespace(factory=factory, profile=profile, manifest=manifest, path=tmp_path)
@@ -171,6 +172,7 @@ def fake_native(monkeypatch):
         get_cache_memory=Mock(return_value=22),
         get_peak_memory=Mock(return_value=33),
         reset_peak_memory=Mock(),
+        set_cache_limit=Mock(return_value=0),
     )
     module("mlx", core=mx)
     module("mlx_lm.models.cache", ArraysCache=Cache, KVCache=Cache)
@@ -184,7 +186,13 @@ def fake_native(monkeypatch):
     module("tensorfold.engine.prefill_plan", PrefillPlan=plan, message_markers=markers)
     tokenizer = SimpleNamespace(eos_token_ids=[1], encode=Mock(return_value=[2]))
     family = object()
-    module("tensorfold.families.qwen3_5", load=Mock(return_value=(family, tokenizer)))
+    load_calls = []
+
+    def load(*args, **kwargs):
+        load_calls.append(mx.set_cache_limit.call_count)
+        return family, tokenizer
+
+    module("tensorfold.families.qwen3_5", load=load)
     module(
         "tensorfold.server.memory_budget",
         cache_nbytes=Mock(return_value=44),
@@ -201,6 +209,7 @@ def fake_native(monkeypatch):
         tokenizer=tokenizer,
         constructor=constructor,
         seed_for=seed_for,
+        load_calls=load_calls,
     )
 
 
@@ -301,6 +310,7 @@ def build_factory(bounds, tmp_path):
         max_bundle_files=10,
         max_bundle_bytes=10000,
         prefill_step=2,
+        cache_limit_bytes=1024**3,
     )
 
 
@@ -329,9 +339,11 @@ def test_factory_refuses_a_budget_that_cannot_hold_the_lease_bound(bounds, tmp_p
         build_factory(replace(full, total_budget_bytes=full.total_budget_bytes - 1), tmp_path)
 
 
-def test_native_assembly_observes_memory_without_limits_or_clearing(assembly, fake_native, caplog):
-    # Diagnostics only: MLX counters and TensorFold's footprint and size
-    # estimates feed the observer; no limit, cache clear or extra barrier.
+def test_native_assembly_observes_memory_without_other_limits_or_clearing(
+    assembly, fake_native, caplog
+):
+    # MLX counters and TensorFold's footprint and size estimates feed the
+    # observer; the configured cache limit is the only allocator setting.
     caplog.set_level("INFO", logger="orchard_tensorfold_http.memory_observation")
     native_factory.NativeFactory._assemble(
         assembly.factory, assembly.path, assembly.profile, Mock(), Mock()
@@ -345,6 +357,29 @@ def test_native_assembly_observes_memory_without_limits_or_clearing(assembly, fa
     assert "active=11 cache=22 peak=33 footprint=55" in messages[0]
     assert "copies=1 copy_bytes_est=44" in messages[-1]
     fake_native.mx.reset_peak_memory.assert_called_once()
-    for name in ("set_memory_limit", "set_cache_limit", "set_wired_limit", "clear_cache"):
+    for name in ("set_memory_limit", "set_wired_limit", "clear_cache"):
         assert name not in vars(fake_native.mx)
     assert fake_native.mx.synchronize.call_count == 0
+
+
+def test_native_assembly_bounds_the_mlx_cache_before_weights_load(assembly, fake_native):
+    # MLX's default freed-buffer cache limit is close to RAM; without a bound,
+    # buffers freed by each long prefill stay held by the Worker.
+    native_factory.NativeFactory._assemble(
+        assembly.factory, assembly.path, assembly.profile, Mock(), Mock()
+    )
+    fake_native.mx.set_cache_limit.assert_called_once_with(1024**3)
+    assert fake_native.load_calls == [1]
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "64", None, 16, 1024**3 - 1, 2**63, 2**64])
+def test_factory_refuses_a_cache_limit_outside_whole_bytes_in_range(bounds, tmp_path, value):
+    with pytest.raises(ValueError, match="MLX cache limit"):
+        native_factory.NativeFactory(
+            bounds=native_bounds(bounds),
+            model_path=tmp_path,
+            max_bundle_files=10,
+            max_bundle_bytes=10000,
+            prefill_step=2,
+            cache_limit_bytes=value,
+        )

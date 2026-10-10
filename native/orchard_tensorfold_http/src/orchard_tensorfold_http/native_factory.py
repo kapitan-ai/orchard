@@ -34,6 +34,8 @@ from orchard_tensorfold_http.tensorfold_driver import (
 
 _TUPLE = {"tensorfold": "0.6.6", "mlx": "0.32.3", "mlx-lm": "0.32.0", "transformers": "5.14.1"}
 MIN_CHUNK = 256
+MIN_CACHE_LIMIT = 1024**3
+MAX_CACHE_LIMIT = 2**63 - 1
 
 
 class _ThinkingOnProbe:
@@ -161,12 +163,18 @@ class NativeFactory:
         max_bundle_files: int,
         max_bundle_bytes: int,
         prefill_step: int,
+        cache_limit_bytes: int,
     ):
         _validate_custody_bounds(bounds)
         self.bounds, self.model_path = bounds, model_path.absolute()
         self.max_bundle_files = positive_int(max_bundle_files, "bundle file bound")
         self.max_bundle_bytes = positive_int(max_bundle_bytes, "bundle byte bound")
         self.prefill_step = positive_int(prefill_step, "prefill step")
+        self.cache_limit_bytes = positive_int(cache_limit_bytes, "MLX cache limit")
+        # Bytes, not GiB: a unit slip would leave MLX almost no cache. The top
+        # bound keeps the value inside the size_t that MLX accepts.
+        if not MIN_CACHE_LIMIT <= cache_limit_bytes <= MAX_CACHE_LIMIT:
+            raise ValueError("MLX cache limit is outside its admitted range")
 
     def __call__(
         self, path: str, profile: ExperimentProfile, quarantine: Callable[[], None]
@@ -266,6 +274,9 @@ class NativeFactory:
         from tensorfold.families.qwen3_5 import load
         from tensorfold.server.memory_budget import cache_nbytes, process_footprint
 
+        # Bound MLX's freed-buffer cache before weights load. Its default is
+        # close to RAM, so freed prefill buffers would otherwise stay held.
+        mx.set_cache_limit(self.cache_limit_bytes)
         family, tokenizer = load(entrypoint, drafter="", vision=False, vision_urls=False)
         tokenizer._chat_template = render
         plan = _prefill_plan(tokenizer, self.prefill_step)
