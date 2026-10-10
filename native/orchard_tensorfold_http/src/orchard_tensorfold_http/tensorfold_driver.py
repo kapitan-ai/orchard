@@ -79,8 +79,8 @@ def required_cache_leases(checkpoint_slots: int, extra_boundaries: int = 0) -> i
       last boundary snapshot.
 
     The finished-cache copy cannot occur: the engine keeps a decoded cache
-    only without a prefill plan and with ``retain_finished_caches``, and
-    Orchard sets neither.
+    only without a prefill plan and with ``retain_finished_caches``. Orchard
+    sets a prefill plan and disables finished-cache retention.
     """
     return checkpoint_slots + 1 + 2 + extra_boundaries + 1
 

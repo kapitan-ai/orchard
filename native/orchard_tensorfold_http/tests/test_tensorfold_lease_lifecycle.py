@@ -13,7 +13,8 @@ Orchard configures it:
 - ``prompt_fill._end_fill`` inserts those copies into the LRU
   ``CheckpointStore`` before decode, on success and on cancellation.
 - No finished-cache copy: the engine keeps a decoded cache only without a
-  prefill plan and with ``retain_finished_caches``, and Orchard sets neither.
+  prefill plan and with ``retain_finished_caches``. Orchard sets a prefill
+  plan and disables finished-cache retention.
 
 Sizes are synthetic accounting units.
 """
@@ -54,7 +55,7 @@ class Starts:
         self.length = length
 
     def __contains__(self, n):
-        return 0 <= n < self.length and n % STEP == 0
+        return 0 < n < self.length and n % STEP == 0
 
     def floor(self, n):
         n = max(0, min(int(n), self.length))
@@ -164,6 +165,7 @@ class Scheduler:
         self.peak_leases = 0
         self.leases = None
         self.cancel_after = None
+        self.borrowed = None
         self.on_cancel_point = None
 
     def start(self):
@@ -228,7 +230,7 @@ class Scheduler:
         hit = self.checkpoints.match(prompt, usable=lambda n: n in starts, take=False)
         self._observe()
         cached, work, last = (0, [{"bytes": 1}], None) if hit is None else hit
-        job.cached_tokens = cached
+        self.borrowed = cached
         chosen = choose_checkpoints(job.history_len, cached, last, prompt)
         checkpoints_at = sorted(
             at
@@ -238,6 +240,7 @@ class Scheduler:
         try:
             self._prefill(job, starts, work, cached, checkpoints_at)
             self._keep_checkpoints(job)
+            job.cached_tokens = cached
             job.chunks.put([6, 7])
         except RequestCancelled:
             self._keep_checkpoints(job)
@@ -362,7 +365,7 @@ def worst_case_request(driver, *, cancel_after=None):
     driver.scheduler.cancel_after = cancel_after
     driver.scheduler.on_cancel_point = driver.cancel
     list(driver.generate(CONTINUATION, 12, 4, 1.0, sampling=None, checkpoint_boundaries=(12,)))
-    assert driver.completion.cached_tokens == 4
+    assert driver.scheduler.borrowed == 4
     return driver.scheduler.peak_leases
 
 
@@ -370,6 +373,7 @@ def test_completed_worst_case_request_needs_one_lease_below_the_bound():
     driver = make_driver(required_cache_leases(2))
     assert worst_case_request(driver) == required_cache_leases(2) - 1
     assert driver.completion.finish_reason == "stop"
+    assert driver.completion.cached_tokens == 4
     assert driver._custody.snapshot().leases == len(driver.checkpoints._entries)
 
 
@@ -378,6 +382,7 @@ def test_prefill_cancelled_after_its_last_boundary_reaches_exactly_the_bound():
     # Cancelled before the chunk at 14: the progress at 14 is a new copy.
     assert worst_case_request(driver, cancel_after=14) == required_cache_leases(2)
     assert driver.completion.finish_reason == "cancelled"
+    assert driver.completion.cached_tokens == 0
     assert driver._custody.snapshot().leases == len(driver.checkpoints._entries)
     assert driver.settled and not driver.quarantined
 
@@ -387,6 +392,17 @@ def test_prefill_cancelled_at_a_kept_boundary_takes_no_progress_copy():
     # Cancelled before the chunk at 12, which the history snapshot already holds.
     assert worst_case_request(driver, cancel_after=12) == required_cache_leases(2) - 1
     assert driver.completion.finish_reason == "cancelled"
+
+
+def test_cold_prefill_cancelled_before_its_first_chunk_takes_no_copy():
+    driver = make_driver(required_cache_leases(2))
+    driver.scheduler.peak_leases = 0
+    driver.scheduler.cancel_after = 0
+    driver.scheduler.on_cancel_point = driver.cancel
+    list(driver.generate(FIRST, 8, 4, 1.0, sampling=None, checkpoint_boundaries=(8,)))
+    assert driver.scheduler.peak_leases == 0
+    assert driver.completion.finish_reason == "cancelled"
+    assert driver._custody.snapshot().leases == len(driver.checkpoints._entries) == 0
 
 
 def test_one_lease_below_the_bound_refuses_the_cancelled_worst_case():
