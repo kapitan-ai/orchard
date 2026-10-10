@@ -140,7 +140,8 @@ def test_tokenizer_declares_exact_loader_file_and_directory(assembly, layout):
     assembly.factory._assemble.assert_not_called()
 
 
-def test_native_assembly_sampling_and_cache_barriers_with_fake_imports(assembly, monkeypatch):
+@pytest.fixture
+def fake_native(monkeypatch):
     # Execute the real assembly function while supplying CPU-only native APIs.
     # This catches the previous dict-sampling/loader-interface mismatch without
     # importing MLX, loading weights or claiming native physical settlement.
@@ -169,15 +170,39 @@ def test_native_assembly_sampling_and_cache_barriers_with_fake_imports(assembly,
     module("tensorfold.engine.exact_sampling", Sampling=Sampling, seed_for=seed_for)
     lane = Mock(return_value="fake-lane")
     module("tensorfold.engine.lane_engine", LaneEngine=lane)
-    module("tensorfold.engine.prefill_plan", PrefillPlan=lambda step: step)
+    plan = Mock(return_value="fake-plan")
+    markers = Mock(return_value=((10,), (10, 11)))
+    module("tensorfold.engine.prefill_plan", PrefillPlan=plan, message_markers=markers)
     tokenizer = SimpleNamespace(eos_token_ids=[1], encode=Mock(return_value=[2]))
     family = object()
     module("tensorfold.families.qwen3_5", load=Mock(return_value=(family, tokenizer)))
     constructor = Mock(return_value="fake-driver")
     monkeypatch.setattr(native_factory.TensorFoldDriver, "from_tensorfold", constructor)
+    return SimpleNamespace(
+        mx=mx,
+        cache=Cache,
+        plan=plan,
+        markers=markers,
+        lane=lane,
+        tokenizer=tokenizer,
+        constructor=constructor,
+        seed_for=seed_for,
+    )
+
+
+def test_native_assembly_sampling_and_cache_barriers_with_fake_imports(assembly, fake_native):
     assets = native_factory.NativeFactory._assemble(
         assembly.factory, assembly.path, assembly.profile, Mock(), Mock()
     )
+    mx, Cache = fake_native.mx, fake_native.cache
+    markers, plan, lane = fake_native.markers, fake_native.plan, fake_native.lane
+    tokenizer, constructor = fake_native.tokenizer, fake_native.constructor
+    seed_for = fake_native.seed_for
+    markers.assert_called_once()
+    assert markers.call_args.args[0]._tokenizer is tokenizer
+    assert tokenizer._chat_template is not None
+    plan.assert_called_once_with(2, (10,), 2, (10, 11))
+    assert lane.call_args.kwargs["prefill_plan"] == "fake-plan"
     assert assets.make_sampling((1, 2), 0, 0.95) is None
     sampling = assets.make_sampling((1, 2), 0.6, 0.8)
     assert (

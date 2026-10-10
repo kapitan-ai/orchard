@@ -34,7 +34,7 @@ orchard-worker-mlx = { path = "../orchard_worker_mlx" }
 tensorfold = { git = "https://github.com/ashhart/TensorFold.git", rev = "cb2ebf0540f42604e2759b2ddef497861e928248" }
 
 [dependency-groups]
-dev = ["pytest==9.0.2", "pytest-cov==7.0.0", "ruff==0.15.7"]
+dev = ["numpy==2.4.6", "pytest==9.0.2", "pytest-cov==7.0.0", "ruff==0.15.7"]
 
 [tool.ruff]
 target-version = "py311"

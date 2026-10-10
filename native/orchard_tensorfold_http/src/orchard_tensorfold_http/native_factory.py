@@ -32,6 +32,43 @@ from orchard_tensorfold_http.tensorfold_driver import (
 )
 
 _TUPLE = {"tensorfold": "0.6.6", "mlx": "0.32.3", "mlx-lm": "0.32.0", "transformers": "5.14.1"}
+MIN_CHUNK = 256
+
+
+class _ThinkingOnProbe:
+    """Tokenizer adapter used only to probe the admitted thinking-only template."""
+
+    def __init__(self, tokenizer: Any) -> None:
+        self._tokenizer = tokenizer
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tokenizer, name)
+
+    def apply_chat_template(self, messages: Any, **options: Any) -> Any:
+        return self._tokenizer.apply_chat_template(
+            messages, **{**options, "enable_thinking": True, "thinking_mode": "thinking"}
+        )
+
+
+def _prefill_plan(tokenizer: Any, step: int) -> Any:
+    from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
+
+    try:
+        openers, assistant = message_markers(_ThinkingOnProbe(tokenizer))
+    except Exception as exc:
+        raise BackendError(
+            "unsupported_model_profile", "message marker probe failed", False
+        ) from exc
+    if not openers or not assistant:
+        raise BackendError("unsupported_model_profile", "message markers are not admitted", False)
+    # At step 128, min_chunk == step preserves the old grid; real reply cuts
+    # never use a minimum below 256 when the step permits message-aware cuts.
+    min_chunk = min(MIN_CHUNK, step)
+    if min_chunk < len(assistant):
+        raise BackendError(
+            "unsupported_model_profile", "prefill step cannot fit assistant marker", False
+        )
+    return PrefillPlan(step, openers, min_chunk, assistant)
 
 
 def verify_artifact(root: Path, expected: str, *, max_files: int, max_bytes: int) -> None:
@@ -225,17 +262,17 @@ class NativeFactory:
         from tensorfold.engine.alternating_kv import AlternatingKVCache
         from tensorfold.engine.exact_sampling import Sampling, seed_for
         from tensorfold.engine.lane_engine import LaneEngine
-        from tensorfold.engine.prefill_plan import PrefillPlan
         from tensorfold.families.qwen3_5 import load
 
         family, tokenizer = load(entrypoint, drafter="", vision=False, vision_urls=False)
         tokenizer._chat_template = render
+        plan = _prefill_plan(tokenizer, self.prefill_step)
         engine = LaneEngine(
             family,
             max_rows=1,
             max_draft=0,
             retain_finished_caches=False,
-            prefill_plan=PrefillPlan(self.prefill_step),
+            prefill_plan=plan,
         )
         cache_types = {ArraysCache, KVCache, AlternatingKVCache}
 
