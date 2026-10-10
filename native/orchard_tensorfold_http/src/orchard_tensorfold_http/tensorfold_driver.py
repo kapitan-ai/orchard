@@ -332,7 +332,8 @@ class TensorFoldDriver:
                 self._available(allow_closing=True)
                 self._records[id(wrapped)] = _CacheRecord(lease, wrapped, {owner}, size)
             if self._observer is not None:
-                _emit(partial(self._observer.copied, lease.value))
+                observer, value = self._observer, lease.value
+                _emit(lambda: observer.copied(value))
             return wrapped
         except BaseException as exc:
             try:
@@ -614,12 +615,14 @@ class TensorFoldDriver:
                 raise DriverError("scheduler request failed after native settlement")
         finally:
             if not completed:
-                self._observe("request_uncertain", job)
                 with self._lock:
                     closing = self._closing or self._normal_closed
-                if not closing:
-                    self._quarantine()
-                    self.cancel()
+                try:
+                    if not closing:
+                        self._quarantine()
+                        self.cancel()
+                finally:
+                    self._observe("request_uncertain", job)
 
     def shutdown(self, timeout: float | None = None) -> None:
         """Close under a native barrier and prove both scheduler threads stopped.

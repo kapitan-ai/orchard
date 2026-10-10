@@ -4,6 +4,9 @@ They observe custody; they never change it, quarantine on their own failure, or
 add native work.
 """
 
+import logging
+import threading
+
 import pytest
 from test_tensorfold_driver import (
     Cancellation,
@@ -16,6 +19,7 @@ from test_tensorfold_driver import (
 from test_tensorfold_driver import bounds as bounds
 from test_tensorfold_driver import receipt as receipt
 
+from orchard_tensorfold_http.memory_observation import LogWriter, MemoryObserver
 from orchard_tensorfold_http.tensorfold_driver import DriverError, TensorFoldDriver
 
 
@@ -117,3 +121,65 @@ def test_uncertain_requests_are_observed_and_still_quarantine(bounds, receipt):
     assert receipt.quarantines == 1 and driver.quarantined
     # Uncertain custody keeps its leases; observation released nothing.
     assert driver._custody.snapshot().leases == recorder.events[-1][1] > 0
+
+
+def test_an_observer_whose_copy_hook_lookup_fails_never_quarantines(bounds, receipt):
+    class BrokenLookup(Recorder):
+        @property
+        def copied(self):
+            raise RuntimeError("lookup failed")
+
+    driver = make_driver(bounds, receipt, BrokenLookup())
+    assert run(driver) == [[6, 7]]
+    assert run(driver, prompt=[1, 2, 3, 4], history=3) == [[6, 7]]
+    assert receipt.quarantines == 0 and driver.settled
+
+
+def test_the_uncertain_sample_follows_quarantine_and_cancellation(bounds, receipt):
+    seen = []
+
+    class AtUncertain(Recorder):
+        def phase(self, name, custody, checkpoints, stream=None):
+            if name == "request_uncertain":
+                seen.append(receipt.quarantines)
+            super().phase(name, custody, checkpoints, stream)
+
+    driver = make_driver(bounds, receipt, AtUncertain())
+    receipt.settle = False
+    with pytest.raises(DriverError):
+        run(driver)
+    assert seen == [1]
+
+
+def test_a_blocked_log_handler_cannot_delay_settlement(bounds, receipt):
+    gate = threading.Event()
+
+    class Blocking(logging.Handler):
+        def emit(self, record):
+            gate.wait(5)
+
+    log = logging.getLogger("orchard_tensorfold_http.memory_observation")
+    handler = Blocking()
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    counter = lambda: 1  # noqa: E731 - synthetic counter
+    observer = MemoryObserver(
+        active=counter,
+        cache=counter,
+        peak=counter,
+        reset_peak=lambda: None,
+        footprint=counter,
+        estimate=lambda cache: 1,
+        writer=LogWriter(capacity=1),
+    )
+    try:
+        driver = make_driver(bounds, receipt, observer)
+        results = []
+        worker = threading.Thread(target=lambda: results.append(run(driver)))
+        worker.start()
+        worker.join(2)
+        assert results == [[[6, 7]]]
+        assert receipt.quarantines == 0 and driver.settled
+    finally:
+        gate.set()
+        log.removeHandler(handler)

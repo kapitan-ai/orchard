@@ -340,6 +340,7 @@ def test_native_assembly_observes_memory_without_limits_or_clearing(assembly, fa
     observer.request_start(SimpleNamespace(leases=0, held_bytes=0), 0)
     observer.copied([object()])
     observer.phase("settled_after_release", SimpleNamespace(leases=1, held_bytes=12), 1)
+    observer._writer.join()
     messages = [r.getMessage() for r in caplog.records]
     assert "active=11 cache=22 peak=33 footprint=55" in messages[0]
     assert "copies=1 copy_bytes_est=44" in messages[-1]
