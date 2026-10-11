@@ -1967,6 +1967,7 @@ Retry rule:
 * no different eligible Node preserves the original public failure and records `no_alternative_node`
 
 Caller disconnect SHALL map consistently across pre-dispatch, capacity-gate, and runtime-drain phases to Request state `cancelled`, attempt event `request_step.cancelled` after an attempt starts, durable code `request_caller_disconnect`, retry decision `cancelled`, HTTP status `499` when a response remains deliverable, and public code `request_cancelled`.
+On a streaming route the Controller detects a closed client socket only when a write fails. While a Runtime Endpoint execution is in progress and before its terminal event, the Controller SHALL write the SSE comment line `: keepalive` at the configured `sse_keepalive_interval_ms` (default 5 seconds), so that a disconnect during a long prefill is found within about two intervals. A keepalive comment is not an inference event: it SHALL NOT be persisted, counted, or treated as output, Output Commitment, acceptance, or a retry input, and it SHALL NOT be written after the terminal event, `[DONE]`, or a stream error. A failed keepalive write is a caller disconnect under this rule. A keepalive probe that fails for any other reason SHALL stop probing and SHALL NOT fail the attempt. Queue, scheduling, model-load, and capacity-gate waits before execution are not probed.
 Controller or process failure without caller cancellation SHALL remain `interrupted`.
 
 Runtime Endpoint disconnect and channel cleanup failures are cleanup-only failures.
@@ -2602,6 +2603,7 @@ Streaming behavior:
 * final line `[DONE]`
 * if `stream_options.include_usage=true`, emit final usage chunk before `[DONE]`
 * when a completion terminates by producing tool calls, the terminal chunk SHALL use `finish_reason: "tool_calls"`
+* while an execution is in progress, the Controller SHALL write the SSE comment line `: keepalive` at the configured interval, as §5.9 defines
 
 If an error occurs **after** streaming has started:
 
@@ -2735,6 +2737,8 @@ Streaming behavior:
   * zero or more `response.output_text.delta`
   * `response.output_text.done` if any text deltas were emitted
   * `response.completed` or `response.failed`
+
+* while an execution is in progress, the Controller SHALL write the SSE comment line `: keepalive` at the configured interval, as §5.9 defines
 
 The Responses API in OpenAI’s current documentation uses typed semantic streaming events; this platform SHALL mirror that model for the supported subset. ([OpenAI Developers][6])
 

@@ -96,6 +96,21 @@ defmodule Orchard.API.SSE do
   end
 
   @doc """
+  Sends the `: keepalive` SSE comment.
+
+  A comment line is ignored by SSE clients and is not an inference event. Writing
+  it while the runtime produces no output is how a closed client socket is found:
+  Bandit reports a disconnect only when a write fails.
+  """
+  @spec send_keepalive(Plug.Conn.t()) :: {:ok, Plug.Conn.t()} | {:error, :closed}
+  def send_keepalive(conn) do
+    case chunk(conn, ": keepalive\n\n") do
+      {:ok, conn} -> {:ok, conn}
+      {:error, _reason} -> {:error, :closed}
+    end
+  end
+
+  @doc """
   Sends an error envelope after streaming has already started.
 
   Per SPEC.md §7.2.4: emit `data: {"error":{...}}`, then close
