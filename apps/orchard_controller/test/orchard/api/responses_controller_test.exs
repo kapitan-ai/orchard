@@ -523,6 +523,31 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
+  test "SPEC §5.9 a Responses stream probes with SSE keepalive comments and never after the terminal" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        InferenceEvent.output_text_delta("hi"),
+        InferenceEvent.completed(:finish_reason_stop, nil)
+      ],
+      keepalive_probe_pid: self()
+    )
+
+    conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hi", "stream" => true})
+
+    interval_ms = Orchard.Inference.sse_keepalive_interval_ms()
+    assert conn.status == 200
+    assert_received {:keepalive, :before_events, :ok, ^interval_ms}
+    assert_received {:keepalive, :after_events, :ok, ^interval_ms}
+
+    # response.created comes first, then one comment; the post-terminal probe writes nothing.
+    assert [created, rest] = String.split(conn.resp_body, ": keepalive\n\n")
+    assert created =~ "event: response.created"
+    assert rest =~ "event: response.completed"
+    assert List.last(parse_typed_sse_events(conn)).type == "response.completed"
+  end
+
   test "SPEC §7.2.5 required and named choices cannot finish without a call" do
     for stream? <- [false, true],
         choice <- ["required", %{"type" => "function", "function" => %{"name" => "first"}}] do
@@ -2627,6 +2652,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         send(pid, {:captured_execute_canonical, canonical, model})
       end
 
+      probe_keepalive(config, opts, :before_events)
+
       if event_handler = Keyword.get(opts, :event_handler) do
         _handler_result =
           Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
@@ -2639,9 +2666,18 @@ defmodule Orchard.API.ResponsesControllerTest do
           end)
       end
 
+      probe_keepalive(config, opts, :after_events)
+
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp probe_keepalive(config, opts, phase) do
+      if pid = Keyword.get(config, :keepalive_probe_pid) do
+        result = Keyword.fetch!(opts, :keepalive_handler).()
+        send(pid, {:keepalive, phase, result, Keyword.fetch!(opts, :keepalive_interval_ms)})
       end
     end
 

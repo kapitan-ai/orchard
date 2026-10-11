@@ -659,6 +659,12 @@ model_load_timeout_ms =
     Keyword.fetch!(controller_inference_defaults, :model_load_timeout_ms)
   )
 
+sse_keepalive_interval_ms =
+  env_positive_int.(
+    "ORCHARD_SSE_KEEPALIVE_INTERVAL_MS",
+    Keyword.fetch!(controller_inference_defaults, :sse_keepalive_interval_ms)
+  )
+
 controller_inference =
   Keyword.merge(
     Keyword.merge(
@@ -666,6 +672,7 @@ controller_inference =
       request_timeout_ms: request_timeout_ms,
       max_request_deadline_ms: max_request_deadline_ms,
       model_load_timeout_ms: model_load_timeout_ms,
+      sse_keepalive_interval_ms: sse_keepalive_interval_ms,
       runtime_client_target: dev_runtime_client_target,
       runtime_client_targets: dev_runtime_targets,
       allow_static_runtime_target_fallback: true,
