@@ -1475,10 +1475,14 @@ refuses to start or load when the settings are inconsistent:
 
 - `ORCHARD_WORKER_PREFIX_CACHE_MODE` must be `disabled`.
 - `ORCHARD_WORKER_GENERATION_MODE` must be `stream`.
+- `ORCHARD_WORKER_MEMORY_BUDGET_MODE` must be `disabled` or `observe`.
+  Retained checkpoints are outside the budget's working-set target.
 - The budget must hold every slot, and must fit the estimated memory headroom
-  when the Worker knows it.
+  when the Worker knows it. The published headroom and recommended context do
+  not subtract the checkpoint budget.
 - mlx-lm must be 0.31.3, and the model cache must use only `KVCache` and
-  `ArraysCache` layers.
+  `ArraysCache` layers. With the setting on, a model with other layer types
+  fails to load instead of running without reuse.
 
 Each request logs one `strict_prefix_checkpoint_request` line with the lookup
 and capture outcome, matched tokens, snapshot bytes and reserved bytes.
