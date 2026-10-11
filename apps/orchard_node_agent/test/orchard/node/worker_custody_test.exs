@@ -271,7 +271,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute File.exists?(context.socket_path)
   end
 
-  test "SPEC.md §4.9 closed Port without launch identity does not signal a recorded PID",
+  test "SPEC.md §4.9 closed Port without launch identity does not signal a recorded PID or claim it stopped",
        context do
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
@@ -295,7 +295,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
     log =
       capture_log(fn ->
-        assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+        assert {:error, :worker_custody_unconfirmed} =
+                 WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
       end)
 
     assert log =~ "worker custody identity unavailable"
@@ -303,6 +304,57 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     refute File.exists?(context.socket_path)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 an unconfirmed unload hands its lease to the reaper instead of releasing it",
+       context do
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      Process.exit(owner_pid, :kill)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
+
+    {:ok, reaper_ref} =
+      RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+        shutdown_timeout_ms: @shutdown_timeout_ms,
+        model_ref: context.model_ref,
+        os_identity: nil,
+        phase: :loaded,
+        socket_path: context.socket_path
+      })
+
+    state = %{
+      backend: "stub",
+      channel: nil,
+      executable: Path.expand("../../support/custody-signal-child", __DIR__),
+      generations: %{},
+      model_ref: context.model_ref,
+      os_identity: nil,
+      os_pid: control_pid,
+      port: exited_port!(),
+      reaper_ref: reaper_ref,
+      shutdown_timeout_ms: @shutdown_timeout_ms,
+      socket_path: context.socket_path
+    }
+
+    capture_log(fn ->
+      assert {:error, :worker_custody_unconfirmed} =
+               WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+    end)
+
+    # The stop could not confirm exit, so the lease stays and the model stays
+    # pending; a replacement for it must not start yet.
+    key = {context.model_ref.model_id, context.model_ref.version}
+    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+    assert MapSet.member?(keys, key)
+    assert Map.has_key?(:sys.get_state(RuntimeProcessReaper).leases, reaper_ref)
+
+    CustodyTestHelpers.stop_child(control_port, control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(10_000)
+    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+    refute MapSet.member?(keys, key)
   end
 
   test "SPEC.md §4.9 launch aborts before arming reaper when identity capture fails",

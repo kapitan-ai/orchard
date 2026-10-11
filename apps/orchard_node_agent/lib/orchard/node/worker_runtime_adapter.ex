@@ -402,7 +402,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     socket_result = WorkerProcessLifecycle.remove_owned_socket(state.socket_path)
 
     if is_reference(state[:reaper_ref]),
-      do: RuntimeProcessReaper.release(state.reaper_ref)
+      do: settle_custody(state.reaper_ref, stop_result, :unload_unconfirmed)
 
     final_result = pick_unload_result(unload_result, stop_result, socket_result)
     duration_ms = System.monotonic_time(:millisecond) - start_time
@@ -1187,10 +1187,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     term_deadline = kill_deadline - min(@kill_confirm_ms, div(timeout_ms, 2))
     signal_result = WorkerProcessLifecycle.signal_owned_process(os_pid, os_identity, "-TERM")
 
-    if WorkerProcessLifecycle.custody_refused?(signal_result) do
-      :ok
-    else
-      confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline)
+    case signal_result do
+      {:error, :identity_mismatch} -> :ok
+      {:error, :identity_unavailable} -> {:error, :worker_custody_unconfirmed}
+      _sent -> confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline)
     end
   end
 
@@ -1203,7 +1203,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          ) do
       :ok -> :ok
       {:error, :timeout} -> {:error, :worker_shutdown_timeout}
-      {:error, _custody_refusal} -> :ok
+      # The PID now belongs to another process, so ours has exited.
+      {:error, :identity_mismatch} -> :ok
+      {:error, :identity_unavailable} -> {:error, :worker_custody_unconfirmed}
     end
   end
 
@@ -1273,12 +1275,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          socket_path: socket_path
        }) do
     if is_reference(reaper_ref), do: RuntimeProcessReaper.reap(reaper_ref, :cleanup_failed)
-    _ = stop_runtime(port, os_pid, os_identity, shutdown_timeout_ms)
+    stop_result = stop_runtime(port, os_pid, os_identity, shutdown_timeout_ms)
     _ = disconnect_channel(channel)
     _ = WorkerProcessLifecycle.remove_owned_socket(socket_path)
-    if is_reference(reaper_ref), do: RuntimeProcessReaper.release(reaper_ref)
+    if is_reference(reaper_ref), do: settle_custody(reaper_ref, stop_result, :cleanup_failed)
     :ok
   end
+
+  # Custody ends only when the stop confirmed the process exited. Otherwise the
+  # reaper keeps the lease and finishes stopping it, so the Node cannot start a
+  # replacement or treat the slot as free while the old process may still run.
+  defp settle_custody(reaper_ref, :ok, _reason), do: RuntimeProcessReaper.release(reaper_ref)
+
+  defp settle_custody(reaper_ref, _unconfirmed, reason),
+    do: RuntimeProcessReaper.reap(reaper_ref, reason)
 
   defp disconnect_channel(nil), do: :ok
 
