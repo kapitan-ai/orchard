@@ -27,8 +27,9 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   A lease ends only when the process exit is confirmed: the PID is gone, or it
   now belongs to a different process. A KILL that is not yet confirmed, or an
   identity that cannot be read, keeps the lease and rechecks on a timer with
-  backoff. While a lease is being reaped, `pending_model_keys/0` reports its
-  model so the Node does not start a replacement or treat the slot as free.
+  backoff. `custody_model_keys/0` reports the model of every lease, so the Node
+  does not start a replacement or treat a slot as free while a runtime it
+  launched may still run.
   """
 
   use GenServer
@@ -57,8 +58,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           shutdown_timeout_ms: pos_integer(),
           socket_path: String.t() | nil,
           term_deadline: integer() | nil,
-          timer_ref: reference() | nil,
-          reaping: boolean()
+          timer_ref: reference() | nil
         }
 
   # Kept below the 5_000ms child_spec shutdown budget so the sweep can never be
@@ -68,6 +68,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   # Recheck an unconfirmed exit with exponential backoff up to this cap.
   @confirm_base_ms 200
   @confirm_max_ms 5_000
+  @grace_poll_ms 50
+
+  # A custody query that cannot answer in time is treated as unavailable.
+  @query_timeout_ms 2_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -98,26 +102,30 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   def watch(_, _, _), do: {:error, :invalid_lease}
 
   @doc """
-  Model keys whose runtime the reaper is still stopping, as `{model_id, version}`.
+  The `{model_id, version}` of every runtime the reaper holds custody of.
 
-  A key stays here from the start of reaping until the process exit is confirmed.
+  A key stays here until that runtime's exit is confirmed. A reaper that does not
+  answer returns `{:error, :unavailable}`, which is never evidence that no
+  runtime remains.
   """
-  @spec pending_model_keys() :: MapSet.t({String.t(), String.t()})
-  def pending_model_keys do
-    if Process.whereis(__MODULE__) do
-      try do
-        GenServer.call(__MODULE__, :pending_model_keys)
-      catch
-        :exit, _reason -> MapSet.new()
-      end
-    else
-      MapSet.new()
-    end
+  @spec custody_model_keys() ::
+          {:ok, MapSet.t({String.t(), String.t()})} | {:error, :unavailable}
+  def custody_model_keys do
+    {:ok, GenServer.call(__MODULE__, :custody_model_keys, @query_timeout_ms)}
+  catch
+    :exit, _reason -> {:error, :unavailable}
   end
 
+  @doc """
+  Ends custody after the caller confirmed the process exited.
+
+  Synchronous, so a later `custody_model_keys/0` never sees the released lease.
+  """
   @spec release(lease_ref()) :: :ok
   def release(ref) do
-    GenServer.cast(__MODULE__, {:release, ref})
+    GenServer.call(__MODULE__, {:release, ref}, @query_timeout_ms)
+  catch
+    :exit, _reason -> :ok
   end
 
   @spec mark_phase(lease_ref(), phase()) :: :ok
@@ -158,8 +166,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       shutdown_timeout_ms: Map.get(meta, :shutdown_timeout_ms, 1_000),
       socket_path: Map.get(meta, :socket_path),
       term_deadline: nil,
-      timer_ref: nil,
-      reaping: false
+      timer_ref: nil
     }
 
     state =
@@ -170,9 +177,9 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:reply, {:ok, ref}, state}
   end
 
-  def handle_call(:pending_model_keys, _from, state) do
+  def handle_call(:custody_model_keys, _from, state) do
     keys =
-      for {_ref, %{reaping: true, model_ref: model_ref}} <- state.leases,
+      for {_ref, %{model_ref: model_ref}} <- state.leases,
           key = model_key(model_ref),
           key != nil,
           into: MapSet.new(),
@@ -181,11 +188,11 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:reply, keys, state}
   end
 
-  @impl true
-  def handle_cast({:release, ref}, state) do
-    {:noreply, cleanup_lease(state, ref)}
+  def handle_call({:release, ref}, _from, state) do
+    {:reply, :ok, cleanup_lease(state, ref)}
   end
 
+  @impl true
   def handle_cast({:reap, ref, reason}, state) do
     {:noreply, start_reaping(state, ref, {:requested, reason})}
   end
@@ -219,6 +226,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   def handle_info({:confirm_exit, ref, attempt}, state) do
     {:noreply, kill_until_confirmed(state, ref, attempt)}
+  end
+
+  def handle_info({:grace_poll, ref}, state) do
+    {:noreply, poll_term_grace(state, ref)}
   end
 
   def handle_info({:EXIT, _pid, :normal}, state) do
@@ -291,7 +302,6 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         state
 
       %{os_pid: os_pid, shutdown_timeout_ms: timeout, timer_ref: nil} = lease ->
-        state = put_in(state, [Access.key(:leases), ref, :reaping], true)
         log_reap(lease, reason)
         _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
@@ -326,6 +336,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   defp start_term_grace(state, ref, timeout) do
     timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+    Process.send_after(self(), {:grace_poll, ref}, @grace_poll_ms)
 
     state
     |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
@@ -333,6 +344,28 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       [Access.key(:leases), ref, :term_deadline],
       System.monotonic_time(:millisecond) + timeout
     )
+  end
+
+  # A runtime that exits within its TERM grace frees its slot at once instead of
+  # holding custody until the escalation timer fires.
+  defp poll_term_grace(state, ref) do
+    case state.leases[ref] do
+      %{term_deadline: deadline} = lease when is_integer(deadline) ->
+        cond do
+          exit_confirmed?(lease) ->
+            cleanup_lease(state, ref)
+
+          System.monotonic_time(:millisecond) < deadline ->
+            Process.send_after(self(), {:grace_poll, ref}, @grace_poll_ms)
+            state
+
+          true ->
+            state
+        end
+
+      _other ->
+        state
+    end
   end
 
   defp kill_until_confirmed(state, ref, attempt) do
@@ -373,9 +406,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     delay_ms = min(@confirm_base_ms * Integer.pow(2, min(attempt - 1, 5)), @confirm_max_ms)
     timer_ref = Process.send_after(self(), {:confirm_exit, ref, attempt}, delay_ms)
 
-    state
-    |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-    |> put_in([Access.key(:leases), ref, :reaping], true)
+    put_in(state, [Access.key(:leases), ref, :timer_ref], timer_ref)
   end
 
   defp log_unconfirmed_exit(lease, attempt) when attempt == 1 or rem(attempt, 10) == 0 do

@@ -347,12 +347,14 @@ defmodule Orchard.Node.WorkerCustodyTest do
     # The stop could not confirm exit, so the lease stays and the model stays
     # pending; a replacement for it must not start yet.
     key = {context.model_ref.model_id, context.model_ref.version}
-    assert MapSet.member?(RuntimeProcessReaper.pending_model_keys(), key)
+    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+    assert MapSet.member?(keys, key)
     assert Map.has_key?(:sys.get_state(RuntimeProcessReaper).leases, reaper_ref)
 
     CustodyTestHelpers.stop_child(control_port, control_pid)
     CustodyTestHelpers.assert_reaper_empty!(10_000)
-    refute MapSet.member?(RuntimeProcessReaper.pending_model_keys(), key)
+    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+    refute MapSet.member?(keys, key)
   end
 
   test "SPEC.md §4.9 launch aborts before arming reaper when identity capture fails",

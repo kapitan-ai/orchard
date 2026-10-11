@@ -101,6 +101,8 @@ defmodule Orchard.Node.ModelManager do
   @score_prefix_cache_local_timeout_grace_ms 50
   @prompt_token_ids_support_probe_max_timeout_ms 1_000
   @worker_crash_model_limit 4
+  @reset_custody_wait_ms 3_000
+  @reset_custody_poll_ms 25
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -254,6 +256,8 @@ defmodule Orchard.Node.ModelManager do
       _ = DynamicSupervisor.terminate_child(WorkerSupervisor, entry.pid)
     end)
 
+    await_custody_clear(System.monotonic_time(:millisecond) + @reset_custody_wait_ms)
+
     next_state =
       initial_state(state.worker_crash_counter_version, state.worker_crashes)
 
@@ -295,9 +299,9 @@ defmodule Orchard.Node.ModelManager do
       Map.has_key?(state.inflight_loads, key) ->
         handle_inflight_join(key, request, from, state)
 
-      # The previous runtime for this model is still being reaped: its exit is
-      # not confirmed, so a replacement could overlap it. Its slot stays taken.
-      MapSet.member?(RuntimeProcessReaper.pending_model_keys(), key) ->
+      # A runtime this Node launched for the model is not confirmed gone, so a
+      # replacement could overlap it. Its slot stays taken.
+      not custody_clear?(key) ->
         {:reply, ModelLoadFailure.to_response(:model_capacity_exhausted), state}
 
       # No worker, no inflight — evict if needed, then start new acquisition task
@@ -974,10 +978,22 @@ defmodule Orchard.Node.ModelManager do
     {still_expired, still_valid} = partition_waiters(valid_waiters, now_ms)
     reply_waiters(still_expired, ModelLoadFailure.to_response(:deadline_exceeded))
 
-    if still_valid == [] do
-      # Everyone expired during cleanup
-      state
-    else
+    cond do
+      still_valid == [] ->
+        # Everyone expired during cleanup
+        state
+
+      # The aborted attempt's runtime may still run; do not launch over it.
+      not custody_clear?(key) ->
+        reply_waiters(still_valid, ModelLoadFailure.to_response(:model_capacity_exhausted))
+        state
+
+      true ->
+        start_restarted_load(state, key, still_valid, prev_inflight, now_ms)
+    end
+  end
+
+  defp start_restarted_load(state, key, still_valid, prev_inflight, now_ms) do
       # Choose new leader: highest deadline, tie-break by list position (first wins)
       new_leader =
         Enum.max_by(still_valid, fn w -> w.deadline_unix_ms end)
@@ -1022,7 +1038,6 @@ defmodule Orchard.Node.ModelManager do
         | inflight_loads: Map.put(state.inflight_loads, key, inflight),
           load_refs: Map.put(state.load_refs, task.ref, key)
       }
-    end
   end
 
   # -- Inflight cancellation -------------------------------------------------
@@ -2145,6 +2160,33 @@ defmodule Orchard.Node.ModelManager do
 
   defp model_key(model_id, version), do: {model_id, version}
 
+  # True only when the reaper confirms it holds no runtime for this model. An
+  # unavailable reaper is not evidence that the old runtime is gone.
+  defp custody_clear?(key) do
+    case RuntimeProcessReaper.custody_model_keys() do
+      {:ok, keys} -> not MapSet.member?(keys, key)
+      {:error, :unavailable} -> false
+    end
+  end
+
+  # Reset returns once the runtimes it stopped have exited, so the next load is
+  # not refused for custody of a runtime this reset already stopped. The wait is
+  # bounded; a runtime still running after it keeps refusing loads.
+  defp await_custody_clear(deadline) do
+    case RuntimeProcessReaper.custody_model_keys() do
+      {:ok, keys} ->
+        if MapSet.size(keys) > 0 and System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@reset_custody_poll_ms)
+          await_custody_clear(deadline)
+        else
+          :ok
+        end
+
+      {:error, :unavailable} ->
+        :ok
+    end
+  end
+
   defp request_fingerprint(%EnsureModelLoadedRequest{} = request) do
     {request.artifact_sha256, request.artifact_source_uri}
   end
@@ -2230,13 +2272,31 @@ defmodule Orchard.Node.ModelManager do
         {:ok, state}
 
       limit ->
-        reserved_count = count_capacity_reserved(state)
+        case count_capacity_reserved(state) do
+          {:ok, reserved_count} when reserved_count < limit ->
+            {:ok, state}
 
-        if reserved_count < limit do
-          {:ok, state}
-        else
-          do_evict(state, target_key, limit, reserved_count)
+          {:ok, reserved_count} ->
+            evict_and_recount(state, target_key, limit, reserved_count)
+
+          {:error, :unavailable} ->
+            {:error, :model_capacity_exhausted, state}
         end
+    end
+  end
+
+  # An evicted Worker whose exit is not confirmed keeps its slot, so recount
+  # against the reaper before admitting the new load.
+  defp evict_and_recount(state, target_key, limit, reserved_count) do
+    case do_evict(state, target_key, limit, reserved_count) do
+      {:ok, state} ->
+        case count_capacity_reserved(state) do
+          {:ok, count} when count < limit -> {:ok, state}
+          _still_full -> {:error, :model_capacity_exhausted, state}
+        end
+
+      error ->
+        error
     end
   end
 
@@ -2347,6 +2407,12 @@ defmodule Orchard.Node.ModelManager do
   # its worker process exists or reaches LOADED. Keys present in both maps
   # (during the brief LOADING overlap) are counted once.
   defp count_capacity_reserved(state) do
+    with {:ok, custody_keys} <- RuntimeProcessReaper.custody_model_keys() do
+      {:ok, reserved_slot_count(state, custody_keys)}
+    end
+  end
+
+  defp reserved_slot_count(state, custody_keys) do
     inflight_keys = Map.keys(state.inflight_loads) |> MapSet.new()
 
     worker_keys =
@@ -2360,7 +2426,7 @@ defmodule Orchard.Node.ModelManager do
     # A runtime whose exit is not yet confirmed still holds its slot.
     inflight_keys
     |> MapSet.union(worker_keys)
-    |> MapSet.union(RuntimeProcessReaper.pending_model_keys())
+    |> MapSet.union(custody_keys)
     |> MapSet.size()
   end
 

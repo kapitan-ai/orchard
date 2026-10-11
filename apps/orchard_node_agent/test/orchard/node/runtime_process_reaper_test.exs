@@ -212,6 +212,27 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 
+  test "SPEC.md §4.9 a runtime that exits within its TERM grace frees custody before the grace ends" do
+    root = unique_root("grace-exit")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, ref} =
+      watch(os_pid, shutdown_timeout_ms: 30_000, model_ref: %{model_id: "model/grace", version: "v1"})
+
+    RuntimeProcessReaper.reap(ref, :custody_test)
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    CustodyTestHelpers.assert_reaper_empty!(2_000)
+    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
+  end
+
   test "requested reap records resistant TERM before bounded KILL escalation" do
     root = unique_root("resistant")
     marker_path = Path.join(root, "events.log")
@@ -452,7 +473,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_reaper_empty!(5_000)
   end
 
-  test "an unreadable identity keeps custody and reports the model pending until exit is confirmed" do
+  test "an unreadable identity keeps custody and reports the model until exit is confirmed" do
     root = unique_root("unreadable-identity")
     fake_bin = Path.join(root, "fake-bin")
     File.mkdir_p!(fake_bin)
@@ -485,7 +506,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     Process.sleep(600)
 
     assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
-    assert RuntimeProcessReaper.pending_model_keys() == MapSet.new([{"model/custody", "v1"}])
+    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new([{"model/custody", "v1"}])}
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
 
     # Once identity is readable again the reaper kills its own process, confirms
@@ -493,7 +514,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     System.put_env("PATH", previous_path)
     CustodyTestHelpers.assert_reaper_empty!(10_000)
     refute WorkerProcessLifecycle.os_process_alive?(control_pid)
-    assert RuntimeProcessReaper.pending_model_keys() == MapSet.new()
+    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
   end
 
   test "shutdown sweep without launch identity cleans socket without signaling" do
