@@ -12,6 +12,7 @@ import copy
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -500,6 +501,39 @@ def test_oversize_snapshot_is_skipped_without_a_reservation() -> None:
     assert store.stats().reserved_bytes == 0
 
 
+def test_empty_key_is_never_captured() -> None:
+    store = _store()
+
+    assert store.capture([], _cache_for([])).status == "skipped_empty_key"
+    assert store.stats().reserved_bytes == 0
+
+
+def test_fresh_cache_failure_falls_back_to_uncached_generation() -> None:
+    store = _store()
+    calls: list[dict[str, Any]] = []
+
+    def stream(
+        _model: Any, _tokenizer: Any, prompt_ids: list[int], **kwargs: Any
+    ) -> Iterator[_Response]:
+        calls.append(kwargs)
+        yield _Response(text="ok", token=1, finish_reason="stop")
+
+    def broken_cache(_model: Any) -> Any:
+        raise MemoryError("no room")
+
+    deps = GenerationDeps(
+        stream_generate=stream,
+        make_sampler=lambda **_kwargs: None,
+        make_prompt_cache=broken_cache,
+    )
+    events = list(generate_events(_session(store), _request(TURN_1), threading.Event(), deps=deps))
+
+    assert events[-1]["kind"] == "completed"
+    [kwargs] = calls
+    assert "prompt_cache" not in kwargs
+    assert store.stats().stores == 0
+
+
 def test_unmeasurable_cache_is_skipped_without_a_reservation() -> None:
     layer = MagicMock()
     layer.nbytes = "lots"
@@ -823,6 +857,38 @@ def test_setting_off_leaves_the_stream_call_unchanged() -> None:
         assert "prompt_cache" not in call
         assert not isinstance(call["prompt_progress_callback"], CaptureHook)
         assert call["prompt_ids"] == TURN_1
+
+
+@pytest.mark.parametrize("store", [None, MagicMock(name="NotAStore")])
+def test_setting_off_keeps_the_trim_cache_path(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no store, a trimmable model still uses the existing prefix cache."""
+    caplog.set_level("INFO", logger="orchard_worker_mlx.generation")
+    prefix_cache = MagicMock(name="KVPrefixCache")
+    prefix_cache.lookup.return_value = None
+    prefix_cache.store.return_value = True
+    prefix_cache.stats.return_value = SimpleNamespace(
+        implementation="kv", entry_count=0, total_bytes=0, failures=0
+    )
+    session = _session(store)
+    session.prefix_cache = prefix_cache
+    stream = _FaithfulStream()
+    deps = GenerationDeps(
+        stream_generate=stream,
+        make_sampler=lambda **_kwargs: MagicMock(name="FakeSampler"),
+        make_prompt_cache=_make_hybrid_cache,
+        trim_prompt_cache=lambda _cache, n: n,
+    )
+
+    list(generate_events(session, _request(TURN_1), threading.Event(), deps=deps))
+
+    prefix_cache.lookup.assert_called_once()
+    prefix_cache.store.assert_called_once()
+    [call] = stream.calls
+    assert call["prompt_ids"] == TURN_1
+    assert not isinstance(call["prompt_progress_callback"], CaptureHook)
+    assert not [r for r in caplog.records if "strict_prefix_checkpoint" in r.getMessage()]
 
 
 class _FaithfulStreamWithoutCache(_FaithfulStream):

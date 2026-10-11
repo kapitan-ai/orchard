@@ -2572,6 +2572,15 @@ def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
         _load_strict(writable_bundle, deps)
 
 
+def test_strict_prefix_load_is_refused_without_a_prompt_cache_factory(
+    writable_bundle: Path,
+) -> None:
+    deps = replace(_strict_prefix_deps(), make_prompt_cache=None)
+
+    with pytest.raises(ModelLoaderError, match="need make_prompt_cache"):
+        _load_strict(writable_bundle, deps)
+
+
 def test_strict_prefix_load_is_refused_when_the_probe_raises(writable_bundle: Path) -> None:
     def broken_probe(_model: Any) -> Any:
         raise RuntimeError("probe failed")

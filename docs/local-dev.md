@@ -336,6 +336,11 @@ ELIXIR
 | `ORCHARD_WORKER_PREFIX_CACHE_MODE` | `kv` (`disabled` for `tensorfold`) | Worker prefix cache (`disabled`, `kv`, or `trie`). |
 | `ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES` | `8` | Worker prefix cache entry limit (`>= 1`). |
 | `ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES` | `0` | Worker prefix cache byte limit (`>= 0`). |
+| `ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS` | `disabled` | Experimental strict-prefix checkpoint reuse for non-trimmable hybrid caches in the `mlx` Worker (`disabled` or `enabled`). See [Strict-prefix checkpoints](#strict-prefix-checkpoints-experimental). |
+| `ORCHARD_WORKER_STRICT_PREFIX_SLOTS` | `1` | Checkpoint slots (`1` to `8`). |
+| `ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES` | unset | Bytes charged per slot; required when enabled. A larger checkpoint is not stored. |
+| `ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES` | unset | Checkpoint budget; required when enabled and must hold every slot. |
+| `ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER` | `<\|im_start\|>assistant` | Text whose last occurrence starts the reply prompt. |
 | `ORCHARD_WORKER_MEMORY_BUDGET_MODE` | `observe` (`disabled` for `tensorfold`) | Worker memory budget (`disabled`, `observe`, or `enforce`). |
 | `ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION` | `0.9` | Worker memory budget utilization (`> 0.0` and `<= 1.0`). |
 | `ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES` | `1073741824` (`0` for `tensorfold`) | Worker memory budget overhead (`>= 0`). |
@@ -1449,6 +1454,34 @@ not enable the experiment on their own.
 To run beside other source-dev stacks on one host, use a separate worktree and
 set `PORT`, `ORCHARD_NODE_AGENT_LISTEN_PORT`, `ORCHARD_RUNTIME_CLIENT_PORT` and
 `PGDATABASE` to unused values.
+
+## Strict-prefix checkpoints (experimental)
+
+The `kv` and `trie` Worker prefix caches need a trimmable prompt cache. A
+hybrid model whose cache mixes `KVCache` and `ArraysCache` layers cannot be
+trimmed, so the `mlx` Worker runs it with no prefix reuse. Strict-prefix
+checkpoints are an off-by-default experiment for that case. They are not a
+qualified serving profile and do not change Node status, scheduling or
+admission.
+
+Each request keeps at most one checkpoint: the full cache state at the last
+prefill-step boundary before the reply marker. A later request restores a
+checkpoint only when the checkpoint's tokens are an exact, strictly shorter
+prefix of its own prompt. A changed earlier turn therefore misses. Each slot
+charges `ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES` before the copy starts.
+
+The Worker inherits these variables from the Node Agent environment. The Worker
+refuses to start or load when the settings are inconsistent:
+
+- `ORCHARD_WORKER_PREFIX_CACHE_MODE` must be `disabled`.
+- `ORCHARD_WORKER_GENERATION_MODE` must be `stream`.
+- The budget must hold every slot, and must fit the estimated memory headroom
+  when the Worker knows it.
+- mlx-lm must be 0.31.3, and the model cache must use only `KVCache` and
+  `ArraysCache` layers.
+
+Each request logs one `strict_prefix_checkpoint_request` line with the lookup
+and capture outcome, matched tokens, snapshot bytes and reserved bytes.
 
 ## Legacy product-license compatibility
 
