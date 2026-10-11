@@ -276,7 +276,9 @@ defmodule Orchard.Dispatch.DispatchTest.DelayedCompletionClient do
 
   # Accepts, stays silent like a long prefill, then streams a reply. It reports
   # when it sent the terminal and waits before closing the stream, so a test can
-  # check that no keepalive probe follows the terminal.
+  # check that no keepalive probe follows the terminal. The silence lasts 80 ms,
+  # or, after `release_on_signal/0`, until the test sends `:release` to the
+  # stream, so a test can observe probes without depending on timing.
 
   alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
   alias Orchard.InferenceEvent
@@ -289,32 +291,49 @@ defmodule Orchard.Dispatch.DispatchTest.DelayedCompletionClient do
 
   def disconnect(_channel), do: {:ok, :disconnected}
 
+  def release_on_signal, do: Process.put({__MODULE__, :release}, :signal)
+
+  def release, do: send(Process.get({__MODULE__, :stream}), :release)
+
   def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
     owner = Keyword.fetch!(opts, :owner)
     ref = make_ref()
     id = request.request_id
+    release = Process.get({__MODULE__, :release}, :timer)
 
-    spawn(fn ->
-      send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.accepted(0)})
-      Process.sleep(80)
-      send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.output_text_delta("hi")})
+    stream =
+      spawn(fn ->
+        send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.accepted(0)})
+        await_release(release)
+        send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.output_text_delta("hi")})
 
-      completed =
-        InferenceEvent.completed(
-          :finish_reason_stop,
-          %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}
-        )
+        completed =
+          InferenceEvent.completed(
+            :finish_reason_stop,
+            %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}
+          )
 
-      send(owner, {:runtime_endpoint_event, ref, id, completed})
-      send(owner, {:terminal_sent_at, System.monotonic_time(:millisecond)})
-      Process.sleep(150)
-      send(owner, {:runtime_endpoint_done, ref, :ok})
-    end)
+        send(owner, {:runtime_endpoint_event, ref, id, completed})
+        send(owner, {:terminal_sent_at, System.monotonic_time(:millisecond)})
+        Process.sleep(150)
+        send(owner, {:runtime_endpoint_done, ref, :ok})
+      end)
 
+    Process.put({__MODULE__, :stream}, stream)
     {:ok, ref}
   end
 
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+
+  defp await_release(:timer), do: Process.sleep(80)
+
+  defp await_release(:signal) do
+    receive do
+      :release -> :ok
+    after
+      5_000 -> :ok
+    end
+  end
 end
 
 defmodule Orchard.Dispatch.DispatchTest.ProgressBacklogClient do
@@ -452,6 +471,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   import Orchard.TestSupport.SentryContextHelpers
 
   alias Orchard.ArtifactBundle
+  alias Orchard.Dispatch.DispatchTest.DelayedCompletionClient
   alias Orchard.Dispatch.DispatchTest.ProgressBacklogClient
 
   alias Orchard.Cluster.V1.{
@@ -1460,11 +1480,17 @@ defmodule Orchard.Dispatch.DispatchTest do
       _ = drain_keepalive_messages()
 
       test_pid = self()
+      probe_count = :counters.new(1, [])
+
+      # The stream stays silent until three probes have run, then replies.
+      DelayedCompletionClient.release_on_signal()
 
       probed =
         dispatch_delayed_completion(bundle, "req-dispatch-keepalive-probed",
           keepalive_handler: fn ->
             send(test_pid, {:probe_at, System.monotonic_time(:millisecond)})
+            :counters.add(probe_count, 1, 1)
+            if :counters.get(probe_count, 1) == 3, do: DelayedCompletionClient.release()
             :ok
           end,
           keepalive_interval_ms: 10
@@ -1481,9 +1507,9 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert probed.output_committed == baseline.output_committed
       assert probed.terminal_usage == baseline.terminal_usage
 
-      # 80 ms of silence at a 10 ms interval probes several times. After the
-      # terminal arrives the stream stays open for 150 ms; at most one probe can
-      # race the terminal message, never a stream of them.
+      # Three probes run before the reply. After the terminal arrives the stream
+      # stays open for 150 ms; at most one probe can race the terminal message,
+      # never a stream of them.
       assert length(probes) >= 3
       assert Enum.count(probes, &(&1 > terminal_at)) <= 1
     end
