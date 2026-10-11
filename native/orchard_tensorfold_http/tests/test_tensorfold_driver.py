@@ -532,6 +532,24 @@ def test_shutdown_active_iterator_cancels_and_closes_under_native_barrier(driver
     assert receipt.quarantines == 0
 
 
+def test_shutdown_drops_the_active_request_error_frames_before_release(driver):
+    driver.start()
+    iterator = driver.generate([1, 2, 3], 2, 4, 1.0, None)
+    assert next(iterator) == [6, 7]
+    job = driver.scheduler.jobs[0]
+    try:
+        try:
+            raise KeyError("layer")
+        except KeyError:
+            raise RuntimeError("injected prefill error")  # noqa: B904
+    except RuntimeError as exc:
+        job.error = exc
+    driver.shutdown(timeout=1)
+    assert driver.normal_closed
+    assert type(job.error) is RuntimeError and str(job.error) == "injected prefill error"
+    assert job.error.__traceback__ is job.error.__context__ is None
+
+
 @pytest.mark.parametrize(
     "failure", ["barrier_false", "barrier_timeout", "stop_stuck", "watchdog_stuck"]
 )
