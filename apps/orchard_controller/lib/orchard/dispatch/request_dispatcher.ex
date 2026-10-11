@@ -212,6 +212,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:caller` - PID to monitor for disconnect (default: `self()`)
   - `:event_handler` - public delivery callback called only after attempt selection.
                         It must return `:ok`, `:cancel`, or `{:error, :serializer_failed}`.
+  - `:keepalive_handler` - optional zero-arity transport probe called in the dispatching
+                            process while a Runtime Endpoint execution has produced no
+                            terminal event. It must return `:ok` or `:cancel`; `:cancel`
+                            cancels the attempt as a caller disconnect. It is never an
+                            inference event and never changes delivery, commitment or metrics.
+                            A probe that raises or returns anything else stops probing.
+  - `:keepalive_interval_ms` - positive interval for `:keepalive_handler`; required with it.
   - `:on_accepted` - immediate internal callback for validated acceptance observation.
   - `:on_node_resolved` - optional callback `(node_id :: String.t() -> any())`.
                            Called when the pre-dispatch status probe discovers a
@@ -253,6 +260,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     caller = Keyword.get(opts, :caller, self())
     caller_ref = Process.monitor(caller)
     event_handler = Keyword.get(opts, :event_handler)
+    keepalive = keepalive_option(opts)
     on_accepted = Keyword.get(opts, :on_accepted)
     on_node_resolved = Keyword.get(opts, :on_node_resolved)
     client = Keyword.get(opts, :client_impl, Inference.runtime_endpoint_client())
@@ -286,6 +294,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       caller_ref: caller_ref,
       cancel_drain_timeout_ms: cancel_drain_timeout_ms,
       event_handler: event_handler,
+      keepalive: keepalive,
       on_accepted: on_accepted,
       on_node_resolved: on_node_resolved
     }
@@ -1122,6 +1131,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             channel: context.channel,
             client: context.client,
             event_handler: context.event_handler,
+            keepalive: context.keepalive,
             on_accepted: context.on_accepted,
             target: context.target,
             timeout_ms: timeout_ms
@@ -1572,6 +1582,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                   client: client,
                   controller_session_id: execute_request.controller_session_id,
                   delivery: AttemptEventDelivery.new(metrics.request_id, event_handler),
+                  keepalive: start_keepalive(Map.get(stream_context, :keepalive)),
                   on_accepted: Map.get(stream_context, :on_accepted),
                   accepted?: false,
                   acceptance_gate: acceptance_gate,
@@ -1641,7 +1652,71 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
         cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
+    after
+      keepalive_wait_ms(loop_ctx) ->
+        handle_keepalive_due(loop_ctx, events)
     end
+  end
+
+  defp keepalive_option(opts) do
+    case {Keyword.get(opts, :keepalive_handler), Keyword.get(opts, :keepalive_interval_ms)} do
+      {nil, _interval_ms} ->
+        nil
+
+      {handler, interval_ms}
+      when is_function(handler, 0) and is_integer(interval_ms) and interval_ms > 0 ->
+        %{handler: handler, interval_ms: interval_ms}
+
+      _invalid ->
+        raise ArgumentError,
+              ":keepalive_handler must be a zero-arity function with a positive :keepalive_interval_ms"
+    end
+  end
+
+  defp start_keepalive(nil), do: nil
+
+  defp start_keepalive(%{interval_ms: interval_ms} = keepalive),
+    do: Map.put(keepalive, :due_ms, System.monotonic_time(:millisecond) + interval_ms)
+
+  # The keepalive is a receive timeout, not a timer message, so no tick can
+  # outlive this loop or reach a later attempt. It stops at the first terminal.
+  defp keepalive_wait_ms(%{keepalive: nil}), do: :infinity
+  defp keepalive_wait_ms(%{terminal_event: %InferenceEvent{}}), do: :infinity
+
+  defp keepalive_wait_ms(%{keepalive: %{due_ms: due_ms}}),
+    do: max(due_ms - System.monotonic_time(:millisecond), 0)
+
+  defp handle_keepalive_due(%{keepalive: keepalive} = loop_ctx, events) do
+    case invoke_keepalive(keepalive.handler) do
+      :ok ->
+        receive_loop(%{loop_ctx | keepalive: next_keepalive_due(keepalive)}, events)
+
+      :cancel ->
+        cancel_and_drain(%{loop_ctx | keepalive: nil}, events, :client_disconnect)
+
+      :failed ->
+        # A broken probe must not fail a healthy request; stop probing instead.
+        receive_loop(%{loop_ctx | keepalive: nil}, events)
+    end
+  end
+
+  defp invoke_keepalive(handler) do
+    case handler.() do
+      :ok -> :ok
+      :cancel -> :cancel
+      _invalid -> :failed
+    end
+  rescue
+    _error -> :failed
+  catch
+    _kind, _reason -> :failed
+  end
+
+  # Skip missed probes after a slow write instead of writing catch-up comments.
+  defp next_keepalive_due(%{due_ms: due_ms, interval_ms: interval_ms} = keepalive) do
+    now_ms = System.monotonic_time(:millisecond)
+    missed = max(div(now_ms - due_ms, interval_ms), 0)
+    %{keepalive | due_ms: due_ms + (missed + 1) * interval_ms}
   end
 
   defp handle_stream_event(%{terminal_event: nil} = loop_ctx, events, event) do

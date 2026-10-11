@@ -2996,6 +2996,49 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(terminal_result, "runtime_retryable")
   end
 
+  test "SPEC.md §5.9 a failed keepalive probe during a silent prefill persists a caller disconnect",
+       %{bundle: bundle} do
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-keepalive-disconnect", [], [],
+        trigger: :event_handler
+      )
+
+    probes = :counters.new(1, [])
+
+    keepalive = fn ->
+      :counters.add(probes, 1, 1)
+      :cancel
+    end
+
+    # Like a caller exit, a disconnect found by the dispatcher returns the
+    # synthesized cancellation terminal rather than a delivery error.
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model,
+               event_handler: fn _request_id, _event -> :ok end,
+               keepalive_handler: keepalive,
+               keepalive_interval_ms: 10
+             )
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_caller_disconnect"}} =
+             List.last(events)
+
+    assert :counters.get(probes, 1) == 1
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["attempt_outcome"] == "cancelled"
+    refute terminal_result["output_committed"]
+    assert terminal_result["failure_code"] == "request_caller_disconnect"
+    assert terminal_result["retry_decision"] == "cancelled"
+    refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
+  end
+
   test "SPEC.md §§5.8 and 5.10 records frozen worker loss before delivery cancellation",
        %{bundle: bundle} do
     target = [host: "10.0.0.4", port: 50_064]

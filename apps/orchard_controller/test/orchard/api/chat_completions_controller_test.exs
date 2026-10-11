@@ -1961,6 +1961,36 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert List.last(events) == {:done, nil}
     end
 
+    test "SPEC §5.9 a stream probes with SSE keepalive comments and never after the terminal" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.output_text_delta("hi"),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ],
+        execute: {:ok, stub_chat_canonical(), []},
+        keepalive_probe_pid: self()
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      interval_ms = Orchard.Inference.sse_keepalive_interval_ms()
+      assert conn.status == 200
+      assert_received {:keepalive, :before_events, :ok, ^interval_ms}
+      assert_received {:keepalive, :after_events, :ok, ^interval_ms}
+
+      # One comment before the first data line; the post-terminal probe writes nothing.
+      assert String.starts_with?(conn.resp_body, ": keepalive\n\ndata: ")
+      assert length(String.split(conn.resp_body, ": keepalive\n\n")) == 2
+      assert String.ends_with?(conn.resp_body, "data: [DONE]\n\n")
+    end
+
     test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
       fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
 
@@ -2668,6 +2698,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         send(pid, {:captured_execute_canonical, canonical, model})
       end
 
+      probe_keepalive(config, opts, :before_events)
+
       if event_handler = Keyword.get(opts, :event_handler) do
         _handler_result =
           Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
@@ -2680,9 +2712,18 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           end)
       end
 
+      probe_keepalive(config, opts, :after_events)
+
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp probe_keepalive(config, opts, phase) do
+      if pid = Keyword.get(config, :keepalive_probe_pid) do
+        result = Keyword.fetch!(opts, :keepalive_handler).()
+        send(pid, {:keepalive, phase, result, Keyword.fetch!(opts, :keepalive_interval_ms)})
       end
     end
 

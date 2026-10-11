@@ -271,6 +271,52 @@ defmodule Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.DelayedCompletionClient do
+  @moduledoc false
+
+  # Accepts, stays silent like a long prefill, then streams a reply. It reports
+  # when it sent the terminal and waits before closing the stream, so a test can
+  # check that no keepalive probe follows the terminal.
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.InferenceEvent.Usage
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    id = request.request_id
+
+    spawn(fn ->
+      send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.accepted(0)})
+      Process.sleep(80)
+      send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.output_text_delta("hi")})
+
+      completed =
+        InferenceEvent.completed(
+          :finish_reason_stop,
+          %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}
+        )
+
+      send(owner, {:runtime_endpoint_event, ref, id, completed})
+      send(owner, {:terminal_sent_at, System.monotonic_time(:millisecond)})
+      Process.sleep(150)
+      send(owner, {:runtime_endpoint_done, ref, :ok})
+    end)
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+end
+
 defmodule Orchard.Dispatch.DispatchTest.BufferedCompletionClient do
   @moduledoc false
 
@@ -1309,6 +1355,141 @@ defmodule Orchard.Dispatch.DispatchTest do
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)
     end
 
+    test "SPEC.md §5.9 a failed keepalive probe in a silent accepted execution is a caller disconnect",
+         %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-accepted"
+      probes = :counters.new(1, [])
+
+      keepalive = fn ->
+        :counters.add(probes, 1, 1)
+        if :counters.get(probes, 1) >= 2, do: :cancel, else: :ok
+      end
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: keepalive,
+          keepalive_interval_ms: 10
+        )
+
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               accepted: true,
+               output_committed: false,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } = outcome
+
+      assert :counters.get(probes, 1) == 2
+      assert Enum.count(outcome.events, &InferenceEvent.terminal?/1) == 1
+    end
+
+    test "SPEC.md §5.9 a failed keepalive probe before acceptance is a caller disconnect", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-keepalive-unaccepted"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: fn -> :cancel end,
+          keepalive_interval_ms: 10
+        )
+
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } = outcome
+    end
+
+    test "successful keepalive probes change no attempt evidence and stop at the terminal", %{
+      bundle: bundle
+    } do
+      baseline = dispatch_delayed_completion(bundle, "req-dispatch-keepalive-baseline", [])
+      _ = drain_keepalive_messages()
+
+      test_pid = self()
+
+      probed =
+        dispatch_delayed_completion(bundle, "req-dispatch-keepalive-probed",
+          keepalive_handler: fn ->
+            send(test_pid, {:probe_at, System.monotonic_time(:millisecond)})
+            :ok
+          end,
+          keepalive_interval_ms: 10
+        )
+
+      %{terminal_at: terminal_at, probes: probes} = drain_keepalive_messages()
+
+      assert probed.attempt_outcome == baseline.attempt_outcome
+
+      assert Enum.map(probed.events, &InferenceEvent.kind/1) ==
+               Enum.map(baseline.events, &InferenceEvent.kind/1)
+
+      assert probed.delivered_event_count == baseline.delivered_event_count
+      assert probed.output_committed == baseline.output_committed
+      assert probed.terminal_usage == baseline.terminal_usage
+
+      # 80 ms of silence at a 10 ms interval probes several times. After the
+      # terminal arrives the stream stays open for 150 ms; at most one probe can
+      # race the terminal message, never a stream of them.
+      assert length(probes) >= 3
+      assert Enum.count(probes, &(&1 > terminal_at)) <= 1
+    end
+
+    test "a keepalive probe that raises stops probing and never fails the attempt", %{
+      bundle: bundle
+    } do
+      baseline = dispatch_delayed_completion(bundle, "req-dispatch-keepalive-raise-base", [])
+      calls = :counters.new(1, [])
+
+      outcome =
+        dispatch_delayed_completion(bundle, "req-dispatch-keepalive-raise",
+          keepalive_handler: fn ->
+            :counters.add(calls, 1, 1)
+            raise "probe failed"
+          end,
+          keepalive_interval_ms: 10
+        )
+
+      assert outcome.attempt_outcome == baseline.attempt_outcome
+      assert outcome.failure == baseline.failure
+      assert :counters.get(calls, 1) == 1
+    end
+
+    test "a keepalive handler without a positive interval is refused", %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-invalid"
+
+      for opts <- [
+            [keepalive_handler: fn -> :ok end],
+            [keepalive_handler: fn -> :ok end, keepalive_interval_ms: 0],
+            [keepalive_handler: fn _arg -> :ok end, keepalive_interval_ms: 10]
+          ] do
+        assert_raise ArgumentError, fn ->
+          RequestDispatcher.dispatch(
+            build_schedule(request_id),
+            execute_request(request_id),
+            model_load_request(bundle),
+            [client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient] ++ opts
+          )
+        end
+      end
+    end
+
     test "SPEC.md §7.2.7 dispatch-capacity caller-down is cancellation", %{bundle: bundle} do
       caller = spawn(fn -> Process.sleep(:infinity) end)
       Process.exit(caller, :kill)
@@ -1458,6 +1639,24 @@ defmodule Orchard.Dispatch.DispatchTest do
   end
 
   # -- Helpers ---------------------------------------------------------------
+
+  defp dispatch_delayed_completion(bundle, request_id, opts) do
+    RequestDispatcher.dispatch(
+      build_schedule(request_id),
+      execute_request(request_id),
+      model_load_request(bundle),
+      [client_impl: Orchard.Dispatch.DispatchTest.DelayedCompletionClient] ++ opts
+    )
+  end
+
+  defp drain_keepalive_messages(acc \\ %{terminal_at: nil, probes: []}) do
+    receive do
+      {:terminal_sent_at, at} -> drain_keepalive_messages(%{acc | terminal_at: at})
+      {:probe_at, at} -> drain_keepalive_messages(%{acc | probes: [at | acc.probes]})
+    after
+      0 -> acc
+    end
+  end
 
   defp model_load_request(bundle) do
     %EnsureModelLoadedRequest{

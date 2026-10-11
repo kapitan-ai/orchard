@@ -4,8 +4,53 @@ defmodule Orchard.API.InferenceControllerSupport do
   import Phoenix.Controller, only: [json: 2]
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
+  alias Orchard.API.SSE
+  alias Orchard.Inference
   alias Orchard.Inference.{ChatError, ToolExecutionOutcome}
   alias Orchard.Requests.Idempotency
+
+  @doc """
+  Execute options that probe a streaming response with SSE keepalive comments.
+
+  `state_key` names the stream state in the calling process dictionary. The
+  state map holds `conn` and `closed`, and may hold `errored` and `terminal_sent`.
+  A failed write marks the stream closed and cancels the request as a caller
+  disconnect. Nothing is written once the stream is closed, errored or terminal.
+  """
+  @spec stream_keepalive_opts(reference()) :: keyword()
+  def stream_keepalive_opts(state_key) do
+    [
+      keepalive_handler: fn -> stream_keepalive(state_key) end,
+      keepalive_interval_ms: Inference.sse_keepalive_interval_ms()
+    ]
+  end
+
+  defp stream_keepalive(state_key) do
+    case Process.get(state_key) do
+      %{closed: true} ->
+        :cancel
+
+      %{conn: conn} = state ->
+        if Map.get(state, :errored, false) or Map.get(state, :terminal_sent, false),
+          do: :ok,
+          else: write_keepalive(state_key, state, conn)
+
+      _cleared ->
+        :ok
+    end
+  end
+
+  defp write_keepalive(state_key, state, conn) do
+    case SSE.send_keepalive(conn) do
+      {:ok, conn} ->
+        Process.put(state_key, %{state | conn: conn})
+        :ok
+
+      {:error, :closed} ->
+        Process.put(state_key, %{state | closed: true})
+        :cancel
+    end
+  end
 
   @spec extract_caller_context(Plug.Conn.t()) :: keyword()
   def extract_caller_context(conn) do
