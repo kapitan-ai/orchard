@@ -371,6 +371,46 @@ def test_restore_copy_failure_is_a_harmless_miss() -> None:
     assert store.stats().retained == 1
 
 
+def test_restore_materialize_failure_is_a_harmless_miss() -> None:
+    calls: list[int] = []
+
+    def materialize(_arrays: list[Any]) -> None:
+        calls.append(len(calls))
+        if len(calls) > 1:
+            raise MemoryError("restore eval failed")
+
+    store = _store(materialize=materialize)
+    store.capture(TURN_1[:8], _cache_for(TURN_1[:8]))
+
+    lookup = store.lookup(TURN_2)
+
+    assert lookup.status == LOOKUP_RESTORE_FAILED
+    assert lookup.prompt_cache is None
+    stats = store.stats()
+    assert (stats.restore_failures, stats.retained, stats.hits) == (1, 1, 0)
+    assert not store._slots[0].borrowed
+
+
+def test_restore_failure_falls_back_to_a_cold_prefill() -> None:
+    calls: list[int] = []
+
+    def materialize(_arrays: list[Any]) -> None:
+        calls.append(len(calls))
+        if len(calls) == 2:
+            raise MemoryError("restore eval failed")
+
+    store = _store(materialize=materialize)
+    _run(_session(store), TURN_1, _FaithfulStream())
+    stream = _FaithfulStream()
+
+    events = _run(_session(store), TURN_2, stream)
+
+    assert events[-1]["kind"] == "completed"
+    [call] = stream.calls
+    assert call["prompt_ids"] == TURN_2
+    assert _state(call["prompt_cache"]) == _reference_state([*TURN_2, GENERATED_TOKEN])
+
+
 # ---------------------------------------------------------------------------
 # Ownership: deep copy on store and on restore
 # ---------------------------------------------------------------------------
@@ -814,6 +854,29 @@ def test_strict_path_logs_one_structured_line(caplog: pytest.LogCaptureFixture) 
     assert "lookup_status=miss" in line
     assert "capture_status=stored" in line
     assert "capture_boundary=8" in line
+
+
+def test_strict_path_skips_the_prefill_workspace_probe() -> None:
+    """A checkpoint pins memory during prefill that is not prefill workspace."""
+    samples: list[int] = []
+
+    def current_memory_bytes() -> int:
+        samples.append(1)
+        return 1 << 30
+
+    store = _store()
+    deps = GenerationDeps(
+        stream_generate=_FaithfulStream(),
+        make_sampler=lambda **_kwargs: MagicMock(name="FakeSampler"),
+        make_prompt_cache=_make_hybrid_cache,
+        current_memory_bytes=current_memory_bytes,
+    )
+    session = _session(store)
+
+    list(generate_events(session, _request(TURN_1), threading.Event(), deps=deps))
+
+    assert store.stats().stores == 1
+    assert samples == []
 
 
 def test_identity_step_mismatch_disables_reuse_for_the_request() -> None:

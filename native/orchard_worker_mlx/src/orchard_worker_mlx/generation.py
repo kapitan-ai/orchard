@@ -2524,15 +2524,18 @@ def generate_events(
                 **stream_kwargs,
             )
 
+            # A checkpoint captured during prefill pins memory that is not
+            # prefill workspace, so the strict path skips the workspace probe.
+            probe_prefill_workspace = not deps.uses_shared_batch_runtime and strict_store is None
             prefill_probe_baseline: int | None = None
             prefill_probe_finalized = False
-            if not deps.uses_shared_batch_runtime:
+            if probe_prefill_workspace:
                 prefill_probe_baseline = _sample_current_memory_bytes_fail_open(deps)
 
             def finalize_prefill_probe_if_needed(drained_prefill: bool) -> None:
                 nonlocal prefill_probe_finalized
 
-                if not drained_prefill or prefill_probe_finalized or deps.uses_shared_batch_runtime:
+                if not drained_prefill or prefill_probe_finalized or not probe_prefill_workspace:
                     return
 
                 processed_tokens = (

@@ -1355,6 +1355,45 @@ def _refuse_strict_prefix(message: str) -> ModelLoaderError:
     return ModelLoaderError("strict_prefix_checkpoint_unsupported", message)
 
 
+def _check_strict_prefix_runtime(
+    *,
+    deps: MLXDeps,
+    prefix_cache_config: PrefixCacheLoadConfig,
+    generation_config: GenerationRuntimeConfig,
+    memory_budget_config: MemoryBudgetConfig,
+) -> dict[str, str]:
+    """Refuse an unusable strict-prefix runtime before any weights load.
+
+    Returns the runtime versions, or an empty mapping when the setting is off.
+    Retained checkpoints sit outside the memory-budget working-set target, so
+    enforce mode would abort generations for memory the budget never planned.
+    """
+    if prefix_cache_config.strict_prefix is None:
+        return {}
+
+    if generation_config.mode != "stream":
+        raise _refuse_strict_prefix(
+            f"strict-prefix checkpoints require generation mode 'stream', "
+            f"got {generation_config.mode!r}"
+        )
+    if memory_budget_config.mode == "enforce":
+        raise _refuse_strict_prefix(
+            "strict-prefix checkpoints require memory-budget mode 'disabled' or 'observe'"
+        )
+
+    try:
+        versions = dict(deps.runtime_versions()) if deps.runtime_versions is not None else {}
+    except Exception as exc:
+        raise _refuse_strict_prefix(f"strict-prefix runtime version probe failed: {exc}") from exc
+    mlx_lm_version = versions.get("mlx_lm", "")
+    if mlx_lm_version != SUPPORTED_MLX_LM_VERSION:
+        raise _refuse_strict_prefix(
+            f"strict-prefix checkpoints support only mlx-lm {SUPPORTED_MLX_LM_VERSION}, "
+            f"got {mlx_lm_version!r}"
+        )
+    return versions
+
+
 def _build_strict_prefix_checkpoints(
     model: Any,
     tokenizer: Any,
@@ -1362,33 +1401,20 @@ def _build_strict_prefix_checkpoints(
     *,
     deps: MLXDeps,
     prefix_cache_config: PrefixCacheLoadConfig,
-    generation_config: GenerationRuntimeConfig,
+    runtime_versions: Mapping[str, str],
     memory_budget_status: MemoryBudgetStatus,
 ) -> StrictPrefixCheckpointStore | None:
     """Build the strict-prefix checkpoint store, or refuse the load.
 
     Returns ``None`` when the setting is off.  When it is on, the load fails
-    unless the Worker runs stream mode on the held mlx-lm pin, the model's
-    prompt cache uses only supported layer types, the reply marker
-    tokenizes, and the memory headroom, when known, holds the budget.
+    unless the model's prompt cache uses only supported layer types, the
+    reply marker tokenizes, and the memory headroom, when known, holds the
+    budget.  ``_check_strict_prefix_runtime`` has already checked the mode
+    and the mlx-lm pin before the weights loaded.
     """
     config = prefix_cache_config.strict_prefix
     if config is None:
         return None
-
-    if generation_config.mode != "stream":
-        raise _refuse_strict_prefix(
-            f"strict-prefix checkpoints require generation mode 'stream', "
-            f"got {generation_config.mode!r}"
-        )
-
-    versions = dict(deps.runtime_versions()) if deps.runtime_versions is not None else {}
-    mlx_lm_version = versions.get("mlx_lm", "")
-    if mlx_lm_version != SUPPORTED_MLX_LM_VERSION:
-        raise _refuse_strict_prefix(
-            f"strict-prefix checkpoints support only mlx-lm {SUPPORTED_MLX_LM_VERSION}, "
-            f"got {mlx_lm_version!r}"
-        )
 
     if deps.make_prompt_cache is None:
         raise _refuse_strict_prefix("strict-prefix checkpoints need make_prompt_cache")
@@ -1420,19 +1446,20 @@ def _build_strict_prefix_checkpoints(
         model_id=manifest.model_id,
         model_version=manifest.version,
         artifact_sha256=manifest.sha256,
-        mlx_version=versions.get("mlx", ""),
-        mlx_lm_version=mlx_lm_version,
+        mlx_version=runtime_versions.get("mlx", ""),
+        mlx_lm_version=runtime_versions.get("mlx_lm", ""),
         prefill_step_size=DEFAULT_PREFILL_STEP_SIZE,
         layer_types=layer_types,
     )
     logger.info(
         "strict_prefix_checkpoint enabled slots=%d slot_bytes=%d budget_bytes=%d "
-        "layers=%d mlx_lm=%s",
+        "layers=%d mlx=%s mlx_lm=%s",
         config.slots,
         config.slot_bytes,
         config.budget_bytes,
         len(layer_types),
-        mlx_lm_version,
+        identity.mlx_version,
+        identity.mlx_lm_version,
     )
     return StrictPrefixCheckpointStore(
         identity=identity,
@@ -1524,6 +1551,16 @@ def load_session(
     if deps is None:
         deps = _default_mlx_deps()
 
+    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
+    effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
+    runtime_versions = _check_strict_prefix_runtime(
+        deps=deps,
+        prefix_cache_config=effective_config,
+        generation_config=effective_generation_config,
+        memory_budget_config=effective_memory_budget_config,
+    )
+
     model = None
     tokenizer = None
     model_config = None
@@ -1577,9 +1614,6 @@ def load_session(
     _safe_clear_cache(deps.clear_cache)
 
     # --- prefix cache eligibility probe (fail-open) ---
-    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
-    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
-    effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status = _compute_memory_budget_status(
         manifest,
         deps,
@@ -1598,7 +1632,7 @@ def load_session(
             manifest,
             deps=deps,
             prefix_cache_config=effective_config,
-            generation_config=effective_generation_config,
+            runtime_versions=runtime_versions,
             memory_budget_status=memory_budget_status,
         )
     except ModelLoaderError:

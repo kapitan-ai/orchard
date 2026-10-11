@@ -27,7 +27,14 @@ Ownership and memory:
     array metadata before the copy, deep-copies, and only then retains the
     snapshot.  A copy that fails leaves its reservation held as ``uncertain``
     until the store is cleared at unload.  A restore deep-copies the retained
-    snapshot while the slot is borrowed, so it cannot be evicted mid-copy.
+    snapshot while the slot is borrowed, so it cannot be evicted mid-copy, and
+    materialises the copy so a failure is a miss rather than a prefill error.
+
+    On the held MLX pin, deep-copying an evaluated array shares its buffer,
+    and MLX updates are functional.  The snapshot's memory therefore becomes
+    separate when the working cache next writes, not at the copy itself.  The
+    slot charge is the accounting bound for that memory, reserved before the
+    copy whichever way the runtime allocates it.
 
 This module uses only the standard library, like ``prefix_cache.py``.
 """
@@ -310,6 +317,10 @@ class StrictPrefixCheckpointStore:
 
         try:
             restored = copy.deepcopy(snapshot)
+            # Surface a lazy copy failure here, where it is a harmless miss,
+            # rather than during prefill.
+            if self._materialize is not None:
+                self._materialize(snapshot_arrays(restored))
         except Exception:
             logger.warning("strict_prefix_checkpoint restore copy failed", exc_info=True)
             with self._lock:

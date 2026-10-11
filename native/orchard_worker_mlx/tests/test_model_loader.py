@@ -2572,6 +2572,53 @@ def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
         _load_strict(writable_bundle, deps)
 
 
+@pytest.mark.parametrize(
+    ("versions", "generation_mode", "memory_budget_mode", "message"),
+    [
+        ({"mlx_lm": "0.32.0"}, "stream", "observe", "mlx-lm 0.31.3"),
+        ({"mlx_lm": "0.31.3"}, "batch", "observe", "generation mode 'stream'"),
+        ({"mlx_lm": "0.31.3"}, "stream", "enforce", "memory-budget mode"),
+    ],
+)
+def test_strict_prefix_runtime_refusals_happen_before_weights_load(
+    writable_bundle: Path,
+    versions: dict[str, str],
+    generation_mode: str,
+    memory_budget_mode: str,
+    message: str,
+) -> None:
+    load_model = MagicMock(side_effect=AssertionError("weights must not load"))
+    deps = replace(_strict_prefix_deps(versions=versions), load_model=load_model)
+
+    with pytest.raises(ModelLoaderError, match=message) as exc_info:
+        load_session(
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
+            prefix_cache_config=_strict_prefix_config(),
+            generation_config=GenerationRuntimeConfig(mode=generation_mode),
+            memory_budget_config=MemoryBudgetConfig(mode=memory_budget_mode),
+        )
+
+    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+    load_model.assert_not_called()
+
+
+def test_strict_prefix_runtime_version_probe_error_is_a_load_refusal(
+    writable_bundle: Path,
+) -> None:
+    def broken_versions() -> dict[str, str]:
+        raise ImportError("mlx_lm missing")
+
+    deps = replace(_strict_prefix_deps(), runtime_versions=broken_versions)
+
+    with pytest.raises(ModelLoaderError, match="version probe failed") as exc_info:
+        _load_strict(writable_bundle, deps)
+
+    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+
+
 def test_strict_prefix_load_is_refused_without_a_prompt_cache_factory(
     writable_bundle: Path,
 ) -> None:
