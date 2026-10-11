@@ -228,6 +228,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:noreply, kill_until_confirmed(state, ref, attempt)}
   end
 
+  def handle_info({:retry_term, ref, timeout, attempt}, state) do
+    {:noreply, retry_term(state, ref, timeout, attempt)}
+  end
+
   def handle_info({:grace_poll, ref}, state) do
     {:noreply, poll_term_grace(state, ref)}
   end
@@ -316,7 +320,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     end
   end
 
-  defp start_live_process_reaping(state, ref, lease, timeout) do
+  defp start_live_process_reaping(state, ref, lease, timeout),
+    do: term_or_retry(state, ref, lease, timeout, 1)
+
+  defp term_or_retry(state, ref, lease, timeout, attempt) do
     signal_result =
       WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
 
@@ -326,11 +333,29 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         cleanup_lease(state, ref)
 
       WorkerProcessLifecycle.custody_refused?(signal_result) ->
-        # An unreadable identity proves nothing; keep custody and recheck.
-        schedule_confirm(state, ref, 1)
+        # An unreadable identity proves nothing. Keep custody and retry TERM, so
+        # the runtime still gets its grace once the identity reads again.
+        log_unconfirmed_exit(lease, attempt)
+
+        timer_ref =
+          Process.send_after(self(), {:retry_term, ref, timeout, attempt}, backoff_ms(attempt))
+
+        put_in(state, [Access.key(:leases), ref, :timer_ref], timer_ref)
 
       true ->
         start_term_grace(state, ref, timeout)
+    end
+  end
+
+  defp retry_term(state, ref, timeout, attempt) do
+    case state.leases[ref] do
+      nil ->
+        state
+
+      lease ->
+        if exit_confirmed?(lease),
+          do: cleanup_lease(state, ref),
+          else: term_or_retry(state, ref, lease, timeout, attempt + 1)
     end
   end
 
@@ -402,9 +427,11 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     end
   end
 
+  defp backoff_ms(attempt),
+    do: min(@confirm_base_ms * Integer.pow(2, min(attempt - 1, 5)), @confirm_max_ms)
+
   defp schedule_confirm(state, ref, attempt) do
-    delay_ms = min(@confirm_base_ms * Integer.pow(2, min(attempt - 1, 5)), @confirm_max_ms)
-    timer_ref = Process.send_after(self(), {:confirm_exit, ref, attempt}, delay_ms)
+    timer_ref = Process.send_after(self(), {:confirm_exit, ref, attempt}, backoff_ms(attempt))
 
     put_in(state, [Access.key(:leases), ref, :timer_ref], timer_ref)
   end

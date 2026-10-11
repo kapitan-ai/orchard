@@ -972,6 +972,9 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp restart_inflight_load(state, key, valid_waiters, prev_inflight) do
+    # Ask about custody before reading the clock: the query can take up to its
+    # timeout, and the deadlines below must be checked against the time after it.
+    custody_cleared = custody_clear?(key)
     now_ms = System.system_time(:millisecond)
 
     # Re-check deadlines at restart time
@@ -984,7 +987,7 @@ defmodule Orchard.Node.ModelManager do
         state
 
       # The aborted attempt's runtime may still run; do not launch over it.
-      not custody_clear?(key) ->
+      not custody_cleared ->
         reply_waiters(still_valid, ModelLoadFailure.to_response(:model_capacity_exhausted))
         state
 

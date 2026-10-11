@@ -523,6 +523,48 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
   end
 
+  test "SPEC.md §4.9 a runtime still gets TERM and its grace after a transient identity failure" do
+    root = unique_root("identity-recovers")
+    marker_path = Path.join(root, "events.log")
+    fake_bin = Path.join(root, "fake-bin")
+    File.mkdir_p!(fake_bin)
+    File.write!(Path.join(fake_bin, "ps"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(fake_bin, "ps"), 0o755)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+    {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+    previous_path = System.fetch_env!("PATH")
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} =
+             RuntimeProcessReaper.watch(owner_pid, os_pid, %{
+               shutdown_timeout_ms: 30_000,
+               model_ref: nil,
+               os_identity: identity,
+               phase: :loaded,
+               socket_path: nil
+             })
+
+    System.put_env("PATH", fake_bin <> ":" <> previous_path)
+    Process.exit(owner_pid, :kill)
+    Process.sleep(300)
+    System.put_env("PATH", previous_path)
+
+    # A KILL would end the child without the cooperative TERM handler running.
+    assert CustodyTestHelpers.wait_until(
+             fn -> event_logged?(marker_path, "term_received mode=cooperative") end,
+             5_000
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 5_000)
+    CustodyTestHelpers.assert_reaper_empty!(5_000)
+  end
+
   test "shutdown sweep without launch identity cleans socket without signaling" do
     root = unique_root("shutdown-no-identity")
     socket_path = Path.join(root, "worker.sock")
