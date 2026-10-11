@@ -167,6 +167,9 @@ defmodule Orchard.Inference.ChatError do
 
   def from_failed_event(event), do: build(:internal, detail: {:unexpected_failed_event, event})
 
+  # A lost Worker is unavailable capacity: SPEC.md §7.2.7 maps it to 503.
+  @worker_lost_codes ["worker_down", "worker_unavailable"]
+
   @spec api_mapping(t()) :: mapping()
   def api_mapping(%__MODULE__{kind: :missing_required_field, param: field}) do
     %{
@@ -375,6 +378,19 @@ defmodule Orchard.Inference.ChatError do
       type: "server_error",
       code: "request_cancelled",
       message: "Request was cancelled",
+      param: nil
+    }
+  end
+
+  # The Worker serving the Request was lost. The capacity is unavailable, not
+  # broken, so a sync response reports it like the stream does.
+  def api_mapping(%__MODULE__{kind: :request_failed, source_code: code, source_message: message})
+      when code in @worker_lost_codes do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: code,
+      message: "Inference failed: #{message}",
       param: nil
     }
   end
@@ -634,7 +650,7 @@ defmodule Orchard.Inference.ChatError do
   def terminal_attrs(%__MODULE__{kind: :request_failed} = error) do
     %{
       state: :failed,
-      http_status: 500,
+      http_status: http_status_for(error),
       error_code: error.source_code || "internal_error",
       error_message: error.source_message || "Inference failed"
     }
@@ -657,6 +673,9 @@ defmodule Orchard.Inference.ChatError do
       error_message: inspect(detail)
     }
   end
+
+  defp http_status_for(%__MODULE__{source_code: code}) when code in @worker_lost_codes, do: 503
+  defp http_status_for(_error), do: 500
 
   defp build(kind, attrs) do
     struct!(__MODULE__, Keyword.merge([kind: kind], attrs))
