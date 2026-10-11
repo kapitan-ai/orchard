@@ -15,6 +15,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
   alias Orchard.DispatchCapacity.ConformanceFixture
   alias Orchard.Node.ModelManager
   alias Orchard.Node.Status, as: NodeStatus
+  alias Orchard.Node.WorkerProcessLifecycle
 
   alias Orchard.TestSupport.{
     AgenticExecutionClient,
@@ -356,6 +357,58 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
       assert first.affinity_key == second.affinity_key == (bound == 1)
       assert first.affinity_key == affinity(first.rendered_prompt, bound)
       assert second.affinity_key == affinity(second.rendered_prompt, bound)
+    end
+  end
+
+  for mode <- ["chat_stream", "responses_stream"] do
+    @mode mode
+    test "SPEC.md §12.2 a Worker killed during prefill fails the Request with worker_down #{@mode}",
+         %{token: token} do
+      script = System.fetch_env!("ORCHARD_AGENTIC_SCRIPT")
+      root = Path.rootname(script)
+      Enum.each([".request", ".cancelled", ".release", ".drained"], &File.rm(root <> &1))
+      File.write!(script, Jason.encode!(%{events: [%{wait_for_cancel: true}]}))
+
+      Application.put_env(:orchard_controller, :agentic_execution_fixture, %{
+        owner: self(),
+        events: [],
+        fault: nil
+      })
+
+      before_ids = MapSet.new(Repo.all(Requests.Request), & &1.id)
+      chat? = String.starts_with?(@mode, "chat")
+      path = if chat?, do: "/v1/chat/completions", else: "/v1/responses"
+      params = public_request(%{"request" => %{}}, chat?, true)
+
+      task =
+        Task.async(fn ->
+          build_conn()
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> put_req_header("accept", "text/event-stream")
+          |> post(path, params)
+        end)
+
+      assert_receive {:agentic_execution_started, _request}, 5_000
+      assert wait_until(fn -> File.exists?(root <> ".request") end)
+      os_pid = loaded_worker_os_pid()
+      _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
+      assert wait_until(fn -> not WorkerProcessLifecycle.os_process_alive?(os_pid) end)
+
+      conn = Task.await(task, 15_000)
+      assert_receive {:agentic_runtime_trace, events}, 2_000
+      [request] = Enum.reject(Repo.all(Requests.Request), &MapSet.member?(before_ids, &1.id))
+      terminal = List.last(Requests.list_request_step_events(request))
+
+      assert %Orchard.InferenceEvent.Failed{code: "worker_down", retryable: false} =
+               List.last(events).event
+
+      assert request.state == :failed
+      assert request.error_code == "worker_down"
+      assert terminal.result["failure_class"] == "worker_or_node_loss"
+      assert terminal.result["failure_code"] == "worker_down"
+      assert terminal.result["retry_decision"] == "not_retryable"
+      assert conn.resp_body =~ ~s("code":"worker_down")
+      refute conn.resp_body =~ ~s("code":"internal_error")
     end
   end
 
@@ -796,6 +849,11 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     error in [ExUnit.AssertionError, MatchError, KeyError, ArgumentError] ->
       report(scenario, mode, [%{assertion: "execution_contract", status: "fail"}])
       reraise error, __STACKTRACE__
+  end
+
+  defp loaded_worker_os_pid do
+    [%{pid: worker_pid}] = Map.values(:sys.get_state(ModelManager).workers)
+    :sys.get_state(worker_pid).adapter_state.os_pid
   end
 
   defp replay(scenario, mode, token) do

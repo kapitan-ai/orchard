@@ -1051,6 +1051,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp handle_stream_item({:ok, proto_event}, stream_result, owner, generation_ref) do
     case InferenceEventMapper.from_proto(proto_event) do
       {:ok, event} ->
+        event = runtime_endpoint_event(event)
         send(owner, {:runtime_adapter_event, generation_ref, event})
 
         if InferenceEvent.terminal?(event) do
@@ -1128,6 +1129,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp emit_stream_done(owner, generation_ref, {:done, reason}) do
     send(owner, {:runtime_adapter_done, generation_ref, reason})
   end
+
+  # A Worker that quarantines itself stays alive but serves nothing until it is
+  # replaced. The Runtime Endpoint reports that with the stable code for an
+  # unavailable Worker, not the Worker-private code. Execution did not settle
+  # safely, so the failure stays non-retryable.
+  defp runtime_endpoint_event(%InferenceEvent{
+         event: %InferenceEvent.Failed{code: "runtime_quarantined", message: message}
+       }) do
+    InferenceEvent.failed("worker_unavailable", message, false)
+  end
+
+  defp runtime_endpoint_event(event), do: event
 
   defp emit_runtime_failure(owner, generation_ref, code, message) do
     send(

@@ -15,6 +15,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   }
 
   alias Orchard.Cluster.V1.Completed, as: ProtoCompleted
+  alias Orchard.Cluster.V1.Failed, as: ProtoFailed
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
   alias Orchard.Cluster.V1.TokenDelta, as: ProtoTokenDelta
 
@@ -30,7 +31,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   }
 
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
-  alias Orchard.InferenceEvent.{Completed, OutputTextDelta, TokenDelta}
+  alias Orchard.InferenceEvent.{Completed, Failed, OutputTextDelta, TokenDelta}
   alias Orchard.Node.WorkerRuntimeAdapter
 
   @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
@@ -90,6 +91,32 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     use GRPC.Endpoint
 
     run(MidStreamUnavailableWorkerService)
+  end
+
+  defmodule FailingWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    def generate(%ExecuteInferenceRequest{}, stream) do
+      code = Application.fetch_env!(:orchard_node_agent, :test_worker_failure_code)
+
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{
+          event: {:failed, %ProtoFailed{code: code, message: "worker failed", retryable: false}}
+        }
+      )
+    end
+  end
+
+  defmodule FailingEndpoint do
+    use GRPC.Endpoint
+
+    run(FailingWorkerService)
   end
 
   defmodule TokenDeltaWorkerService do
@@ -800,6 +827,33 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     assert response.status_code == "unavailable"
     assert response.score_tier == "unknown"
+  end
+
+  for {worker_code, endpoint_code} <- [
+        {"runtime_quarantined", "worker_unavailable"},
+        {"backend_crash", "backend_crash"}
+      ] do
+    @worker_code worker_code
+    @endpoint_code endpoint_code
+    test "SPEC.md §5.9 a Worker #{@worker_code} terminal reaches the Runtime Endpoint as #{@endpoint_code}" do
+      Application.put_env(:orchard_node_agent, :test_worker_failure_code, @worker_code)
+      on_exit(fn -> Application.delete_env(:orchard_node_agent, :test_worker_failure_code) end)
+
+      with_worker_runtime_server(FailingEndpoint, fn channel ->
+        state = adapter_stream_state(channel)
+        request = execute_request("req-#{@worker_code}")
+
+        {:ok, generation_ref, _adapter_state} =
+          WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+        assert_receive {:runtime_adapter_event, ^generation_ref,
+                        %DomainInferenceEvent{event: %Failed{} = failed}},
+                       1_000
+
+        assert failed.code == @endpoint_code
+        assert failed.retryable == false
+      end)
+    end
   end
 
   test "start_generation sends runtime_adapter_done when stream open returns worker_unavailable" do
