@@ -317,6 +317,42 @@ defmodule Orchard.Dispatch.DispatchTest.DelayedCompletionClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.ProgressBacklogClient do
+  @moduledoc false
+
+  # Accepts, then queues a large backlog of progress events that write nothing
+  # to the client, and holds the stream open.
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  @backlog 5_000
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def backlog, do: @backlog
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+
+    for n <- 1..@backlog do
+      progress = InferenceEvent.progress("prefill", "chunk #{n}")
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, progress})
+    end
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+end
+
 defmodule Orchard.Dispatch.DispatchTest.BufferedCompletionClient do
   @moduledoc false
 
@@ -416,6 +452,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   import Orchard.TestSupport.SentryContextHelpers
 
   alias Orchard.ArtifactBundle
+  alias Orchard.Dispatch.DispatchTest.ProgressBacklogClient
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
@@ -1449,6 +1486,37 @@ defmodule Orchard.Dispatch.DispatchTest do
       # race the terminal message, never a stream of them.
       assert length(probes) >= 3
       assert Enum.count(probes, &(&1 > terminal_at)) <= 1
+    end
+
+    test "a backlog of runtime messages that write nothing cannot postpone a due keepalive probe",
+         %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-backlog"
+      test_pid = self()
+
+      # The first probe cancels and reports how many messages were still queued.
+      keepalive = fn ->
+        {:message_queue_len, queued} = Process.info(self(), :message_queue_len)
+        send(test_pid, {:queued_at_probe, queued})
+        :cancel
+      end
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.ProgressBacklogClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: keepalive,
+          keepalive_interval_ms: 1
+        )
+
+      assert outcome.attempt_outcome == :cancelled
+      assert outcome.failure["failure_code"] == "request_caller_disconnect"
+
+      assert_received {:queued_at_probe, queued}
+      backlog = ProgressBacklogClient.backlog()
+      assert queued > div(backlog, 2), "probe waited for the backlog: #{queued} still queued"
     end
 
     test "a keepalive probe that raises stops probing and never fails the attempt", %{

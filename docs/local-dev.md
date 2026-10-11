@@ -23,6 +23,7 @@ setting only the former above the default ceiling fails startup.
 | `ORCHARD_REQUEST_TIMEOUT_MS` | 120000 | Controller generation budget |
 | `ORCHARD_MAX_REQUEST_DEADLINE_MS` | 360000 | Controller absolute request ceiling |
 | `ORCHARD_MODEL_LOAD_TIMEOUT_MS` | 120000 | Controller cap on a public cold model load |
+| `ORCHARD_SSE_KEEPALIVE_INTERVAL_MS` | 5000 | Controller interval between SSE keepalive comments on a streaming request; a failed write is a caller disconnect |
 | `ORCHARD_WORKER_READY_TIMEOUT_MS` | 5000 | NodeAgent Worker readiness phase |
 | `ORCHARD_WORKER_LOAD_TIMEOUT_MS` | 120000 | NodeAgent load fallback without an explicit deadline |
 

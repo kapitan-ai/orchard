@@ -257,10 +257,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     deadline_ms = RequestDeadline.to_monotonic_ms(timeout_at, system_ms, monotonic_ms)
 
     model_load_timeout_cap_ms = Map.get(schedule, :model_load_timeout_ms, 120_000)
+    # Validate before monitoring, so a refused option leaves no monitor behind.
+    keepalive = keepalive_option(opts)
     caller = Keyword.get(opts, :caller, self())
     caller_ref = Process.monitor(caller)
     event_handler = Keyword.get(opts, :event_handler)
-    keepalive = keepalive_option(opts)
     on_accepted = Keyword.get(opts, :on_accepted)
     on_node_resolved = Keyword.get(opts, :on_node_resolved)
     client = Keyword.get(opts, :client_impl, Inference.runtime_endpoint_client())
@@ -1626,6 +1627,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp receive_loop(%{} = loop_ctx, events) do
+    # A due probe runs before the next receive, so a backlog of runtime messages
+    # that write nothing to the client cannot postpone it.
+    if keepalive_wait_ms(loop_ctx) == 0,
+      do: handle_keepalive_due(loop_ctx, events),
+      else: receive_runtime_message(loop_ctx, events)
+  end
+
+  defp receive_runtime_message(loop_ctx, events) do
     %{
       target: target,
       metrics: metrics,
