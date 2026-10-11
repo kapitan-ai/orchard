@@ -28,14 +28,14 @@
       "output_contract": "runtime_failure",
       "request": {},
       "events": [{"fail": "worker_down", "retryable": true}],
-      "expected": {"retry_decision": "no_alternative_node", "public_error": "internal_error", "stream_public_error": "worker_down"}
+      "expected": {"retry_decision": "no_alternative_node", "public_error": "worker_down"}
     },
     {
       "id": "retryable-after-output",
       "output_contract": "runtime_failure",
       "request": {},
       "events": [{"text": "committed"}, {"fail": "worker_down", "retryable": true}],
-      "expected": {"retry_decision": "output_committed", "public_error": "internal_error", "stream_public_error": "worker_down"}
+      "expected": {"retry_decision": "output_committed", "public_error": "worker_down"}
     },
     {
       "id": "unknown-runtime-error",

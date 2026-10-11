@@ -2804,8 +2804,11 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
 * `499` caller cancelled or disconnected when a response remains deliverable
-* `503` cluster busy / model busy / no eligible node
+* `503` cluster busy / model busy / no eligible node / Worker lost during the Request
 * `504` request timeout
+
+A non-streaming Request that fails because its Worker was lost SHALL return `503 server_error` with the stable Runtime Endpoint code `worker_down` or `worker_unavailable`, the same code that a streaming Request reports in its terminal error event.
+The status and code do not change retry behavior; §5.8 and §5.9 still decide whether the Controller retries.
 
 Reasoning-control failures use this closed mapping:
 

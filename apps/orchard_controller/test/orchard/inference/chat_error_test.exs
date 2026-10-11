@@ -238,6 +238,33 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.7 a lost Worker returns 503 with its stable code on sync and stream" do
+    for code <- ["worker_down", "worker_unavailable"] do
+      error =
+        code
+        |> InferenceEvent.failed("worker process exited unexpectedly", false)
+        |> ChatError.from_failed_event()
+
+      assert ChatError.api_mapping(error) == %{
+               status: :service_unavailable,
+               type: "server_error",
+               code: code,
+               message: "Inference failed: worker process exited unexpectedly",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error).code == code
+    end
+
+    other =
+      "runtime_stream_error"
+      |> InferenceEvent.failed("worker stream failed", false)
+      |> ChatError.from_failed_event()
+
+    assert %{status: :internal_server_error, code: "internal_error"} =
+             ChatError.api_mapping(other)
+  end
+
   test "terminal conformance failures stay generic publicly and specific durably" do
     failures = [
       {"runtime_endpoint_missing_terminal", "stream ended without a terminal"},

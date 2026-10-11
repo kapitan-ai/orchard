@@ -379,6 +379,19 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  # The Worker serving the Request was lost. The capacity is unavailable, not
+  # broken, so a sync response reports it like the stream does.
+  def api_mapping(%__MODULE__{kind: :request_failed, source_code: code, source_message: message})
+      when code in ["worker_down", "worker_unavailable"] do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: code,
+      message: "Inference failed: #{message}",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: kind, source_message: message})
       when kind in [:request_interrupted, :request_failed] do
     %{

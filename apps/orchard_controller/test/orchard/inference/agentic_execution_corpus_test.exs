@@ -360,7 +360,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     end
   end
 
-  for mode <- ["chat_stream", "responses_stream"] do
+  for mode <- ["chat_stream", "responses_stream", "chat_sync", "responses_sync"] do
     @mode mode
     test "SPEC.md §12.2 a Worker killed during prefill fails the Request with worker_down #{@mode}",
          %{token: token} do
@@ -377,14 +377,16 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
 
       before_ids = MapSet.new(Repo.all(Requests.Request), & &1.id)
       chat? = String.starts_with?(@mode, "chat")
+      stream? = String.ends_with?(@mode, "stream")
       path = if chat?, do: "/v1/chat/completions", else: "/v1/responses"
-      params = public_request(%{"request" => %{}}, chat?, true)
+      params = public_request(%{"request" => %{}}, chat?, stream?)
+      accept = if stream?, do: "text/event-stream", else: "application/json"
 
       task =
         Task.async(fn ->
           build_conn()
           |> put_req_header("authorization", "Bearer #{token}")
-          |> put_req_header("accept", "text/event-stream")
+          |> put_req_header("accept", accept)
           |> post(path, params)
         end)
 
@@ -407,6 +409,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
       assert terminal.result["failure_class"] == "worker_or_node_loss"
       assert terminal.result["failure_code"] == "worker_down"
       assert terminal.result["retry_decision"] == "not_retryable"
+      assert conn.status == if(stream?, do: 200, else: 503)
       assert conn.resp_body =~ ~s("code":"worker_down")
       refute conn.resp_body =~ ~s("code":"internal_error")
     end
@@ -1099,9 +1102,13 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     terminal["response"]["error"]
   end
 
+  # SPEC.md §7.2.7: a lost Worker is unavailable capacity (503); every other
+  # sync failure here is a 500.
   defp public_error(conn, _sync) do
-    assert conn.status == 500
-    Jason.decode!(conn.resp_body)["error"]
+    error = Jason.decode!(conn.resp_body)["error"]
+    worker_lost? = error["code"] in ["worker_down", "worker_unavailable"]
+    assert conn.status == if(worker_lost?, do: 503, else: 500)
+    error
   end
 
   defp continue(%{"continuation" => continuation} = scenario, calls, effects, mode, token) do
