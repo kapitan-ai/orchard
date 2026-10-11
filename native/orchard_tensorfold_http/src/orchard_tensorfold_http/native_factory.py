@@ -5,6 +5,7 @@ available only through an explicitly configured, identity-verified load call.
 """
 
 import json
+import math
 import os
 import stat
 from collections.abc import Callable
@@ -152,6 +153,20 @@ def _validate_custody_bounds(bounds: DriverBounds) -> None:
         raise ValueError("custody budget cannot hold the cache lease bound")
 
 
+def _validate_cancel_bound(bounds: DriverBounds, max_prefill_chunk_seconds: float) -> None:
+    # The scheduler checks cancellation between prefill chunks, so a cancel can
+    # wait for one whole chunk. The driver quarantines when the scheduler has not
+    # stopped within cancel_seconds, so that bound must exceed the longest chunk.
+    if (
+        type(max_prefill_chunk_seconds) not in (int, float)
+        or not math.isfinite(max_prefill_chunk_seconds)
+        or max_prefill_chunk_seconds <= 0
+    ):
+        raise ValueError("longest prefill chunk time must be finite and positive")
+    if bounds.cancel_seconds <= max_prefill_chunk_seconds:
+        raise ValueError("cancel bound does not exceed the longest prefill chunk")
+
+
 class NativeFactory:
     """No alternate loader/model/template is selected from a request field."""
 
@@ -164,13 +179,16 @@ class NativeFactory:
         max_bundle_bytes: int,
         prefill_step: int,
         cache_limit_bytes: int,
+        max_prefill_chunk_seconds: float,
     ):
         _validate_custody_bounds(bounds)
+        _validate_cancel_bound(bounds, max_prefill_chunk_seconds)
         self.bounds, self.model_path = bounds, model_path.absolute()
         self.max_bundle_files = positive_int(max_bundle_files, "bundle file bound")
         self.max_bundle_bytes = positive_int(max_bundle_bytes, "bundle byte bound")
         self.prefill_step = positive_int(prefill_step, "prefill step")
         self.cache_limit_bytes = positive_int(cache_limit_bytes, "MLX cache limit")
+        self.max_prefill_chunk_seconds = max_prefill_chunk_seconds
         # Bytes, not GiB: a unit slip would leave MLX almost no cache. The top
         # bound keeps the value inside the size_t that MLX accepts.
         if not MIN_CACHE_LIMIT <= cache_limit_bytes <= MAX_CACHE_LIMIT:

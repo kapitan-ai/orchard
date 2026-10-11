@@ -234,6 +234,7 @@ def test_local_configuration_constructs_explicit_backend_without_loading(tmp_pat
             "max_bundle_bytes": 10000,
             "prefill_step": 2,
             "cache_limit_bytes": 1073741824,
+            "max_prefill_chunk_seconds": 0.005,
         },
     }
     path.write_text(json.dumps(config))
@@ -261,6 +262,7 @@ def test_local_configuration_refuses_a_lease_bound_below_the_copy_peak(tmp_path,
             "max_bundle_bytes": 10000,
             "prefill_step": 2,
             "cache_limit_bytes": 1073741824,
+            "max_prefill_chunk_seconds": 0.005,
         },
     }
     path.write_text(json.dumps(config))
@@ -275,6 +277,7 @@ def test_local_configuration_requires_an_explicit_cache_limit(tmp_path, profile,
         "max_bundle_files": 10,
         "max_bundle_bytes": 10000,
         "prefill_step": 2,
+        "max_prefill_chunk_seconds": 0.005,
     }
     config = {"profile": asdict(profile), "bounds": asdict(native_bounds(bounds)), "native": native}
     path.write_text(json.dumps(config))
@@ -283,3 +286,21 @@ def test_local_configuration_requires_an_explicit_cache_limit(tmp_path, profile,
     native["cache_limit_bytes"] = 17179869184
     path.write_text(json.dumps(config))
     assert cli.configured_backend(path)._loader.cache_limit_bytes == 17179869184
+
+
+def test_local_configuration_requires_the_longest_prefill_chunk_time(tmp_path, profile, bounds):
+    path = tmp_path / "profile.json"
+    native = {
+        "model_path": str(tmp_path / "model"),
+        "max_bundle_files": 10,
+        "max_bundle_bytes": 10000,
+        "prefill_step": 2,
+        "cache_limit_bytes": 17179869184,
+    }
+    config = {"profile": asdict(profile), "bounds": asdict(native_bounds(bounds)), "native": native}
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="unsupported native configuration"):
+        cli.configured_backend(path)
+    native["max_prefill_chunk_seconds"] = 0.005
+    path.write_text(json.dumps(config))
+    assert cli.configured_backend(path)._loader.max_prefill_chunk_seconds == 0.005
