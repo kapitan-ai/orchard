@@ -33,6 +33,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
   alias Orchard.Node.ModelLoadFailure
+  alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
   alias Orchard.Node.ToolCapabilityCatalog
   alias Orchard.Node.WorkerCapabilityEvidence
@@ -293,6 +294,11 @@ defmodule Orchard.Node.ModelManager do
       # Inflight load exists — join or reject
       Map.has_key?(state.inflight_loads, key) ->
         handle_inflight_join(key, request, from, state)
+
+      # The previous runtime for this model is still being reaped: its exit is
+      # not confirmed, so a replacement could overlap it. Its slot stays taken.
+      MapSet.member?(RuntimeProcessReaper.pending_model_keys(), key) ->
+        {:reply, ModelLoadFailure.to_response(:model_capacity_exhausted), state}
 
       # No worker, no inflight — evict if needed, then start new acquisition task
       true ->
@@ -2351,7 +2357,11 @@ defmodule Orchard.Node.ModelManager do
       |> Enum.map(fn {key, _entry} -> key end)
       |> MapSet.new()
 
-    MapSet.union(inflight_keys, worker_keys) |> MapSet.size()
+    # A runtime whose exit is not yet confirmed still holds its slot.
+    inflight_keys
+    |> MapSet.union(worker_keys)
+    |> MapSet.union(RuntimeProcessReaper.pending_model_keys())
+    |> MapSet.size()
   end
 
   # -- Telemetry helpers -----------------------------------------------------

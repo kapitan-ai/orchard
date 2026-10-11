@@ -1,7 +1,10 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.ModelManager
+  alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerSupervisor
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
@@ -42,6 +45,50 @@ defmodule Orchard.Node.ModelManagerTest do
 
     assert worker_pid == fixture.worker_pid
     assert Process.alive?(worker_pid)
+  end
+
+  test "SPEC.md §4.9 no replacement starts while the previous runtime's exit is unconfirmed" do
+    :ok = ModelManager.reset()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    # A runtime without a launch identity cannot be proven stopped, so its lease
+    # stays pending after its owner dies.
+    {:ok, _ref} =
+      RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+        shutdown_timeout_ms: 200,
+        model_ref: %{model_id: "model/custody", version: "v1"},
+        os_identity: nil,
+        phase: :loaded,
+        socket_path: nil
+      })
+
+    Process.exit(owner_pid, :kill)
+
+    assert CustodyTestHelpers.wait_until(
+             fn ->
+               MapSet.member?(RuntimeProcessReaper.pending_model_keys(), {"model/custody", "v1"})
+             end,
+             2_000
+           )
+
+    response =
+      ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+        node_id: "node-local",
+        model_id: "model/custody",
+        version: "v1",
+        artifact_sha256: String.duplicate("0", 64),
+        preload: true,
+        deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+        artifact_source_uri: "file:///nonexistent"
+      })
+
+    assert response.failure_code == "model_capacity_exhausted"
+    assert :sys.get_state(ModelManager).inflight_loads == %{}
+
+    CustodyTestHelpers.stop_child(control_port, control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(10_000)
   end
 
   defp completion_fixture(opts) do

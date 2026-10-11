@@ -411,7 +411,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
-  test "owner-down reaping without launch identity cleans socket and lease without signaling" do
+  test "owner-down reaping without launch identity keeps the lease without signaling until the PID exits" do
     root = unique_root("owner-down-no-identity")
     socket_path = Path.join(root, "worker.sock")
     File.mkdir_p!(root)
@@ -440,10 +440,60 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
              })
 
     Process.exit(owner_pid, :kill)
-    CustodyTestHelpers.assert_reaper_empty!(1_000)
 
+    # Without a launch identity the reaper cannot prove a live PID is still ours,
+    # so it never signals it, and it cannot prove exit either: it keeps custody.
+    Process.sleep(300)
+    assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
     refute File.exists?(socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    CustodyTestHelpers.stop_child(control_port, control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(5_000)
+  end
+
+  test "an unreadable identity keeps custody and reports the model pending until exit is confirmed" do
+    root = unique_root("unreadable-identity")
+    fake_bin = Path.join(root, "fake-bin")
+    File.mkdir_p!(fake_bin)
+    File.write!(Path.join(fake_bin, "ps"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(fake_bin, "ps"), 0o755)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    {:ok, identity} = WorkerProcessLifecycle.process_identity(control_pid)
+    previous_path = System.fetch_env!("PATH")
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} =
+             RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+               shutdown_timeout_ms: @short_timeout_ms,
+               model_ref: %{model_id: "model/custody", version: "v1"},
+               os_identity: identity,
+               phase: :loaded,
+               socket_path: nil
+             })
+
+    # While `ps` fails the reaper cannot prove the PID is still ours: it must not
+    # signal it, must not drop the lease, and must report the model as pending.
+    System.put_env("PATH", fake_bin <> ":" <> previous_path)
+    Process.exit(owner_pid, :kill)
+    Process.sleep(600)
+
+    assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
+    assert RuntimeProcessReaper.pending_model_keys() == MapSet.new([{"model/custody", "v1"}])
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    # Once identity is readable again the reaper kills its own process, confirms
+    # the exit, and only then releases the lease.
+    System.put_env("PATH", previous_path)
+    CustodyTestHelpers.assert_reaper_empty!(10_000)
+    refute WorkerProcessLifecycle.os_process_alive?(control_pid)
+    assert RuntimeProcessReaper.pending_model_keys() == MapSet.new()
   end
 
   test "shutdown sweep without launch identity cleans socket without signaling" do

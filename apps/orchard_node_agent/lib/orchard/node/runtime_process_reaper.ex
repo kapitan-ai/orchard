@@ -23,6 +23,12 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   The budget always fits the supervisor shutdown budget, and every signal is
   gated on the identity snapshot so a recycled PID belonging to an unrelated
   process is never targeted.
+
+  A lease ends only when the process exit is confirmed: the PID is gone, or it
+  now belongs to a different process. A KILL that is not yet confirmed, or an
+  identity that cannot be read, keeps the lease and rechecks on a timer with
+  backoff. While a lease is being reaped, `pending_model_keys/0` reports its
+  model so the Node does not start a replacement or treat the slot as free.
   """
 
   use GenServer
@@ -51,12 +57,17 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           shutdown_timeout_ms: pos_integer(),
           socket_path: String.t() | nil,
           term_deadline: integer() | nil,
-          timer_ref: reference() | nil
+          timer_ref: reference() | nil,
+          reaping: boolean()
         }
 
   # Kept below the 5_000ms child_spec shutdown budget so the sweep can never be
   # cut short by a brutal kill from the supervisor.
   @sweep_budget_ms 4_000
+
+  # Recheck an unconfirmed exit with exponential backoff up to this cap.
+  @confirm_base_ms 200
+  @confirm_max_ms 5_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -85,6 +96,24 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   def watch(_, _, _), do: {:error, :invalid_lease}
+
+  @doc """
+  Model keys whose runtime the reaper is still stopping, as `{model_id, version}`.
+
+  A key stays here from the start of reaping until the process exit is confirmed.
+  """
+  @spec pending_model_keys() :: MapSet.t({String.t(), String.t()})
+  def pending_model_keys do
+    if Process.whereis(__MODULE__) do
+      try do
+        GenServer.call(__MODULE__, :pending_model_keys)
+      catch
+        :exit, _reason -> MapSet.new()
+      end
+    else
+      MapSet.new()
+    end
+  end
 
   @spec release(lease_ref()) :: :ok
   def release(ref) do
@@ -129,7 +158,8 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       shutdown_timeout_ms: Map.get(meta, :shutdown_timeout_ms, 1_000),
       socket_path: Map.get(meta, :socket_path),
       term_deadline: nil,
-      timer_ref: nil
+      timer_ref: nil,
+      reaping: false
     }
 
     state =
@@ -138,6 +168,17 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       |> put_in([Access.key(:owner_monitors), monitor_ref], ref)
 
     {:reply, {:ok, ref}, state}
+  end
+
+  def handle_call(:pending_model_keys, _from, state) do
+    keys =
+      for {_ref, %{reaping: true, model_ref: model_ref}} <- state.leases,
+          key = model_key(model_ref),
+          key != nil,
+          into: MapSet.new(),
+          do: key
+
+    {:reply, keys, state}
   end
 
   @impl true
@@ -173,17 +214,11 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   def handle_info({:escalate, ref}, state) do
-    case state.leases[ref] do
-      nil ->
-        {:noreply, state}
+    {:noreply, kill_until_confirmed(state, ref, 1)}
+  end
 
-      %{os_pid: os_pid, os_identity: os_identity} = _lease ->
-        if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          _ = WorkerProcessLifecycle.kill_owned_process_tree(os_pid, os_identity)
-        end
-
-        {:noreply, cleanup_lease(state, ref)}
-    end
+  def handle_info({:confirm_exit, ref, attempt}, state) do
+    {:noreply, kill_until_confirmed(state, ref, attempt)}
   end
 
   def handle_info({:EXIT, _pid, :normal}, state) do
@@ -256,6 +291,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         state
 
       %{os_pid: os_pid, shutdown_timeout_ms: timeout, timer_ref: nil} = lease ->
+        state = put_in(state, [Access.key(:leases), ref, :reaping], true)
         log_reap(lease, reason)
         _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
@@ -274,19 +310,85 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     signal_result =
       WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
 
-    if WorkerProcessLifecycle.custody_refused?(signal_result) do
-      cleanup_lease(state, ref)
-    else
-      timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+    cond do
+      signal_result == {:error, :identity_mismatch} ->
+        # The PID now belongs to another process, so ours has exited.
+        cleanup_lease(state, ref)
 
-      state
-      |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-      |> put_in(
-        [Access.key(:leases), ref, :term_deadline],
-        System.monotonic_time(:millisecond) + timeout
-      )
+      WorkerProcessLifecycle.custody_refused?(signal_result) ->
+        # An unreadable identity proves nothing; keep custody and recheck.
+        schedule_confirm(state, ref, 1)
+
+      true ->
+        start_term_grace(state, ref, timeout)
     end
   end
+
+  defp start_term_grace(state, ref, timeout) do
+    timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+
+    state
+    |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+    |> put_in(
+      [Access.key(:leases), ref, :term_deadline],
+      System.monotonic_time(:millisecond) + timeout
+    )
+  end
+
+  defp kill_until_confirmed(state, ref, attempt) do
+    case state.leases[ref] do
+      nil ->
+        state
+
+      lease ->
+        if exit_confirmed?(lease) do
+          cleanup_lease(state, ref)
+        else
+          log_unconfirmed_exit(lease, attempt)
+          _ = WorkerProcessLifecycle.kill_owned_process_tree(lease.os_pid, lease.os_identity)
+          schedule_confirm(state, ref, attempt + 1)
+        end
+    end
+  end
+
+  # Exit is confirmed when the process is gone, or when its PID now belongs to a
+  # different process. A missing or unreadable identity is not proof.
+  defp exit_confirmed?(%{os_pid: os_pid, os_identity: identity}) do
+    cond do
+      not WorkerProcessLifecycle.os_process_alive?(os_pid) ->
+        true
+
+      is_nil(identity) ->
+        false
+
+      true ->
+        case WorkerProcessLifecycle.process_identity(os_pid) do
+          {:ok, current} -> current != identity
+          {:error, :identity_unavailable} -> false
+        end
+    end
+  end
+
+  defp schedule_confirm(state, ref, attempt) do
+    delay_ms = min(@confirm_base_ms * Integer.pow(2, min(attempt - 1, 5)), @confirm_max_ms)
+    timer_ref = Process.send_after(self(), {:confirm_exit, ref, attempt}, delay_ms)
+
+    state
+    |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+    |> put_in([Access.key(:leases), ref, :reaping], true)
+  end
+
+  defp log_unconfirmed_exit(lease, attempt) when attempt == 1 or rem(attempt, 10) == 0 do
+    Logger.warning(
+      "worker process exit not yet confirmed; keeping custody " <>
+        inspect(%{model_ref: lease.model_ref, os_pid: lease.os_pid, attempt: attempt})
+    )
+  end
+
+  defp log_unconfirmed_exit(_lease, _attempt), do: :ok
+
+  defp model_key(%{model_id: model_id, version: version}), do: {model_id, version}
+  defp model_key(_model_ref), do: nil
 
   defp cleanup_lease(state, ref) do
     case Map.pop(state.leases, ref) do
