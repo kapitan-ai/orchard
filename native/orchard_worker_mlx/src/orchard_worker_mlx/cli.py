@@ -208,6 +208,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if strict_prefix is not None:
             if args.backend != "mlx":
                 raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --backend=mlx")
+            if args.prefix_cache_mode != "disabled":
+                raise ValueError(
+                    f"{STRICT_PREFIX_ENV}=enabled requires --prefix-cache-mode disabled "
+                    "(ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled)"
+                )
             if args.generation_mode != "stream":
                 raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --generation-mode=stream")
             if args.memory_budget_mode == "enforce":

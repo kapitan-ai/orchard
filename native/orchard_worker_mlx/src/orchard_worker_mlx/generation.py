@@ -2779,13 +2779,14 @@ def generate_events(
         if stream is not None:
             _close_stream(stream, cancelled=True)
 
-        _emit_prefix_cache_log(
-            prompt_tokens=prompt_tokens,
-            lookup=lookup_result,
-            store=store_result,
-            final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
-        )
-        if strict_store is not None and strict_plan is not None:
+        if strict_store is None:
+            _emit_prefix_cache_log(
+                prompt_tokens=prompt_tokens,
+                lookup=lookup_result,
+                store=store_result,
+                final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
+            )
+        elif strict_plan is not None:
             _emit_strict_prefix_log(
                 prompt_tokens=prompt_tokens,
                 plan=strict_plan,

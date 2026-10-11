@@ -70,6 +70,7 @@ CAPTURE_SKIPPED_EMPTY_KEY = "skipped_empty_key"
 CAPTURE_SKIPPED_UNMEASURABLE = "skipped_unmeasurable"
 CAPTURE_SKIPPED_OVERSIZE = "skipped_oversize"
 CAPTURE_SKIPPED_NO_SLOT = "skipped_no_slot"
+CAPTURE_SKIPPED_ALREADY_HELD = "skipped_already_held"
 CAPTURE_COPY_FAILED = "copy_failed"
 CAPTURE_FAILED = "capture_failed"
 
@@ -328,9 +329,11 @@ class StrictPrefixCheckpointStore:
             with self._lock:
                 # A retained snapshot that cannot be restored would fail
                 # every later lookup, so drop it and release its settled charge.
-                self._slots.remove(best)
+                best.borrowed = False
+                if best in self._slots:
+                    self._slots.remove(best)
+                    self._evictions += 1
                 self._restore_failures += 1
-                self._evictions += 1
             return StrictPrefixLookup(status=LOOKUP_RESTORE_FAILED)
 
         width = len(best.key)
@@ -357,6 +360,13 @@ class StrictPrefixCheckpointStore:
             return CaptureOutcome(status=CAPTURE_SKIPPED_UNMEASURABLE)
 
         with self._lock:
+            # A held checkpoint for the same key is already exact, so keep it
+            # rather than drop it before a copy that might fail.
+            if any(
+                slot.key == frozen_key and slot.state in (_STAGED, _RETAINED)
+                for slot in self._slots
+            ):
+                return CaptureOutcome(CAPTURE_SKIPPED_ALREADY_HELD, snapshot_bytes)
             if snapshot_bytes > self._slot_bytes:
                 self._skipped_oversize += 1
                 return CaptureOutcome(CAPTURE_SKIPPED_OVERSIZE, snapshot_bytes)
@@ -424,17 +434,7 @@ class StrictPrefixCheckpointStore:
         return self._clock
 
     def _reserve_locked(self, key: tuple[int, ...]) -> _Slot | None:
-        replaced = next(
-            (
-                slot
-                for slot in self._slots
-                if slot.key == key and slot.state == _RETAINED and not slot.borrowed
-            ),
-            None,
-        )
-        if replaced is not None:
-            self._slots.remove(replaced)
-        elif len(self._slots) >= self._max_slots:
+        if len(self._slots) >= self._max_slots:
             victims = [
                 slot for slot in self._slots if slot.state == _RETAINED and not slot.borrowed
             ]

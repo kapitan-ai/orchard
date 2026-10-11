@@ -606,13 +606,35 @@ def test_full_store_evicts_least_recently_used_retained_slot() -> None:
     assert (stats.retained, stats.evictions, stats.reserved_bytes) == (2, 1, 2 * SLOT_BYTES)
 
 
-def test_recapturing_the_same_key_replaces_it_in_place() -> None:
+def test_recapturing_a_held_key_keeps_the_existing_checkpoint() -> None:
+    """A failing re-copy must not cost the exact checkpoint already held."""
     store = _store(slots=2)
     store.capture(TURN_1[:8], _cache_for(TURN_1[:8]))
-    store.capture(TURN_1[:8], _cache_for(TURN_1[:8]))
 
+    outcome = store.capture(TURN_1[:8], [_Uncopyable()])
+
+    assert outcome.status == "skipped_already_held"
     stats = store.stats()
-    assert (stats.retained, stats.evictions, stats.stores) == (1, 0, 2)
+    assert (stats.retained, stats.uncertain, stats.evictions, stats.stores) == (1, 0, 0, 1)
+    assert store.lookup(TURN_2).status == LOOKUP_HIT
+
+
+def test_restore_failure_after_the_slot_was_cleared_is_still_a_miss() -> None:
+    store = _store()
+
+    class _ClearsThenFails(_Uncopyable):
+        def __deepcopy__(self, _memo: Any) -> Any:
+            store.clear()
+            raise MemoryError("copy failed after unload")
+
+    store.capture(TURN_1[:8], _cache_for(TURN_1[:8]))
+    store._slots[0].snapshot = _ClearsThenFails()
+
+    lookup = store.lookup(TURN_2)
+
+    assert lookup.status == LOOKUP_RESTORE_FAILED
+    assert store.stats().restore_failures == 1
+    assert store.stats().evictions == 0
 
 
 def test_borrowed_slot_is_not_evicted_while_it_is_being_restored() -> None:
@@ -863,6 +885,7 @@ def test_strict_path_logs_one_structured_line(caplog: pytest.LogCaptureFixture) 
     assert "lookup_status=miss" in line
     assert "capture_status=stored" in line
     assert "capture_boundary=8" in line
+    assert not [r for r in caplog.records if "prefix_cache_request" in r.getMessage()]
 
 
 def test_strict_path_skips_the_prefill_workspace_probe() -> None:

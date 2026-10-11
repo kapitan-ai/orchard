@@ -345,7 +345,7 @@ def test_main_reads_strict_prefix_checkpoints_from_the_environment(monkeypatch) 
                 "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
             },
             ("--generation-mode", "stream"),
-            "requires mode 'disabled'",
+            "ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled",
         ),
         (
             {
