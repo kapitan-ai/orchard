@@ -115,6 +115,45 @@ def test_measured_bytes_cover_the_full_kv_buffer_and_recurrent_state() -> None:
     assert measured == 24 * 4 + 32 * 4 + 2 * (2 * 256 * 4 * 2)
 
 
+def _active_bytes() -> int:
+    import mlx.core as mx
+
+    mx.synchronize()
+    mx.clear_cache()
+    return mx.get_active_memory()
+
+
+def test_pinned_conv_state_storage_does_not_pin_the_chunk_buffer() -> None:
+    """Logical nbytes bounds what a checkpoint keeps alive on the pin.
+
+    The pinned qwen3_next and qwen3_5 layers store convolution history as
+    ``mx.contiguous(conv_input[:, -n_keep:, :])``.  A plain slice would keep
+    the whole prefill-chunk buffer alive; the stored form must not.
+    """
+    import mlx.core as mx
+
+    shape = (1, 2048 + 3, 4096)
+    parent_bytes = 2048 * 4096 * 2
+
+    base = _active_bytes()
+    conv_input = mx.ones(shape, dtype=mx.bfloat16)
+    view = conv_input[:, -3:, :]
+    mx.eval(view)
+    del conv_input
+    view_retained = _active_bytes() - base
+    del view
+
+    base = _active_bytes()
+    conv_input = mx.ones(shape, dtype=mx.bfloat16)
+    conv_state = mx.contiguous(conv_input[:, -3:, :])
+    mx.eval(conv_state)
+    del conv_input
+    stored_retained = _active_bytes() - base
+
+    assert view_retained >= parent_bytes
+    assert stored_retained < 2 * conv_state.nbytes + 16384
+
+
 def test_mlx_checkpoint_is_isolated_from_working_and_restored_mutation() -> None:
     working = _hybrid_cache()
     expected = _host_state(working)
