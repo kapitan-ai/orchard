@@ -254,6 +254,123 @@ def test_main_accepts_enforce_memory_budget_mode(monkeypatch) -> None:
     assert memory_budget_config.mode == "enforce"
 
 
+_STRICT_PREFIX_ENV_NAMES = (
+    "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS",
+    "ORCHARD_WORKER_STRICT_PREFIX_SLOTS",
+    "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES",
+    "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES",
+    "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER",
+)
+
+
+def _run_main_capturing_prefix_config(monkeypatch, env: dict[str, str], *extra: str) -> object:
+    from orchard_worker_mlx import cli
+
+    for name in _STRICT_PREFIX_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "serve", lambda *_args, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cli, "_configure_logging", lambda *_args: None)
+
+    assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "mlx", *extra]) == 0
+    return captured["prefix_cache_config"]
+
+
+def test_main_leaves_strict_prefix_checkpoints_off_by_default(monkeypatch) -> None:
+    config = _run_main_capturing_prefix_config(monkeypatch, {})
+
+    assert config.strict_prefix is None
+    assert config.mode == "kv"
+
+
+def test_main_reads_strict_prefix_checkpoints_from_the_environment(monkeypatch) -> None:
+    config = _run_main_capturing_prefix_config(
+        monkeypatch,
+        {
+            "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "enabled",
+            "ORCHARD_WORKER_STRICT_PREFIX_SLOTS": "2",
+            "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "9663676416",
+            "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "19327352832",
+            "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER": "<|im_start|>assistant\n",
+        },
+        "--prefix-cache-mode",
+        "disabled",
+        "--generation-mode",
+        "stream",
+    )
+
+    strict = config.strict_prefix
+    assert (strict.slots, strict.slot_bytes, strict.budget_bytes) == (2, 9663676416, 19327352832)
+    assert strict.reply_marker == "<|im_start|>assistant\n"
+
+
+@pytest.mark.parametrize(
+    ("env", "extra", "message"),
+    [
+        (
+            {
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
+                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
+            },
+            ("--prefix-cache-mode", "disabled", "--generation-mode", "batch"),
+            "requires --generation-mode=stream",
+        ),
+        (
+            {
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOTS": "2",
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
+                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "199",
+            },
+            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
+            "cannot hold 2 slots",
+        ),
+        (
+            {"ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100"},
+            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
+            "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES is required",
+        ),
+        (
+            {
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "9GiB",
+                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
+            },
+            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
+            "must be an integer",
+        ),
+        (
+            {
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
+                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
+            },
+            ("--generation-mode", "stream"),
+            "requires mode 'disabled'",
+        ),
+    ],
+)
+def test_main_refuses_unusable_strict_prefix_settings(
+    monkeypatch, capsys, env: dict[str, str], extra: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(SystemExit):
+        _run_main_capturing_prefix_config(
+            monkeypatch,
+            {"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "enabled", **env},
+            *extra,
+        )
+
+    assert message in capsys.readouterr().err
+
+
+def test_main_refuses_an_unknown_strict_prefix_mode(monkeypatch, capsys) -> None:
+    with pytest.raises(SystemExit):
+        _run_main_capturing_prefix_config(
+            monkeypatch, {"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "on"}
+        )
+
+    assert "must be disabled|enabled" in capsys.readouterr().err
+
+
 def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
     from orchard_worker_mlx import cli
 

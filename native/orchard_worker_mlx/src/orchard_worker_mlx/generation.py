@@ -73,6 +73,12 @@ from orchard_worker_mlx.backends import (
     valid_cache_affinity_fingerprint,
 )
 from orchard_worker_mlx.prefix_cache import PrefixCacheStats
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    LOOKUP_HIT,
+    CaptureHook,
+    StrictPrefixCheckpointStore,
+    capture_boundary,
+)
 from orchard_worker_mlx.tool_calling import (
     build_context as build_tool_calling_context,
 )
@@ -119,6 +125,23 @@ class _CacheLookupResult:
     remaining_tokens: int = 0
     lookup_ms: float = 0.0
     stats: PrefixCacheStats | None = None
+
+
+_STRICT_LOOKUP_UNAVAILABLE = "unavailable"
+_STRICT_LOOKUP_IDENTITY_MISMATCH = "identity_mismatch"
+_STRICT_CAPTURE_NOT_TARGETED = "not_targeted"
+
+
+@dataclass(slots=True)
+class _StrictPrefixPlan:
+    """Request-local strict-prefix restore and capture plan."""
+
+    lookup_status: str
+    stream_prompt_ids: list[int]
+    prompt_cache: Any = None
+    matched_tokens: int = 0
+    lookup_ms: float = 0.0
+    hook: CaptureHook | None = None
 
 
 @dataclass(slots=True)
@@ -2257,6 +2280,104 @@ def _maybe_store_prompt_cache(
 
 
 # ---------------------------------------------------------------------------
+# Strict-prefix checkpoint helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_strict_prefix_checkpoint(
+    session: Any,
+    store: StrictPrefixCheckpointStore,
+    prompt_ids: list[int],
+    *,
+    deps: GenerationDeps,
+    forward: Callable[[int, int], None],
+) -> _StrictPrefixPlan:
+    """Restore a strictly shorter checkpoint and arm one capture.
+
+    The request always gets a prompt cache it owns, either restored or fresh,
+    so the capture hook can copy that cache at the chosen chunk boundary.
+    """
+    step = _prefill_step_size(session)
+    if deps.make_prompt_cache is None:
+        return _StrictPrefixPlan(_STRICT_LOOKUP_UNAVAILABLE, stream_prompt_ids=prompt_ids)
+    if store.identity.prefill_step_size != step:
+        return _StrictPrefixPlan(_STRICT_LOOKUP_IDENTITY_MISMATCH, stream_prompt_ids=prompt_ids)
+
+    t0 = time.monotonic()
+    lookup = store.lookup(prompt_ids)
+    if lookup.status == LOOKUP_HIT:
+        prompt_cache = lookup.prompt_cache
+        matched = lookup.matched_length
+        stream_prompt_ids = cast(list[int], lookup.remaining_ids)
+    else:
+        try:
+            prompt_cache = deps.make_prompt_cache(session.model)
+        except Exception:
+            logger.warning("strict_prefix_checkpoint fresh cache failed", exc_info=True)
+            return _StrictPrefixPlan(_STRICT_LOOKUP_UNAVAILABLE, stream_prompt_ids=prompt_ids)
+        matched = 0
+        stream_prompt_ids = prompt_ids
+    lookup_ms = (time.monotonic() - t0) * 1000.0
+
+    boundary = capture_boundary(
+        prompt_ids,
+        matched_length=matched,
+        prefill_step_size=step,
+        reply_marker_ids=store.reply_marker_ids,
+    )
+    hook = None
+    if boundary is not None:
+        hook = CaptureHook(
+            store=store,
+            prompt_cache=prompt_cache,
+            prompt_ids=prompt_ids,
+            matched_length=matched,
+            boundary=boundary,
+            forward=forward,
+        )
+    return _StrictPrefixPlan(
+        lookup_status=lookup.status,
+        stream_prompt_ids=stream_prompt_ids,
+        prompt_cache=prompt_cache,
+        matched_tokens=matched,
+        lookup_ms=lookup_ms,
+        hook=hook,
+    )
+
+
+def _emit_strict_prefix_log(
+    *,
+    prompt_tokens: int,
+    plan: _StrictPrefixPlan,
+    store: StrictPrefixCheckpointStore,
+) -> None:
+    """Emit one structured strict-prefix line per request.  Never raises."""
+    try:
+        hook = plan.hook
+        capture_status = hook.outcome.status if hook is not None else _STRICT_CAPTURE_NOT_TARGETED
+        stats = store.stats()
+        logger.info(
+            "strict_prefix_checkpoint_request "
+            "lookup_status=%s prompt_tokens=%d matched_tokens=%d remaining_tokens=%d "
+            "lookup_ms=%.3f capture_status=%s capture_boundary=%d snapshot_bytes=%d "
+            "retained=%d uncertain=%d reserved_bytes=%d",
+            plan.lookup_status,
+            prompt_tokens,
+            plan.matched_tokens,
+            len(plan.stream_prompt_ids),
+            plan.lookup_ms,
+            capture_status,
+            hook.boundary if hook is not None else 0,
+            hook.outcome.snapshot_bytes if hook is not None else 0,
+            stats.retained,
+            stats.uncertain,
+            stats.reserved_bytes,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -2323,6 +2444,10 @@ def generate_events(
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
     store_result = _CacheStoreResult()
     stream: Any | None = None
+    strict_store = getattr(session, "strict_prefix_checkpoints", None)
+    if deps.uses_shared_batch_runtime or not isinstance(strict_store, StrictPrefixCheckpointStore):
+        strict_store = None
+    strict_plan: _StrictPrefixPlan | None = None
 
     try:
         if max_output_tokens <= 0:
@@ -2360,7 +2485,20 @@ def generate_events(
 
         request_prompt_cache = None
         stream_prompt_ids = prompt_ids
-        if not deps.uses_shared_batch_runtime:
+        stream_progress_callback: Callable[[int, int], None] = progress_callback
+        if strict_store is not None:
+            strict_plan = _prepare_strict_prefix_checkpoint(
+                session,
+                strict_store,
+                prompt_ids,
+                deps=deps,
+                forward=progress_callback,
+            )
+            request_prompt_cache = strict_plan.prompt_cache
+            stream_prompt_ids = strict_plan.stream_prompt_ids
+            if strict_plan.hook is not None:
+                stream_progress_callback = strict_plan.hook
+        elif not deps.uses_shared_batch_runtime:
             lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
             request_prompt_cache = lookup_result.prompt_cache
             stream_prompt_ids = lookup_result.stream_prompt_ids
@@ -2369,7 +2507,7 @@ def generate_events(
             "max_tokens": max_output_tokens,
             "sampler": sampler,
             "prefill_step_size": _prefill_step_size(session),
-            "prompt_progress_callback": progress_callback,
+            "prompt_progress_callback": stream_progress_callback,
         }
         if request_prompt_cache is not None:
             stream_kwargs["prompt_cache"] = request_prompt_cache
@@ -2644,6 +2782,12 @@ def generate_events(
             store=store_result,
             final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
         )
+        if strict_store is not None and strict_plan is not None:
+            _emit_strict_prefix_log(
+                prompt_tokens=prompt_tokens,
+                plan=strict_plan,
+                store=strict_store,
+            )
         if not deps.uses_shared_batch_runtime:
             _synchronize_then_clear_session_cache(session, deps.synchronize)
 

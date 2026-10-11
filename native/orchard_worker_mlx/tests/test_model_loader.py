@@ -37,6 +37,10 @@ from orchard_worker_mlx.model_loader import (
     unload_session,
 )
 from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    StrictPrefixCheckpointConfig,
+    StrictPrefixCheckpointStore,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -2154,6 +2158,7 @@ class TestDefaultMlxDepsSamplerWiring:
         fake_mx = types.SimpleNamespace(
             eval=lambda t: None,
             clear_cache=lambda: None,
+            __version__="0.31.2",
         )
         fake_stream_generate = MagicMock(name="stream_generate")
         fake_load_model = MagicMock(name="load_model")
@@ -2167,7 +2172,7 @@ class TestDefaultMlxDepsSamplerWiring:
         # Inject fake mlx_lm.sample_utils with make_sampler
         fake_make_sampler = MagicMock(name="make_sampler")
         fake_sample_utils = types.SimpleNamespace(make_sampler=fake_make_sampler)
-        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules["mlx_lm"] = types.SimpleNamespace(__version__="0.31.3")
         sys.modules["mlx_lm.sample_utils"] = fake_sample_utils
 
         try:
@@ -2177,6 +2182,8 @@ class TestDefaultMlxDepsSamplerWiring:
             assert deps.stream_generate is fake_stream_generate
             assert deps.eval_fn is fake_mx.eval
             assert deps.clear_cache is fake_mx.clear_cache
+            assert deps.runtime_versions is not None
+            assert deps.runtime_versions() == {"mlx": "0.31.2", "mlx_lm": "0.31.3"}
         finally:
             # Cleanup sys.modules
             sys.modules.pop("mlx_lm.sample_utils", None)
@@ -2419,3 +2426,157 @@ class TestDefaultMlxDepsSamplerWiring:
             assert deps.stream_generate is fake_stream_generate
         finally:
             sys.modules.pop("mlx_lm", None)
+
+
+# ===========================================================================
+# Strict-prefix checkpoints (default off, refused unless supported)
+# ===========================================================================
+
+
+class KVCache:
+    pass
+
+
+class ArraysCache:
+    pass
+
+
+class RotatingKVCache:
+    pass
+
+
+def _strict_prefix_config(**overrides: Any) -> PrefixCacheLoadConfig:
+    strict = StrictPrefixCheckpointConfig(
+        slots=overrides.pop("slots", 1),
+        slot_bytes=overrides.pop("slot_bytes", 1 << 20),
+        budget_bytes=overrides.pop("budget_bytes", 1 << 20),
+    )
+    return PrefixCacheLoadConfig(mode="disabled", strict_prefix=strict)
+
+
+def _strict_prefix_deps(
+    *,
+    layers: tuple[type, ...] = (ArraysCache, ArraysCache, ArraysCache, KVCache),
+    versions: dict[str, str] | None = None,
+    runtime_versions_available: bool = True,
+) -> MLXDeps:
+    effective_versions = versions or {"mlx": "0.31.2", "mlx_lm": "0.31.3"}
+    return replace(
+        _make_fake_deps(warmup_encode_result=[90, 91]),
+        make_prompt_cache=lambda _model: [layer() for layer in layers],
+        runtime_versions=(lambda: effective_versions) if runtime_versions_available else None,
+    )
+
+
+def _load_strict(
+    bundle: Path,
+    deps: MLXDeps,
+    *,
+    prefix_cache_config: PrefixCacheLoadConfig | None = None,
+    generation_mode: str = "stream",
+) -> LoadedModelSession:
+    return load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(bundle),
+        deps=deps,
+        prefix_cache_config=prefix_cache_config or _strict_prefix_config(),
+        generation_config=GenerationRuntimeConfig(mode=generation_mode),
+    )
+
+
+def test_strict_prefix_checkpoints_are_off_by_default(writable_bundle: Path) -> None:
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=_strict_prefix_deps(),
+    )
+
+    assert PrefixCacheLoadConfig().strict_prefix is None
+    assert session.strict_prefix_checkpoints is None
+    assert isinstance(session.prefix_cache, KVPrefixCache)
+
+
+def test_strict_prefix_store_is_built_for_a_supported_hybrid_cache(writable_bundle: Path) -> None:
+    session = _load_strict(writable_bundle, _strict_prefix_deps())
+
+    store = session.strict_prefix_checkpoints
+    assert isinstance(store, StrictPrefixCheckpointStore)
+    assert session.prefix_cache is None
+    assert store.reply_marker_ids == (90, 91)
+    assert store.identity.mlx_lm_version == "0.31.3"
+    assert store.identity.mlx_version == "0.31.2"
+    assert store.identity.prefill_step_size == session.prefill_step_size
+    assert store.identity.layer_types == ("ArraysCache", "ArraysCache", "ArraysCache", "KVCache")
+    assert store.identity.artifact_sha256 == session.manifest.sha256
+    assert store.stats().slots == 1
+
+    unload_session(session)
+    assert session.strict_prefix_checkpoints is None
+
+
+def test_strict_prefix_config_requires_trim_cache_mode_disabled() -> None:
+    strict = StrictPrefixCheckpointConfig(slot_bytes=1, budget_bytes=1)
+
+    with pytest.raises(ValueError, match="requires mode 'disabled'"):
+        PrefixCacheLoadConfig(mode="kv", strict_prefix=strict)
+    with pytest.raises(ValueError, match="StrictPrefixCheckpointConfig"):
+        PrefixCacheLoadConfig(mode="disabled", strict_prefix={"slots": 1})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("deps_kwargs", "generation_mode", "config_kwargs", "message"),
+    [
+        ({}, "batch", {}, "generation mode 'stream'"),
+        ({"versions": {"mlx": "0.31.2", "mlx_lm": "0.32.0"}}, "stream", {}, "mlx-lm 0.31.3"),
+        ({"runtime_versions_available": False}, "stream", {}, "mlx-lm 0.31.3"),
+        ({"layers": (KVCache, RotatingKVCache)}, "stream", {}, "RotatingKVCache"),
+        ({"layers": ()}, "stream", {}, "cache layers"),
+        (
+            {},
+            "stream",
+            {"slots": 2, "slot_bytes": 8 << 30, "budget_bytes": 16 << 30},
+            "exceeds estimated headroom",
+        ),
+    ],
+)
+def test_strict_prefix_load_is_refused_when_unsupported(
+    writable_bundle: Path,
+    deps_kwargs: dict[str, Any],
+    generation_mode: str,
+    config_kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    deps = _strict_prefix_deps(**deps_kwargs)
+
+    with pytest.raises(ModelLoaderError, match=message) as exc_info:
+        _load_strict(
+            writable_bundle,
+            deps,
+            prefix_cache_config=_strict_prefix_config(**config_kwargs),
+            generation_mode=generation_mode,
+        )
+
+    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+
+
+def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
+    writable_bundle: Path,
+) -> None:
+    deps = _strict_prefix_deps()
+    tokenizer = deps.load_tokenizer("unused")
+    tokenizer.encode = MagicMock(side_effect=[[1, 2, 3], []])
+
+    with pytest.raises(ModelLoaderError, match="tokenizes to no tokens"):
+        _load_strict(writable_bundle, deps)
+
+
+def test_strict_prefix_load_is_refused_when_the_probe_raises(writable_bundle: Path) -> None:
+    def broken_probe(_model: Any) -> Any:
+        raise RuntimeError("probe failed")
+
+    deps = replace(_strict_prefix_deps(), make_prompt_cache=broken_probe)
+
+    with pytest.raises(ModelLoaderError, match="probe failed"):
+        _load_strict(writable_bundle, deps)
