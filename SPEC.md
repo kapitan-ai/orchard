@@ -1967,6 +1967,7 @@ Retry rule:
 * no different eligible Node preserves the original public failure and records `no_alternative_node`
 
 Caller disconnect SHALL map consistently across pre-dispatch, capacity-gate, and runtime-drain phases to Request state `cancelled`, attempt event `request_step.cancelled` after an attempt starts, durable code `request_caller_disconnect`, retry decision `cancelled`, HTTP status `499` when a response remains deliverable, and public code `request_cancelled`.
+On a streaming route the Controller detects a closed client socket only when a write fails. While a Runtime Endpoint execution is in progress and before its terminal event, the Controller SHALL write the SSE comment line `: keepalive` at the configured `sse_keepalive_interval_ms` (default 5 seconds), so that a disconnect during a long prefill is found within about two intervals. A keepalive comment is not an inference event: it SHALL NOT be persisted, counted, or treated as output, Output Commitment, acceptance, or a retry input, and it SHALL NOT be written after the terminal event, `[DONE]`, or a stream error. A failed keepalive write is a caller disconnect under this rule. A keepalive probe that fails for any other reason SHALL stop probing and SHALL NOT fail the attempt. Queue, scheduling, model-load, and capacity-gate waits before execution are not probed.
 Controller or process failure without caller cancellation SHALL remain `interrupted`.
 
 Runtime Endpoint disconnect and channel cleanup failures are cleanup-only failures.
@@ -2602,6 +2603,7 @@ Streaming behavior:
 * final line `[DONE]`
 * if `stream_options.include_usage=true`, emit final usage chunk before `[DONE]`
 * when a completion terminates by producing tool calls, the terminal chunk SHALL use `finish_reason: "tool_calls"`
+* while an execution is in progress, the Controller SHALL write the SSE comment line `: keepalive` at the configured interval, as §5.9 defines
 
 If an error occurs **after** streaming has started:
 
@@ -2736,6 +2738,8 @@ Streaming behavior:
   * `response.output_text.done` if any text deltas were emitted
   * `response.completed` or `response.failed`
 
+* while an execution is in progress, the Controller SHALL write the SSE comment line `: keepalive` at the configured interval, as §5.9 defines
+
 The Responses API in OpenAI’s current documentation uses typed semantic streaming events; this platform SHALL mirror that model for the supported subset. ([OpenAI Developers][6])
 
 `store` behavior in this platform:
@@ -2800,8 +2804,11 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
 * `499` caller cancelled or disconnected when a response remains deliverable
-* `503` cluster busy / model busy / no eligible node
+* `503` cluster busy / model busy / no eligible node / Worker lost during the Request
 * `504` request timeout
+
+A non-streaming Request that fails because its Worker was lost SHALL return `503 server_error` with the stable Runtime Endpoint code `worker_down` or `worker_unavailable`, the same code that a streaming Request reports in its terminal error event.
+The status and code do not change retry behavior; §5.8 and §5.9 still decide whether the Controller retries.
 
 Reasoning-control failures use this closed mapping:
 
@@ -2883,6 +2890,8 @@ The first implementation task SHALL be the deterministic reusable corpus, fixtur
 Real-model, hardware, and named-client qualification SHALL consume that corpus only after its deterministic lane passes.
 An OpenCode result SHALL identify the exact client version and configuration and SHALL remain evidence for that client identity only.
 No result from this profile SHALL activate Qwen3.8, claim general OpenCode or agent-client support, or select TensorFold or any other project as an Orchard runtime foundation.
+
+A separately selected, default-off embedded TensorFold source experiment MAY use the existing Chat Completions and Responses request path without selecting a runtime foundation. Controller admission SHALL retain the authorized canonical history, authoritative rendered bytes and token IDs, exact rendered explicit medium effort and legacy-blended output, and an operator-frozen model/version/artifact/template/tokenizer-configuration profile. The authoritative token IDs SHALL be the rendered-effort tokenizer helper's whole-prompt encoding without added special tokens, returned only when they agree with its token count. Dispatch SHALL preserve them for the selected route regardless of `tokenizer_safe_mode`, and SHALL require the Worker's current token-ID capability. A selected request without valid IDs, or whose deadline, input token count, output allowance or their sum exceeds an optional frozen profile limit, SHALL fail before Worker execution as `runtime_incompatible`. Selection SHALL require an explicit eligible Node allowlist, never public metadata or generic capability observations. The Node SHALL verify a bounded fresh loaded profile offer on its owned Worker channel before Accepted, bind its incarnation and retain the immutable request for start. Missing or mismatched offers SHALL reject without fallback to an ordinary Worker; every retry SHALL obtain a fresh binding. Unsupported controls and structured prior reasoning SHALL reject before generation. A `tool_choice` of `auto` with declared tools is the default tool behavior and SHALL be admitted; every other explicit tool choice is an unsupported control. This source permission grants no model load, native execution, memory-fit, cancellation settlement, process-reap or support qualification; those require separately authorized bounded evidence.
 
 ---
 

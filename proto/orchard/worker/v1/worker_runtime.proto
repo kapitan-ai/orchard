@@ -139,6 +139,13 @@ message WorkerStatusResponse {
   // Observe-only capability evidence; nil/omitted means absent. Non-gating in
   // this slice (see WorkerCapabilities).
   WorkerCapabilities capabilities = 10;
+  // At most 4096 bytes; empty means absent. Schema-1 identity offer only for an
+  // explicitly configured TensorFold experiment on the Node-owned socket.
+  // Binds profile/model/version/artifact/template/config/effort/output/incarnation
+  // so its source-controlled caller can construct the history projection.
+  // Separate from generic observe-only capabilities: never heartbeat evidence,
+  // shared scheduler admission, public discovery, or a support/readiness claim.
+  bytes tensorfold_profile_admission_json = 11;
 }
 
 message LoadModelRequest {
