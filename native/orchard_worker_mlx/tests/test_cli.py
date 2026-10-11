@@ -347,6 +347,21 @@ def test_main_reads_strict_prefix_checkpoints_from_the_environment(monkeypatch) 
             ("--generation-mode", "stream"),
             "requires mode 'disabled'",
         ),
+        (
+            {
+                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
+                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
+            },
+            (
+                "--prefix-cache-mode",
+                "disabled",
+                "--generation-mode",
+                "stream",
+                "--memory-budget-mode",
+                "enforce",
+            ),
+            "--memory-budget-mode disabled or observe",
+        ),
     ],
 )
 def test_main_refuses_unusable_strict_prefix_settings(
@@ -360,6 +375,30 @@ def test_main_refuses_unusable_strict_prefix_settings(
         )
 
     assert message in capsys.readouterr().err
+
+
+def test_main_refuses_strict_prefix_with_the_stub_backend(monkeypatch, capsys) -> None:
+    from orchard_worker_mlx import cli
+
+    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", "enabled")
+    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES", "100")
+    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES", "100")
+    monkeypatch.setattr(cli, "serve", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_configure_logging", lambda *_args: None)
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--backend",
+                "stub",
+                "--prefix-cache-mode",
+                "disabled",
+            ]
+        )
+
+    assert "requires --backend=mlx" in capsys.readouterr().err
 
 
 def test_main_refuses_an_unknown_strict_prefix_mode(monkeypatch, capsys) -> None:

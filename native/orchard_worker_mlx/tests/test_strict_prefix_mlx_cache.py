@@ -83,6 +83,7 @@ def _store() -> StrictPrefixCheckpointStore:
             artifact_sha256=None,
             mlx_version=str(mx.__version__),
             mlx_lm_version="0.31.3",
+            mlx_lm_commit="ab1806e8f5d6aa035973af194a1b9198ab4754dc",
             prefill_step_size=4,
             layer_types=("ArraysCache", "KVCache"),
         ),
@@ -113,6 +114,21 @@ def test_measured_bytes_cover_the_full_kv_buffer_and_recurrent_state() -> None:
     assert full.keys.shape[2] == 256
     assert measured == linear.nbytes + full.nbytes
     assert measured == 24 * 4 + 32 * 4 + 2 * (2 * 256 * 4 * 2)
+
+
+def test_installed_mlx_lm_reports_the_held_pin() -> None:
+    from orchard_worker_mlx.model_loader import _default_mlx_deps
+    from orchard_worker_mlx.strict_prefix_checkpoints import (
+        SUPPORTED_MLX_LM_COMMIT,
+        SUPPORTED_MLX_LM_VERSION,
+    )
+
+    deps = _default_mlx_deps()
+    assert deps.runtime_versions is not None
+    versions = deps.runtime_versions()
+
+    assert versions["mlx_lm"] == SUPPORTED_MLX_LM_VERSION
+    assert versions["mlx_lm_commit"] == SUPPORTED_MLX_LM_COMMIT
 
 
 def _active_bytes() -> int:

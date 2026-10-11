@@ -187,6 +187,7 @@ def _identity(step: int = STEP) -> CheckpointIdentity:
         artifact_sha256=None,
         mlx_version="0.31.2",
         mlx_lm_version="0.31.3",
+        mlx_lm_commit="ab1806e8f5d6aa035973af194a1b9198ab4754dc",
         prefill_step_size=step,
         layer_types=("ArraysCache", "ArraysCache", "ArraysCache", "KVCache"),
     )
@@ -269,6 +270,11 @@ TURN_2 = [*TURN_1[:10], 40, 41, 42, 43, 44, 45, 46, *MARKER, 6]
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+def test_config_requires_slot_and_budget_bytes() -> None:
+    with pytest.raises(TypeError):
+        StrictPrefixCheckpointConfig()  # type: ignore[call-arg]
 
 
 def test_config_refuses_budget_that_cannot_hold_configured_slots() -> None:
@@ -367,8 +373,10 @@ def test_restore_copy_failure_is_a_harmless_miss() -> None:
 
     assert lookup.status == LOOKUP_RESTORE_FAILED
     assert lookup.prompt_cache is None
-    assert store.stats().restore_failures == 1
-    assert store.stats().retained == 1
+    stats = store.stats()
+    assert (stats.restore_failures, stats.retained, stats.reserved_bytes) == (1, 0, 0)
+    # The unrestorable checkpoint is dropped, so it is not retried.
+    assert store.lookup(TURN_2).status == LOOKUP_MISS
 
 
 def test_restore_materialize_failure_is_a_harmless_miss() -> None:
@@ -376,7 +384,7 @@ def test_restore_materialize_failure_is_a_harmless_miss() -> None:
 
     def materialize(_arrays: list[Any]) -> None:
         calls.append(len(calls))
-        if len(calls) > 1:
+        if len(calls) == 2:
             raise MemoryError("restore eval failed")
 
     store = _store(materialize=materialize)
@@ -387,8 +395,9 @@ def test_restore_materialize_failure_is_a_harmless_miss() -> None:
     assert lookup.status == LOOKUP_RESTORE_FAILED
     assert lookup.prompt_cache is None
     stats = store.stats()
-    assert (stats.restore_failures, stats.retained, stats.hits) == (1, 1, 0)
-    assert not store._slots[0].borrowed
+    assert (stats.restore_failures, stats.retained, stats.hits, stats.evictions) == (1, 0, 0, 1)
+    assert store.lookup(TURN_2).status == LOOKUP_MISS
+    assert store.capture(TURN_1[:8], _cache_for(TURN_1[:8])).status == CAPTURE_STORED
 
 
 def test_restore_failure_falls_back_to_a_cold_prefill() -> None:

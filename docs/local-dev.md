@@ -1480,7 +1480,9 @@ refuses to start or load when the settings are inconsistent:
 - The budget must hold every slot, and must fit the estimated memory headroom
   when the Worker knows it. The published headroom and recommended context do
   not subtract the checkpoint budget.
-- mlx-lm must be 0.31.3, and the model cache must use only `KVCache` and
+- `ORCHARD_WORKER_BACKEND` must be `mlx`.
+- mlx-lm must be 0.31.3 at the commit pinned in
+  `native/orchard_worker_mlx/pyproject.toml`, and the model cache must use only `KVCache` and
   `ArraysCache` layers. With the setting on, a model with other layer types
   fails to load instead of running without reuse.
 

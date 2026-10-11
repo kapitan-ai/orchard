@@ -2183,7 +2183,9 @@ class TestDefaultMlxDepsSamplerWiring:
             assert deps.eval_fn is fake_mx.eval
             assert deps.clear_cache is fake_mx.clear_cache
             assert deps.runtime_versions is not None
-            assert deps.runtime_versions() == {"mlx": "0.31.2", "mlx_lm": "0.31.3"}
+            versions = deps.runtime_versions()
+            assert (versions["mlx"], versions["mlx_lm"]) == ("0.31.2", "0.31.3")
+            assert isinstance(versions["mlx_lm_commit"], str)
         finally:
             # Cleanup sys.modules
             sys.modules.pop("mlx_lm.sample_utils", None)
@@ -2433,6 +2435,9 @@ class TestDefaultMlxDepsSamplerWiring:
 # ===========================================================================
 
 
+_PINNED_COMMIT = "ab1806e8f5d6aa035973af194a1b9198ab4754dc"
+
+
 class KVCache:
     pass
 
@@ -2460,7 +2465,11 @@ def _strict_prefix_deps(
     versions: dict[str, str] | None = None,
     runtime_versions_available: bool = True,
 ) -> MLXDeps:
-    effective_versions = versions or {"mlx": "0.31.2", "mlx_lm": "0.31.3"}
+    effective_versions = versions or {
+        "mlx": "0.31.2",
+        "mlx_lm": "0.31.3",
+        "mlx_lm_commit": _PINNED_COMMIT,
+    }
     return replace(
         _make_fake_deps(warmup_encode_result=[90, 91]),
         make_prompt_cache=lambda _model: [layer() for layer in layers],
@@ -2483,6 +2492,42 @@ def _load_strict(
         prefix_cache_config=prefix_cache_config or _strict_prefix_config(),
         generation_config=GenerationRuntimeConfig(mode=generation_mode),
     )
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "expected"),
+    [
+        (json.dumps({"vcs_info": {"commit_id": _PINNED_COMMIT}}), _PINNED_COMMIT),
+        (json.dumps({"url": "file:///wheel"}), ""),
+        (None, ""),
+        ("not json", ""),
+    ],
+)
+def test_installed_vcs_commit_reads_direct_url(
+    monkeypatch: pytest.MonkeyPatch, direct_url: str | None, expected: str
+) -> None:
+    import importlib.metadata
+
+    import orchard_worker_mlx.model_loader as ml
+
+    distribution = MagicMock()
+    distribution.read_text.return_value = direct_url
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: distribution)
+
+    assert ml._installed_vcs_commit("mlx-lm") == expected
+
+
+def test_installed_vcs_commit_is_empty_when_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.metadata
+
+    import orchard_worker_mlx.model_loader as ml
+
+    def missing(name: str) -> Any:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+
+    assert ml._installed_vcs_commit("mlx-lm") == ""
 
 
 def test_strict_prefix_checkpoints_are_off_by_default(writable_bundle: Path) -> None:
@@ -2576,8 +2621,20 @@ def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
     ("versions", "generation_mode", "memory_budget_mode", "message"),
     [
         ({"mlx_lm": "0.32.0"}, "stream", "observe", "mlx-lm 0.31.3"),
-        ({"mlx_lm": "0.31.3"}, "batch", "observe", "generation mode 'stream'"),
-        ({"mlx_lm": "0.31.3"}, "stream", "enforce", "memory-budget mode"),
+        ({"mlx_lm": "0.31.3", "mlx_lm_commit": "0" * 40}, "stream", "observe", "ab1806e8"),
+        ({"mlx_lm": "0.31.3"}, "stream", "observe", "ab1806e8"),
+        (
+            {"mlx_lm": "0.31.3", "mlx_lm_commit": _PINNED_COMMIT},
+            "batch",
+            "observe",
+            "generation mode 'stream'",
+        ),
+        (
+            {"mlx_lm": "0.31.3", "mlx_lm_commit": _PINNED_COMMIT},
+            "stream",
+            "enforce",
+            "memory-budget mode",
+        ),
     ],
 )
 def test_strict_prefix_runtime_refusals_happen_before_weights_load(

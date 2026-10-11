@@ -205,8 +205,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         strict_prefix = strict_prefix_config_from_env(os.environ)
-        if strict_prefix is not None and args.generation_mode != "stream":
-            raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --generation-mode=stream")
+        if strict_prefix is not None:
+            if args.backend != "mlx":
+                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --backend=mlx")
+            if args.generation_mode != "stream":
+                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --generation-mode=stream")
+            if args.memory_budget_mode == "enforce":
+                raise ValueError(
+                    f"{STRICT_PREFIX_ENV}=enabled requires --memory-budget-mode disabled or observe"
+                )
         prefix_cache_config = PrefixCacheLoadConfig(
             mode=args.prefix_cache_mode,
             max_entries=args.prefix_cache_max_entries,

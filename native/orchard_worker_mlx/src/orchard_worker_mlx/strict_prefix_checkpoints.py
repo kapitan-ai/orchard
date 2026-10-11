@@ -51,6 +51,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_MLX_LM_VERSION = "0.31.3"
+SUPPORTED_MLX_LM_COMMIT = "ab1806e8f5d6aa035973af194a1b9198ab4754dc"
 SUPPORTED_LAYER_TYPES = frozenset({"KVCache", "ArraysCache"})
 DEFAULT_REPLY_MARKER = "<|im_start|>assistant"
 MAX_SLOTS = 8
@@ -84,7 +85,7 @@ def _require_positive_int(name: str, value: Any) -> None:
         raise ValueError(f"{name} must be >= 1, got {value}")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, kw_only=True)
 class StrictPrefixCheckpointConfig:
     """Process-scoped settings for strict-prefix checkpoint reuse.
 
@@ -93,9 +94,9 @@ class StrictPrefixCheckpointConfig:
     startup instead of failing captures later.
     """
 
+    slot_bytes: int
+    budget_bytes: int
     slots: int = 1
-    slot_bytes: int = 0
-    budget_bytes: int = 0
     reply_marker: str = DEFAULT_REPLY_MARKER
 
     def __post_init__(self) -> None:
@@ -126,6 +127,7 @@ class CheckpointIdentity:
     artifact_sha256: str | None
     mlx_version: str
     mlx_lm_version: str
+    mlx_lm_commit: str
     prefill_step_size: int
     layer_types: tuple[str, ...]
 
@@ -169,7 +171,7 @@ class StrictPrefixCheckpointStats:
     evictions: int
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _Slot:
     key: tuple[int, ...]
     state: str
@@ -324,8 +326,11 @@ class StrictPrefixCheckpointStore:
         except Exception:
             logger.warning("strict_prefix_checkpoint restore copy failed", exc_info=True)
             with self._lock:
-                best.borrowed = False
+                # A retained snapshot that cannot be restored would fail
+                # every later lookup, so drop it and release its settled charge.
+                self._slots.remove(best)
                 self._restore_failures += 1
+                self._evictions += 1
             return StrictPrefixLookup(status=LOOKUP_RESTORE_FAILED)
 
         width = len(best.key)
@@ -468,7 +473,7 @@ class CaptureHook:
             )
         self._store = store
         self._prompt_cache = prompt_cache
-        self._key = tuple(prompt_ids[:boundary])
+        self._prompt_ids = prompt_ids
         self._target_processed = boundary - matched_length
         self._forward = forward
         self._armed = True
@@ -491,7 +496,9 @@ class CaptureHook:
             return
         self._armed = False
         try:
-            self.outcome = self._store.capture(self._key, self._prompt_cache)
+            self.outcome = self._store.capture(
+                self._prompt_ids[: self.boundary], self._prompt_cache
+            )
         except Exception:
             logger.warning("strict_prefix_checkpoint capture failed", exc_info=True)
             self.outcome = CaptureOutcome(status=CAPTURE_FAILED)

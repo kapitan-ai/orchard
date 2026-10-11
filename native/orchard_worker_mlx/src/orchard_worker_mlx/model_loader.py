@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.metadata
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ from orchard_worker_mlx.prefix_cache import (
 )
 from orchard_worker_mlx.strict_prefix_checkpoints import (
     SUPPORTED_LAYER_TYPES,
+    SUPPORTED_MLX_LM_COMMIT,
     SUPPORTED_MLX_LM_VERSION,
     CheckpointIdentity,
     StrictPrefixCheckpointConfig,
@@ -562,6 +564,16 @@ class MLXDeps:
     runtime_versions: Callable[[], Mapping[str, str]] | None = None
 
 
+def _installed_vcs_commit(distribution_name: str) -> str:
+    """Return the git commit a distribution was installed from, or ``""``."""
+    try:
+        raw = importlib.metadata.distribution(distribution_name).read_text("direct_url.json")
+        commit = json.loads(raw or "{}").get("vcs_info", {}).get("commit_id", "")
+    except (importlib.metadata.PackageNotFoundError, ValueError, AttributeError):
+        return ""
+    return commit if isinstance(commit, str) else ""
+
+
 def _import_required_mlx_runtime_modules() -> tuple:
     """Import the mandatory Python modules for MLX worker readiness.
 
@@ -669,6 +681,7 @@ def _default_mlx_deps() -> MLXDeps:
         return {
             "mlx": str(getattr(mx, "__version__", "")),
             "mlx_lm": str(getattr(mlx_lm, "__version__", "")),
+            "mlx_lm_commit": _installed_vcs_commit("mlx-lm"),
         }
 
     return MLXDeps(
@@ -1386,10 +1399,11 @@ def _check_strict_prefix_runtime(
     except Exception as exc:
         raise _refuse_strict_prefix(f"strict-prefix runtime version probe failed: {exc}") from exc
     mlx_lm_version = versions.get("mlx_lm", "")
-    if mlx_lm_version != SUPPORTED_MLX_LM_VERSION:
+    mlx_lm_commit = versions.get("mlx_lm_commit", "")
+    if mlx_lm_version != SUPPORTED_MLX_LM_VERSION or mlx_lm_commit != SUPPORTED_MLX_LM_COMMIT:
         raise _refuse_strict_prefix(
-            f"strict-prefix checkpoints support only mlx-lm {SUPPORTED_MLX_LM_VERSION}, "
-            f"got {mlx_lm_version!r}"
+            f"strict-prefix checkpoints support only mlx-lm {SUPPORTED_MLX_LM_VERSION} at "
+            f"{SUPPORTED_MLX_LM_COMMIT[:8]}, got {mlx_lm_version!r} at {mlx_lm_commit[:8]!r}"
         )
     return versions
 
@@ -1448,18 +1462,21 @@ def _build_strict_prefix_checkpoints(
         artifact_sha256=manifest.sha256,
         mlx_version=runtime_versions.get("mlx", ""),
         mlx_lm_version=runtime_versions.get("mlx_lm", ""),
+        mlx_lm_commit=runtime_versions.get("mlx_lm_commit", ""),
         prefill_step_size=DEFAULT_PREFILL_STEP_SIZE,
         layer_types=layer_types,
     )
     logger.info(
         "strict_prefix_checkpoint enabled slots=%d slot_bytes=%d budget_bytes=%d "
-        "layers=%d mlx=%s mlx_lm=%s",
+        "layers=%d kv_layers=%d mlx=%s mlx_lm=%s mlx_lm_commit=%s",
         config.slots,
         config.slot_bytes,
         config.budget_bytes,
         len(layer_types),
+        layer_types.count("KVCache"),
         identity.mlx_version,
         identity.mlx_lm_version,
+        identity.mlx_lm_commit[:12],
     )
     return StrictPrefixCheckpointStore(
         identity=identity,
