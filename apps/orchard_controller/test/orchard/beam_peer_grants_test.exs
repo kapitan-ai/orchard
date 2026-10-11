@@ -1297,6 +1297,18 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert authorization.authenticated_peer.scheme == :mtls
   end
 
+  test "SPEC.md §7.5.0 active grant validity does not depend on the session time zone", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {grant, target} = active_grant_target!(trust_root, authorization_root)
+
+    Repo.query!("SET LOCAL TIME ZONE 'America/Los_Angeles'")
+
+    assert {:ok, authorization} = BeamPeerGrants.authorize_target(target)
+    assert authorization.grant.id == grant.id
+  end
+
   test "SPEC.md §7.5.0 authorization rechecks expiry before returning the secret", %{
     trust_root: trust_root,
     authorization_root: authorization_root

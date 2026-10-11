@@ -33,7 +33,7 @@ LEGACY_PROTO = (
 # real schema revision rather than the current bindings.
 N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
 N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
-EXPECTED_DESCRIPTOR_SET_SHA256 = "2428e3ad3127eaf9dd1eb2bb5c812d22875b8b7d0cd35dde7ab39b79b2a168b4"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "44e5b8e359730a95b343a78077b86b628b8690d012c21f19f070502958c52ca4"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
@@ -154,6 +154,7 @@ EXPECTED_MESSAGES = {
             False,
             ".orchard.worker.v1.WorkerCapabilities",
         ),
+        ("tensorfold_profile_admission_json", 11, "TYPE_BYTES", False, None),
     ],
     "LoadModelRequest": [
         ("model_id", 1, "TYPE_STRING", False, None),
@@ -648,7 +649,7 @@ def test_reasoning_schema_uses_the_owner_confirmed_tags_and_presence() -> None:
     assert absent_effort.SerializeToString() != invalid_effort.SerializeToString()
 
 
-def test_frozen_input_descriptor_matches_execution_except_redemption() -> None:
+def test_frozen_input_descriptor_matches_execution_except_internal_extensions() -> None:
     descriptor_set = _descriptor_set()
     reasoning_descriptor = _file_descriptor(descriptor_set, "cluster/v1/reasoning.proto")
     runtime_descriptor = _file_descriptor(descriptor_set, "cluster/v1/runtime.proto")
@@ -656,7 +657,20 @@ def test_frozen_input_descriptor_matches_execution_except_redemption() -> None:
     execution = _message_descriptor(runtime_descriptor, "ExecuteInferenceRequest")
 
     redemption = [field for field in execution.field if field.number == 14]
-    execution_input = [field for field in execution.field if field.number != 14]
+    execution_input = [field for field in execution.field if field.number not in {14, 15}]
+    projection = [field for field in execution.field if field.number == 15]
+
+    assert [_field_signature(field) for field in projection] == [
+        (
+            "tensorfold_history_projection_json",
+            15,
+            "TYPE_BYTES",
+            "LABEL_OPTIONAL",
+            None,
+            False,
+            None,
+        )
+    ]
 
     assert [_field_signature(field) for field in redemption] == [
         (
@@ -672,6 +686,28 @@ def test_frozen_input_descriptor_matches_execution_except_redemption() -> None:
     assert [_field_signature(field) for field in execution_input] == [
         _field_signature(field) for field in frozen.field
     ]
+
+
+def test_tensorfold_projection_round_trip_preserves_bytes_and_baseline_wire() -> None:
+    projection = b'{"schema_version":1,"messages":[{"content":"opaque\\ntext"}]}'
+    request = runtime_pb2.ExecuteInferenceRequest(
+        request_id="fixture", tensorfold_history_projection_json=projection
+    )
+    decoded = runtime_pb2.ExecuteInferenceRequest.FromString(request.SerializeToString())
+    assert decoded.tensorfold_history_projection_json == projection
+    assert runtime_pb2.ExecuteInferenceRequest(request_id="fixture").SerializeToString() == (
+        b"\x0a\x07fixture"
+    )
+
+
+def test_tensorfold_identity_offer_round_trip_preserves_bytes_and_baseline_wire() -> None:
+    offer = b'{"schema_version":1,"service_incarnation":"fixture"}'
+    status = worker_runtime_pb2.WorkerStatusResponse(
+        ready=True, tensorfold_profile_admission_json=offer
+    )
+    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(status.SerializeToString())
+    assert decoded.tensorfold_profile_admission_json == offer
+    assert worker_runtime_pb2.WorkerStatusResponse(ready=True).SerializeToString() == b"\x18\x01"
 
 
 def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:

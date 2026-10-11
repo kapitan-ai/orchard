@@ -453,6 +453,7 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
         params: %{max_output_tokens: 4},
         metadata_json: "{}",
         prompt_token_ids: [1, 2, 3],
+        tensorfold_history_projection_json: ~s({"schema_version":1}),
         artifact_sha256: "sha256:abc",
         artifact_source_uri: "file:///models/phi-3",
         preload: true
@@ -460,6 +461,7 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
 
     assert request.model_ref == model_ref
     assert request.prompt_token_ids == [1, 2, 3]
+    assert request.tensorfold_history_projection_json == ~s({"schema_version":1})
     assert request.preload
   end
 
@@ -485,5 +487,6 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
 
     refute load_request.preload
     assert execute_request.input_tokens == 0
+    assert execute_request.tensorfold_history_projection_json == nil
   end
 end

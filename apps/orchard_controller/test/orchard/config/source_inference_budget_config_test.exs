@@ -7,6 +7,8 @@ defmodule Orchard.Config.SourceInferenceBudgetConfigTest do
      1_800_000},
     {"ORCHARD_MAX_REQUEST_DEADLINE_MS", :orchard_controller, :inference, :max_request_deadline_ms,
      360_000, 1_800_000},
+    {"ORCHARD_MODEL_LOAD_TIMEOUT_MS", :orchard_controller, :inference, :model_load_timeout_ms,
+     120_000, 180_000},
     {"ORCHARD_WORKER_READY_TIMEOUT_MS", :orchard_node_agent, :runtime, :worker_ready_timeout_ms,
      5_000, 30_000},
     {"ORCHARD_WORKER_LOAD_TIMEOUT_MS", :orchard_node_agent, :runtime, :worker_load_timeout_ms,
