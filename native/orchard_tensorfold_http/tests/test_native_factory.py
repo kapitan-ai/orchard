@@ -113,6 +113,7 @@ def assembly(tmp_path, monkeypatch, profile, bounds):
         max_bundle_bytes=10000,
         prefill_step=2,
         cache_limit_bytes=1024**3,
+        max_prefill_pass_seconds=0.005,
     )
     factory._assemble = Mock(return_value="fake-native-assets")
     return SimpleNamespace(factory=factory, profile=profile, manifest=manifest, path=tmp_path)
@@ -311,6 +312,7 @@ def build_factory(bounds, tmp_path):
         max_bundle_bytes=10000,
         prefill_step=2,
         cache_limit_bytes=1024**3,
+        max_prefill_pass_seconds=0.005,
     )
 
 
@@ -382,4 +384,37 @@ def test_factory_refuses_a_cache_limit_outside_whole_bytes_in_range(bounds, tmp_
             max_bundle_bytes=10000,
             prefill_step=2,
             cache_limit_bytes=value,
+            max_prefill_pass_seconds=0.005,
         )
+
+
+def build_factory_with_pass(bounds, tmp_path, pass_seconds):
+    return native_factory.NativeFactory(
+        bounds=native_bounds(bounds),
+        model_path=tmp_path,
+        max_bundle_files=10,
+        max_bundle_bytes=10000,
+        prefill_step=2,
+        cache_limit_bytes=1024**3,
+        max_prefill_pass_seconds=pass_seconds,
+    )
+
+
+def test_factory_refuses_a_cancel_bound_that_does_not_exceed_the_longest_prefill_pass(
+    bounds, tmp_path
+):
+    # The scheduler checks cancellation between prefill chunks, so a cancel can
+    # wait a whole chunk; the driver quarantines once cancel_seconds runs out.
+    assert bounds.cancel_seconds == 0.01
+    assert build_factory_with_pass(bounds, tmp_path, 0.009).max_prefill_pass_seconds == 0.009
+    for pass_seconds in (0.01, 0.02):
+        with pytest.raises(ValueError, match="does not exceed the longest prefill pass"):
+            build_factory_with_pass(bounds, tmp_path, pass_seconds)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), "0.005", None])
+def test_factory_refuses_a_longest_prefill_pass_that_is_not_a_positive_time(
+    bounds, tmp_path, value
+):
+    with pytest.raises(ValueError, match="longest prefill pass time"):
+        build_factory_with_pass(bounds, tmp_path, value)
