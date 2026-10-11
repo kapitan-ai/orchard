@@ -1273,7 +1273,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # reaper keeps the lease and finishes stopping it, so the Node cannot start a
   # replacement or treat the slot as free while the old process may still run.
   defp settle_custody(reaper_ref, :ok, _reason), do: RuntimeProcessReaper.release(reaper_ref)
-  defp settle_custody(reaper_ref, _unconfirmed, reason), do: RuntimeProcessReaper.reap(reaper_ref, reason)
+
+  defp settle_custody(reaper_ref, _unconfirmed, reason),
+    do: RuntimeProcessReaper.reap(reaper_ref, reason)
 
   defp disconnect_channel(nil), do: :ok
 

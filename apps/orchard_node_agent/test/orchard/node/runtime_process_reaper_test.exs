@@ -224,7 +224,10 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     end)
 
     {:ok, ref} =
-      watch(os_pid, shutdown_timeout_ms: 30_000, model_ref: %{model_id: "model/grace", version: "v1"})
+      watch(os_pid,
+        shutdown_timeout_ms: 30_000,
+        model_ref: %{model_id: "model/grace", version: "v1"}
+      )
 
     RuntimeProcessReaper.reap(ref, :custody_test)
 
@@ -506,7 +509,10 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     Process.sleep(600)
 
     assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
-    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new([{"model/custody", "v1"}])}
+
+    assert RuntimeProcessReaper.custody_model_keys() ==
+             {:ok, MapSet.new([{"model/custody", "v1"}])}
+
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
 
     # Once identity is readable again the reaper kills its own process, confirms

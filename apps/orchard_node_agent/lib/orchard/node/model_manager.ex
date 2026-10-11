@@ -994,50 +994,50 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp start_restarted_load(state, key, still_valid, prev_inflight, now_ms) do
-      # Choose new leader: highest deadline, tie-break by list position (first wins)
-      new_leader =
-        Enum.max_by(still_valid, fn w -> w.deadline_unix_ms end)
+    # Choose new leader: highest deadline, tie-break by list position (first wins)
+    new_leader =
+      Enum.max_by(still_valid, fn w -> w.deadline_unix_ms end)
 
-      # Re-use the stored original request with only the deadline overridden
-      leader_request = %{prev_inflight.request | deadline_unix_ms: new_leader.deadline_unix_ms}
+    # Re-use the stored original request with only the deadline overridden
+    leader_request = %{prev_inflight.request | deadline_unix_ms: new_leader.deadline_unix_ms}
 
-      manager = self()
-      models_root = Node.models_root()
+    manager = self()
+    models_root = Node.models_root()
 
-      task =
-        Task.Supervisor.async_nolink(@task_supervisor, fn ->
-          run_load_pipeline(key, leader_request, models_root, manager)
-        end)
+    task =
+      Task.Supervisor.async_nolink(@task_supervisor, fn ->
+        run_load_pipeline(key, leader_request, models_root, manager)
+      end)
 
-      # Reschedule all waiter timers with new task_ref
-      rescheduled_waiters =
-        Enum.map(still_valid, fn w ->
-          schedule_waiter_timer(w, key, task.ref, now_ms)
-        end)
+    # Reschedule all waiter timers with new task_ref
+    rescheduled_waiters =
+      Enum.map(still_valid, fn w ->
+        schedule_waiter_timer(w, key, task.ref, now_ms)
+      end)
 
-      inflight = %{
-        request: leader_request,
-        request_fingerprint: prev_inflight.request_fingerprint,
-        leader_waiter_id: new_leader.id,
-        started_monotonic_ms: System.monotonic_time(:millisecond),
-        source_scheme: prev_inflight.source_scheme,
-        preload: prev_inflight.preload,
-        backend: prev_inflight.backend,
-        task_pid: task.pid,
-        task_ref: task.ref,
-        waiters: rescheduled_waiters,
-        total_waiter_count: length(rescheduled_waiters),
-        replied_waiter_count: 0,
-        worker_pid: nil
-      }
+    inflight = %{
+      request: leader_request,
+      request_fingerprint: prev_inflight.request_fingerprint,
+      leader_waiter_id: new_leader.id,
+      started_monotonic_ms: System.monotonic_time(:millisecond),
+      source_scheme: prev_inflight.source_scheme,
+      preload: prev_inflight.preload,
+      backend: prev_inflight.backend,
+      task_pid: task.pid,
+      task_ref: task.ref,
+      waiters: rescheduled_waiters,
+      total_waiter_count: length(rescheduled_waiters),
+      replied_waiter_count: 0,
+      worker_pid: nil
+    }
 
-      emit_load_start(key, inflight)
+    emit_load_start(key, inflight)
 
-      %{
-        state
-        | inflight_loads: Map.put(state.inflight_loads, key, inflight),
-          load_refs: Map.put(state.load_refs, task.ref, key)
-      }
+    %{
+      state
+      | inflight_loads: Map.put(state.inflight_loads, key, inflight),
+        load_refs: Map.put(state.load_refs, task.ref, key)
+    }
   end
 
   # -- Inflight cancellation -------------------------------------------------
