@@ -108,10 +108,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   answer returns `{:error, :unavailable}`, which is never evidence that no
   runtime remains.
   """
-  @spec custody_model_keys() ::
+  @spec custody_model_keys(timeout()) ::
           {:ok, MapSet.t({String.t(), String.t()})} | {:error, :unavailable}
-  def custody_model_keys do
-    {:ok, GenServer.call(__MODULE__, :custody_model_keys, @query_timeout_ms)}
+  def custody_model_keys(timeout_ms \\ @query_timeout_ms) do
+    {:ok, GenServer.call(__MODULE__, :custody_model_keys, timeout_ms)}
   catch
     :exit, _reason -> {:error, :unavailable}
   end

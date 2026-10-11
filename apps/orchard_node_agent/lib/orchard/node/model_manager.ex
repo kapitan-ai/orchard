@@ -141,7 +141,7 @@ defmodule Orchard.Node.ModelManager do
   def current, do: GenServer.call(__MODULE__, :current)
 
   @spec reset() :: :ok
-  def reset, do: GenServer.call(__MODULE__, :reset)
+  def reset, do: GenServer.call(__MODULE__, :reset, @reset_custody_wait_ms + 5_000)
 
   @spec ensure_model_loaded(EnsureModelLoadedRequest.t()) :: EnsureModelLoadedResponse.t()
   def ensure_model_loaded(%EnsureModelLoadedRequest{} = request) do
@@ -2173,17 +2173,15 @@ defmodule Orchard.Node.ModelManager do
   # not refused for custody of a runtime this reset already stopped. The wait is
   # bounded; a runtime still running after it keeps refusing loads.
   defp await_custody_clear(deadline) do
-    case RuntimeProcessReaper.custody_model_keys() do
-      {:ok, keys} ->
-        if MapSet.size(keys) > 0 and System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(@reset_custody_poll_ms)
-          await_custody_clear(deadline)
-        else
-          :ok
-        end
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
 
-      {:error, :unavailable} ->
-        :ok
+    with true <- remaining_ms > 0,
+         {:ok, keys} <- RuntimeProcessReaper.custody_model_keys(remaining_ms),
+         true <- MapSet.size(keys) > 0 do
+      Process.sleep(min(@reset_custody_poll_ms, remaining_ms))
+      await_custody_clear(deadline)
+    else
+      _cleared_or_out_of_time -> :ok
     end
   end
 

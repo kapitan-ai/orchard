@@ -80,6 +80,29 @@ defmodule Orchard.Node.ModelManagerTest do
       Task.await(stopper)
     end
 
+    test "reset stays within its wait budget when the reaper stops answering" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-stuck", "v1")
+      Process.exit(owner_pid, :kill)
+
+      suspender =
+        Task.async(fn ->
+          Process.sleep(2_500)
+          :sys.suspend(RuntimeProcessReaper)
+        end)
+
+      started = System.monotonic_time(:millisecond)
+
+      try do
+        assert :ok = ModelManager.reset()
+        assert System.monotonic_time(:millisecond) - started < 4_000
+      after
+        Task.await(suspender)
+        :sys.resume(RuntimeProcessReaper)
+      end
+
+      release.()
+    end
+
     test "an unanswered custody query refuses the load instead of assuming nothing runs" do
       :sys.suspend(RuntimeProcessReaper)
 
