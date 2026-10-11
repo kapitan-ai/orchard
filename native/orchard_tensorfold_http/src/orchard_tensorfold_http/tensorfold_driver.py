@@ -61,6 +61,18 @@ def _raised_in_package(exc: BaseException) -> bool:
     return tb.tb_frame.f_code.co_filename.startswith(_PACKAGE_DIR)
 
 
+def _drop_error_frames(job: Any) -> None:
+    """Keep a request error's type and message, not the frames that raised it.
+
+    Pinned TensorFold stores a generic prefill failure on the job with its
+    traceback; those frames hold the working cache, which is the borrowed
+    prefix copy on a hit. A chained exception's traceback can hold them too.
+    """
+    error = job.error
+    if isinstance(error, BaseException):
+        error.__traceback__ = error.__cause__ = error.__context__ = None
+
+
 def required_cache_leases(checkpoint_slots: int, extra_boundaries: int = 0) -> int:
     """Cache leases one request can hold at once under the pinned scheduler.
 
@@ -491,6 +503,7 @@ class TensorFoldDriver:
             retained = {id(entry.cache) for entry in self.checkpoints._entries}
             if any(cache_id not in self._records for cache_id in retained):
                 raise DriverError("retained cache lacks owned custody")
+            _drop_error_frames(job)
             if job.stream is not None:
                 job.stream.history_checkpoints = []
             for cache_id, record in list(self._records.items()):
@@ -678,9 +691,11 @@ class TensorFoldDriver:
                     raise DriverError("retained cache lacks owned custody")
                 with self.checkpoints._inner._lock:
                     self.checkpoints._inner._entries.clear()
-                if job is not None and job.stream is not None:
-                    job.stream.history_checkpoints.clear()
-                    job.stream = None
+                if job is not None:
+                    _drop_error_frames(job)
+                    if job.stream is not None:
+                        job.stream.history_checkpoints.clear()
+                        job.stream = None
                 engine.release_rounds()
             return True
 
