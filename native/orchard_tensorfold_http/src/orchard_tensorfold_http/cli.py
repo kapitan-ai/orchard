@@ -38,7 +38,7 @@ def configured_backend(path: Path) -> TensorFoldBackend:
         "max_bundle_bytes",
         "prefill_step",
         "cache_limit_bytes",
-        "max_prefill_chunk_seconds",
+        "max_prefill_pass_seconds",
     }:
         raise ValueError("unsupported native configuration")
     factory = NativeFactory(bounds=bounds, **{**native, "model_path": Path(native["model_path"])})
