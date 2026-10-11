@@ -406,6 +406,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
 
       assert request.state == :failed
       assert request.error_code == "worker_down"
+      assert request.http_status == 503
       assert terminal.result["failure_class"] == "worker_or_node_loss"
       assert terminal.result["failure_code"] == "worker_down"
       assert terminal.result["retry_decision"] == "not_retryable"

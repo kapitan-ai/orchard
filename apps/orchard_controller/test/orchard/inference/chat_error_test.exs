@@ -254,6 +254,9 @@ defmodule Orchard.Inference.ChatErrorTest do
              }
 
       assert ChatError.sse_mapping(error).code == code
+
+      assert %{state: :failed, http_status: 503, error_code: ^code} =
+               ChatError.terminal_attrs(error)
     end
 
     other =
@@ -263,6 +266,8 @@ defmodule Orchard.Inference.ChatErrorTest do
 
     assert %{status: :internal_server_error, code: "internal_error"} =
              ChatError.api_mapping(other)
+
+    assert %{http_status: 500} = ChatError.terminal_attrs(other)
   end
 
   test "terminal conformance failures stay generic publicly and specific durably" do
