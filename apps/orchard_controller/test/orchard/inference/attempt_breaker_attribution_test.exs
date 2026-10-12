@@ -47,6 +47,27 @@ defmodule Orchard.Inference.AttemptBreakerAttributionTest do
       assert recorded.contribution_count == 1
     end
 
+    test "SPEC.md §5.10 a Node without an inventory row is not eligible for attribution" do
+      model = insert_model!()
+
+      for failure_class <- [
+            "worker_or_node_loss",
+            "pre_acceptance_unavailable",
+            "model_load_failure"
+          ] do
+        assert {:ok, :not_eligible} =
+                 AttemptBreakerAttribution.record(
+                   Ecto.UUID.generate(),
+                   1,
+                   model.id,
+                   failed_outcome(Ecto.UUID.generate(), failure_class)
+                 )
+      end
+
+      refute Repo.exists?(Orchard.CircuitBreakers.Breaker)
+      assert Repo.aggregate(Orchard.CircuitBreakers.Failure, :count, :id) == 0
+    end
+
     test "does not turn post-start capacity scarcity into breaker evidence" do
       assert {:ok, :not_eligible} =
                AttemptBreakerAttribution.record(

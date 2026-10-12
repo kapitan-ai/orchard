@@ -35,19 +35,26 @@ defmodule Orchard.Inference.AttemptBreakerAttribution do
 
       {:eligible, target_model_id} ->
         with {:ok, failure_id} <- failure_id(request_id, attempt) do
-          CircuitBreakers.record_failure(%{
+          %{
             failure_id: failure_id,
             node_id: outcome.node_id,
             model_id: target_model_id,
             failure_class: failure_class,
             occurred_at: outcome.ended_at
-          })
+          }
+          |> CircuitBreakers.record_failure()
+          |> unmanaged_node_not_eligible()
         end
     end
   end
 
   def record(_request_id, _attempt, _model_id, %AttemptOutcome{}),
     do: {:ok, :not_eligible}
+
+  # A Node with no inventory row runs on the unmanaged compatibility path, which
+  # has no breaker to attribute to, the same as an attempt with no Node.
+  defp unmanaged_node_not_eligible({:error, :node_not_found}), do: {:ok, :not_eligible}
+  defp unmanaged_node_not_eligible(result), do: result
 
   defp failure_target(failure_class, _model_id) when failure_class in @node_failure_classes,
     do: {:eligible, nil}

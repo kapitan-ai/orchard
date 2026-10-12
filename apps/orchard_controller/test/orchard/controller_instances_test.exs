@@ -38,7 +38,7 @@ defmodule Orchard.ControllerInstancesTest do
   } do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
 
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
@@ -67,7 +67,7 @@ defmodule Orchard.ControllerInstancesTest do
   test "Source-dev shared-cookie policy admits a Tailscale Controller identity", %{root: root} do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
 
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
@@ -100,7 +100,7 @@ defmodule Orchard.ControllerInstancesTest do
   test "SPEC.md §8.3 local-only membership persists a complete loopback identity", %{root: root} do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
 
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
@@ -124,7 +124,7 @@ defmodule Orchard.ControllerInstancesTest do
 
   test "SPEC.md §8.3 remote BEAM membership rejects a loopback host", %{root: root} do
     trust_root = Path.join(root, "node-trust")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, _trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     opts = [
@@ -145,7 +145,7 @@ defmodule Orchard.ControllerInstancesTest do
     root: root
   } do
     trust_root = Path.join(root, "node-trust")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, _trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     base = [
@@ -167,7 +167,7 @@ defmodule Orchard.ControllerInstancesTest do
 
   test "SPEC.md §8.3 local-only membership still rejects a public host", %{root: root} do
     trust_root = Path.join(root, "node-trust")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, _trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     opts = [
@@ -209,7 +209,7 @@ defmodule Orchard.ControllerInstancesTest do
   } do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
 
     assert {:ok, _trust} = NodeTrust.initialize(root: trust_root, now: now)
 
@@ -247,7 +247,7 @@ defmodule Orchard.ControllerInstancesTest do
   } do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
 
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
