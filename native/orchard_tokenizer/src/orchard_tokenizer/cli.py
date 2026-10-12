@@ -486,17 +486,20 @@ def _execute_render_and_count_effort(payload: dict[str, Any]) -> dict[str, Any]:
         strict_template_arguments=True,
         verified_template_text=verified_template_text,
     )
-    count = count_tokens(
+    count, prompt_token_ids = count_effort_tokens(
         rendered,
         require_non_empty_string(assets, "tokenizer_kind", category="invalid_input"),
         Path(require_non_empty_string(assets, "tokenizer_path", category="missing_assets")),
     )
-    return {
+    result: dict[str, Any] = {
         "rendered_prompt": rendered,
         "input_token_count": count,
         "reasoning": dict(reasoning),
         "applied_template_arguments": arguments,
     }
+    if prompt_token_ids is not None:
+        result["prompt_token_ids"] = prompt_token_ids
+    return result
 
 
 def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1549,6 +1552,35 @@ def count_tokens(rendered_prompt: str, tokenizer_kind: str, tokenizer_path: Path
         f"unsupported tokenizer_kind: {tokenizer_kind}",
         4,
     )
+
+
+def count_effort_tokens(
+    rendered_prompt: str, tokenizer_kind: str, tokenizer_path: Path
+) -> tuple[int, list[int] | None]:
+    """Count a rendered effort prompt and return its whole-prompt token IDs.
+
+    The IDs are the whole rendered string encoded without added special tokens,
+    which is the encoding the TensorFold bridge re-derives at admission. They are
+    returned only when they agree with the unchanged count; otherwise the count
+    alone is returned and an ID-requiring caller rejects the request.
+    """
+    if tokenizer_kind not in HF_TOKENIZER_KINDS:
+        return count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path), None
+    if not tokenizer_path.is_file():
+        raise TokenizerCliError(
+            "missing_assets", f"tokenizer asset is missing: {tokenizer_path}", 3
+        )
+    try:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        count = len(tokenizer.encode(rendered_prompt).ids)
+        ids = list(tokenizer.encode(rendered_prompt, add_special_tokens=False).ids)
+    except Exception as exc:
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer asset is invalid: {tokenizer_path}",
+            3,
+        ) from exc
+    return count, ids if len(ids) == count else None
 
 
 def count_huggingface_tokens(rendered_prompt: str, tokenizer_path: Path) -> int:

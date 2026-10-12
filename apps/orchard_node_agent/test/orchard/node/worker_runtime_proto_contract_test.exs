@@ -149,7 +149,8 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
              prefix_cache: 7,
              supports_prompt_token_ids: 8,
              max_concurrency: 9,
-             capabilities: 10
+             capabilities: 10,
+             tensorfold_profile_admission_json: 11
            }
 
     assert {"capabilities", 10, WorkerCapabilities, false} in field_signatures(
@@ -226,13 +227,37 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
   end
 
   test "SPEC.md section 7.5.3a keeps frozen input in descriptor parity with execution" do
-    {redemption, execution_input} =
+    {internal_extensions, execution_input} =
       ExecuteInferenceRequest
       |> field_signatures()
-      |> Enum.split_with(fn {_name, number, _type, _repeated?} -> number == 14 end)
+      |> Enum.split_with(fn {_name, number, _type, _repeated?} -> number in [14, 15] end)
 
-    assert redemption == [{"preparation_redemption", 14, PreparationRedemption, false}]
+    assert internal_extensions == [
+             {"preparation_redemption", 14, PreparationRedemption, false},
+             {"tensorfold_history_projection_json", 15, :bytes, false}
+           ]
+
     assert execution_input == field_signatures(FrozenExecutionInput)
+  end
+
+  test "TensorFold internal projection preserves opaque bytes and empty baseline encoding" do
+    projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
+    request = %ExecuteInferenceRequest{tensorfold_history_projection_json: projection}
+
+    assert Protobuf.decode(Protobuf.encode(request), ExecuteInferenceRequest).tensorfold_history_projection_json ==
+             projection
+
+    assert Protobuf.encode(%ExecuteInferenceRequest{request_id: "legacy"}) == <<10, 6, "legacy">>
+  end
+
+  test "TensorFold identity offer preserves bytes without changing baseline status encoding" do
+    offer = ~s({"schema_version":1,"service_incarnation":"fixture"})
+    status = %WorkerStatusResponse{ready: true, tensorfold_profile_admission_json: offer}
+
+    decoded = Protobuf.decode(Protobuf.encode(status), WorkerStatusResponse)
+    assert decoded.tensorfold_profile_admission_json == offer
+
+    assert Protobuf.encode(%WorkerStatusResponse{ready: true}) == <<24, 1>>
   end
 
   test "Elixir decodes the previous-revision Python fixture with capabilities absent" do

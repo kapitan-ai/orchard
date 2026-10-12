@@ -48,6 +48,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
     node_unavailable node_timeout runtime_unavailable resource_exhausted timeout
     worker_unavailable worker_down
   )
+  @worker_or_node_loss_codes ~w(worker_down worker_unavailable node_unavailable node_timeout)
   @model_load_retryable_categories [
     :acquisition_failed,
     :runtime_unavailable,
@@ -290,6 +291,8 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
        }),
        do: false
 
-  defp retry_eligible?(%Boundary{failure_class: "worker_or_node_loss"}), do: true
+  defp retry_eligible?(%Boundary{failure_class: "worker_or_node_loss", failure_code: code}),
+    do: code in @worker_or_node_loss_codes
+
   defp retry_eligible?(%Boundary{}), do: false
 end

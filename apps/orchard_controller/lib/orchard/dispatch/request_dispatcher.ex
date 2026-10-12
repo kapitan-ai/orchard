@@ -38,6 +38,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   capturing cold/warm classification, stream timing, and outcome.
   """
 
+  alias Orchard.Inference.TensorFoldProjection
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     ExecuteInferenceRequest
@@ -210,6 +212,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:caller` - PID to monitor for disconnect (default: `self()`)
   - `:event_handler` - public delivery callback called only after attempt selection.
                         It must return `:ok`, `:cancel`, or `{:error, :serializer_failed}`.
+  - `:keepalive_handler` - optional zero-arity transport probe called in the dispatching
+                            process while a Runtime Endpoint execution has produced no
+                            terminal event. It must return `:ok` or `:cancel`; `:cancel`
+                            cancels the attempt as a caller disconnect. It is never an
+                            inference event and never changes delivery, commitment or metrics.
+                            A probe that raises or returns anything else stops probing.
+  - `:keepalive_interval_ms` - positive interval for `:keepalive_handler`; required with it.
   - `:on_accepted` - immediate internal callback for validated acceptance observation.
   - `:on_node_resolved` - optional callback `(node_id :: String.t() -> any())`.
                            Called when the pre-dispatch status probe discovers a
@@ -248,6 +257,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     deadline_ms = RequestDeadline.to_monotonic_ms(timeout_at, system_ms, monotonic_ms)
 
     model_load_timeout_cap_ms = Map.get(schedule, :model_load_timeout_ms, 120_000)
+    # Validate before monitoring, so a refused option leaves no monitor behind.
+    keepalive = keepalive_option(opts)
     caller = Keyword.get(opts, :caller, self())
     caller_ref = Process.monitor(caller)
     event_handler = Keyword.get(opts, :event_handler)
@@ -284,6 +295,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       caller_ref: caller_ref,
       cancel_drain_timeout_ms: cancel_drain_timeout_ms,
       event_handler: event_handler,
+      keepalive: keepalive,
       on_accepted: on_accepted,
       on_node_resolved: on_node_resolved
     }
@@ -852,7 +864,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
-        ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+        case gate_tensorfold_route(context, metrics) do
+          :ok ->
+            ensure_loaded_before_deadline(context, model_load_request, metrics)
+
+          {:error, reason} ->
+            handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
+        end
 
       {:error, reason, metrics} ->
         handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
@@ -1047,19 +1066,44 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp execute_loaded_request(context, ensure_load_meta, metrics) do
-    case gate_prompt_token_ids(
-           context.execute_request,
-           ensure_load_meta,
-           context.schedule,
-           context.model_load_request
-         ) do
-      {:ok, gated_execute_request} ->
-        execute_under_acceptance_gate(context, gated_execute_request, metrics)
-
+    with :ok <- gate_tensorfold_route(context, metrics),
+         {:ok, gated_execute_request} <-
+           gate_prompt_token_ids(
+             context.execute_request,
+             ensure_load_meta,
+             context.schedule,
+             context.model_load_request
+           ) do
+      execute_under_acceptance_gate(context, gated_execute_request, metrics)
+    else
       {:error, reason} ->
         {:error, {:dispatch_failed, reason}}
     end
   end
+
+  defp gate_tensorfold_route(context, metrics) do
+    request = context.execute_request
+
+    if request.tensorfold_history_projection_json in [nil, ""] do
+      :ok
+    else
+      with :ok <-
+             TensorFoldProjection.authorize_route(
+               metrics.node_id,
+               TensorFoldProjection.config()
+             ),
+           true <- authoritative_prompt_token_ids?(request) do
+        :ok
+      else
+        _failure -> {:error, :runtime_incompatible}
+      end
+    end
+  end
+
+  # SPEC.md §7.2.9: a selected TensorFold request must reach the bridge with the
+  # authoritative IDs the Controller rendered, or fail here before model load.
+  defp authoritative_prompt_token_ids?(%{prompt_token_ids: ids, input_tokens: count}),
+    do: is_list(ids) and ids != [] and length(ids) == count
 
   defp execute_under_acceptance_gate(context, gated_execute_request, metrics) do
     case acquire_dispatch_acceptance_gate(context) do
@@ -1088,6 +1132,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             channel: context.channel,
             client: context.client,
             event_handler: context.event_handler,
+            keepalive: context.keepalive,
             on_accepted: context.on_accepted,
             target: context.target,
             timeout_ms: timeout_ms
@@ -1418,6 +1463,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # inventory from status probes and must not be used as dispatch eligibility
   # authority. The Runtime Endpoint ensure-model-loaded result is the
   # authoritative capability gate.
+  # The TensorFold bridge needs the authoritative IDs whatever the safe mode, so a
+  # projected request keeps them and refuses a Worker that cannot accept them.
+  defp gate_prompt_token_ids(
+         %{tensorfold_history_projection_json: projection} = request,
+         ensure_result,
+         _schedule,
+         _model_load_request
+       )
+       when is_binary(projection) and projection != "" do
+    if Map.get(ensure_result, :worker_supports_prompt_token_ids) === true,
+      do: {:ok, request},
+      else: {:error, :runtime_incompatible}
+  end
+
   defp gate_prompt_token_ids(request, ensure_result, schedule, model_load_request) do
     mode = Inference.tokenizer_safe_mode()
     prompt_token_ids = request.prompt_token_ids || []
@@ -1524,6 +1583,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                   client: client,
                   controller_session_id: execute_request.controller_session_id,
                   delivery: AttemptEventDelivery.new(metrics.request_id, event_handler),
+                  keepalive: start_keepalive(Map.get(stream_context, :keepalive)),
                   on_accepted: Map.get(stream_context, :on_accepted),
                   accepted?: false,
                   acceptance_gate: acceptance_gate,
@@ -1567,6 +1627,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp receive_loop(%{} = loop_ctx, events) do
+    # A due probe runs before the next receive, so a backlog of runtime messages
+    # that write nothing to the client cannot postpone it.
+    if keepalive_wait_ms(loop_ctx) == 0,
+      do: handle_keepalive_due(loop_ctx, events),
+      else: receive_runtime_message(loop_ctx, events)
+  end
+
+  defp receive_runtime_message(loop_ctx, events) do
     %{
       target: target,
       metrics: metrics,
@@ -1593,7 +1661,71 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
         cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
+    after
+      keepalive_wait_ms(loop_ctx) ->
+        handle_keepalive_due(loop_ctx, events)
     end
+  end
+
+  defp keepalive_option(opts) do
+    case {Keyword.get(opts, :keepalive_handler), Keyword.get(opts, :keepalive_interval_ms)} do
+      {nil, _interval_ms} ->
+        nil
+
+      {handler, interval_ms}
+      when is_function(handler, 0) and is_integer(interval_ms) and interval_ms > 0 ->
+        %{handler: handler, interval_ms: interval_ms}
+
+      _invalid ->
+        raise ArgumentError,
+              ":keepalive_handler must be a zero-arity function with a positive :keepalive_interval_ms"
+    end
+  end
+
+  defp start_keepalive(nil), do: nil
+
+  defp start_keepalive(%{interval_ms: interval_ms} = keepalive),
+    do: Map.put(keepalive, :due_ms, System.monotonic_time(:millisecond) + interval_ms)
+
+  # The keepalive is a receive timeout, not a timer message, so no tick can
+  # outlive this loop or reach a later attempt. It stops at the first terminal.
+  defp keepalive_wait_ms(%{keepalive: nil}), do: :infinity
+  defp keepalive_wait_ms(%{terminal_event: %InferenceEvent{}}), do: :infinity
+
+  defp keepalive_wait_ms(%{keepalive: %{due_ms: due_ms}}),
+    do: max(due_ms - System.monotonic_time(:millisecond), 0)
+
+  defp handle_keepalive_due(%{keepalive: keepalive} = loop_ctx, events) do
+    case invoke_keepalive(keepalive.handler) do
+      :ok ->
+        receive_loop(%{loop_ctx | keepalive: next_keepalive_due(keepalive)}, events)
+
+      :cancel ->
+        cancel_and_drain(%{loop_ctx | keepalive: nil}, events, :client_disconnect)
+
+      :failed ->
+        # A broken probe must not fail a healthy request; stop probing instead.
+        receive_loop(%{loop_ctx | keepalive: nil}, events)
+    end
+  end
+
+  defp invoke_keepalive(handler) do
+    case handler.() do
+      :ok -> :ok
+      :cancel -> :cancel
+      _invalid -> :failed
+    end
+  rescue
+    _error -> :failed
+  catch
+    _kind, _reason -> :failed
+  end
+
+  # Skip missed probes after a slow write instead of writing catch-up comments.
+  defp next_keepalive_due(%{due_ms: due_ms, interval_ms: interval_ms} = keepalive) do
+    now_ms = System.monotonic_time(:millisecond)
+    missed = max(div(now_ms - due_ms, interval_ms), 0)
+    %{keepalive | due_ms: due_ms + (missed + 1) * interval_ms}
   end
 
   defp handle_stream_event(%{terminal_event: nil} = loop_ctx, events, event) do
@@ -1749,6 +1881,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     delivery = AttemptEventDelivery.record(loop_ctx.delivery, terminal_event)
     {:ok, [terminal_event], metrics, delivery}
   end
+
+  # SPEC.md §7.2.9: the Node refuses a missing or mismatched TensorFold offer
+  # before Accepted. Keep that classified instead of a missing acceptance.
+  defp stream_done_result(
+         %{
+           accepted?: false,
+           cancellation_started_before_acceptance?: false,
+           terminal_event: %InferenceEvent{
+             event: %InferenceEvent.Failed{code: "tensorfold_projection_rejected"}
+           },
+           conformance_defect: :none
+         },
+         [],
+         _metrics
+       ),
+       do: {:error, {:dispatch_failed, :runtime_incompatible}}
 
   defp stream_done_result(loop_ctx, events, metrics),
     do: stream_terminal_result(loop_ctx, events, metrics)
@@ -2209,6 +2357,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       deadline_unix_ms: zero_to_nil(request.deadline_unix_ms),
       metadata_json: request.metadata_json || "{}",
       cache_affinity_fingerprint: blank_to_nil(request.cache_affinity_fingerprint),
+      tensorfold_history_projection_json:
+        blank_to_nil(request.tensorfold_history_projection_json),
       prompt_token_ids: request.prompt_token_ids || []
     )
   end

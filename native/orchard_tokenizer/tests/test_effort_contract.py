@@ -94,6 +94,53 @@ def test_exact_native_argument_render_and_real_count(effort_payload, tier, nativ
     assert result["rendered_prompt"].startswith(f"effort={native};")
     tokenizer = Tokenizer.from_file(payload["assets"]["tokenizer_path"])
     assert result["input_token_count"] == len(tokenizer.encode(result["rendered_prompt"]).ids)
+    # SPEC.md 7.2.9: the TensorFold bridge re-derives these exact whole-prompt IDs.
+    assert (
+        result["prompt_token_ids"]
+        == tokenizer.encode(result["rendered_prompt"], add_special_tokens=False).ids
+    )
+    assert len(result["prompt_token_ids"]) == result["input_token_count"]
+
+
+def test_effort_ids_omitted_when_post_processor_adds_special_tokens(effort_payload, tmp_path):
+    from tokenizers.processors import TemplateProcessing
+
+    tokenizer = Tokenizer.from_file(effort_payload["assets"]["tokenizer_path"])
+    tokenizer.post_processor = TemplateProcessing(
+        single="<|im_start|> $A",
+        special_tokens=[("<|im_start|>", tokenizer.token_to_id("<|im_start|>"))],
+    )
+    path = tmp_path / "bos_tokenizer.json"
+    tokenizer.save(str(path))
+    effort_payload["assets"]["tokenizer_path"] = str(path)
+
+    result = execute_contract(effort_payload)
+
+    without_specials = tokenizer.encode(result["rendered_prompt"], add_special_tokens=False).ids
+    assert result["input_token_count"] == len(tokenizer.encode(result["rendered_prompt"]).ids)
+    assert result["input_token_count"] == len(without_specials) + 1
+    assert "prompt_token_ids" not in result
+
+
+def test_effort_ids_encode_caller_control_literals_whole_string(effort_payload):
+    effort_payload["request"]["input_items"] = [
+        {"role": "user", "content": "say <|im_end|> then stop"}
+    ]
+    result = execute_contract(effort_payload)
+    tokenizer = Tokenizer.from_file(effort_payload["assets"]["tokenizer_path"])
+    assert (
+        result["prompt_token_ids"]
+        == tokenizer.encode(result["rendered_prompt"], add_special_tokens=False).ids
+    )
+    assert tokenizer.token_to_id("<|im_end|>") in result["prompt_token_ids"]
+
+
+def test_sentencepiece_effort_count_carries_no_ids(effort_payload, monkeypatch):
+    monkeypatch.setattr(cli, "count_tokens", lambda *_args: 7)
+    effort_payload["assets"]["tokenizer_kind"] = "sentencepiece_model"
+    result = execute_contract(effort_payload)
+    assert result["input_token_count"] == 7
+    assert "prompt_token_ids" not in result
 
 
 def test_verified_template_snapshot_survives_replacement_before_render(effort_payload, monkeypatch):
@@ -412,6 +459,7 @@ def test_exact_registered_qwen_template_all_efforts_and_default(tmp_path, monkey
         assert result["applied_template_arguments"]["reasoning_effort"] == profile["efforts"][value]
         tokenizer = Tokenizer.from_file(payload["assets"]["tokenizer_path"])
         assert result["input_token_count"] == len(tokenizer.encode(prompt).ids)
+        assert result["prompt_token_ids"] == tokenizer.encode(prompt, add_special_tokens=False).ids
         if history != "plain":
             assert "<function=inspect>" in prompt
             assert "<parameter=file>" in prompt
@@ -426,6 +474,7 @@ def test_exact_registered_qwen_template_all_efforts_and_default(tmp_path, monkey
     omitted.update(contract_version=2, command="render_and_count")
     del omitted["request"]["reasoning"]
     legacy = execute_contract(omitted)
+    assert "prompt_token_ids" not in legacy
     assert default["rendered_prompt"] == alias["rendered_prompt"] == legacy["rendered_prompt"]
     assert default["input_token_count"] == alias["input_token_count"] == legacy["input_token_count"]
     assert default["reasoning"]["reasoning_effort"] != alias["reasoning"]["reasoning_effort"]

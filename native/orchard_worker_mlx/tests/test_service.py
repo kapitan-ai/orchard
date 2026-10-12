@@ -310,7 +310,32 @@ def _make_request(request_id: str = "req-1") -> MagicMock:
     req.request_id = request_id
     req.input_tokens = 5
     req.metadata_json = b""
+    req.tensorfold_history_projection_json = b""
     return req
+
+
+def test_stock_worker_rejects_experimental_projection_before_start() -> None:
+    backend = StubBackend()
+    backend.start_generation = MagicMock(side_effect=AssertionError("must not admit"))
+    request = runtime_pb2.ExecuteInferenceRequest(
+        request_id="experiment", tensorfold_history_projection_json=b"{}"
+    )
+    service = WorkerRuntimeServicer(backend, memory_sampler=lambda: None)
+    events = list(service.Generate(request, MagicMock()))
+    assert len(events) == 1 and events[0].failed.code == "unsupported_history_projection"
+    backend.start_generation.assert_not_called()
+
+
+@pytest.mark.parametrize("offer", [b"", b"binding", b"x" * 4097, "not bytes"])
+def test_status_experiment_offer_has_separate_fixed_byte_bound(offer: Any) -> None:
+    backend = HappyBackend()
+    backend.tensorfold_profile_admission = lambda: offer
+    status = WorkerRuntimeServicer(backend, memory_sampler=lambda: None).GetStatus(
+        worker_runtime_pb2.WorkerStatusRequest(), MagicMock()
+    )
+    assert status.tensorfold_profile_admission_json == (
+        offer if type(offer) is bytes and len(offer) <= 4096 else b""
+    )
 
 
 def _fingerprint(seed: int) -> str:
