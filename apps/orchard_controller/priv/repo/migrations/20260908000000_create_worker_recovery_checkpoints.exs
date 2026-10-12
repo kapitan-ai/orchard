@@ -15,7 +15,8 @@ defmodule Orchard.Repo.Migrations.CreateWorkerRecoveryCheckpoints do
       add(:transition_id, :text, null: false)
       add(:fingerprint, :text, null: false)
       add(:record, :map, null: false)
-      timestamps(type: :utc_datetime_usec)
+      # SPEC.md §8.2 stores every Controller timestamp as timestamptz.
+      timestamps(type: :timestamptz)
     end
 
     create(
