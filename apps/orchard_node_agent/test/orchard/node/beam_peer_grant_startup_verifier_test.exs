@@ -24,7 +24,7 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifierTest do
 
   defmodule GrantStore do
     def load(_root, _identity, _node_name), do: {:ok, Process.get(:startup_grant)}
-    def ensure_current(_grant), do: :ok
+    def ensure_current(_grant), do: Process.get(:startup_freshness, :ok)
   end
 
   defmodule DistributionTLS do
@@ -93,6 +93,30 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifierTest do
       controller_id: controller_id
     })
 
+    preflight_options = [
+      manifest_path: "/protected/launch.json",
+      identity_root: "/protected/node",
+      descriptor_path: "/protected/descriptor.json",
+      node_beam_name: node_name,
+      distribution_launch: Launch,
+      identity_loader: IdentityLoader,
+      descriptor_loader: DescriptorLoader,
+      grant_store: GrantStore,
+      distribution_tls: DistributionTLS
+    ]
+
+    assert :ok = BeamPeerGrantStartupVerifier.preflight(preflight_options)
+    refute_received {:vm_verified, _, _}
+    assert_received {:tls_verified, "/protected/ssl-dist.conf", _, _}
+
+    Process.put(:startup_freshness, {:error, :beam_peer_grant_expired})
+
+    assert {:error, :beam_peer_grant_expired} =
+             BeamPeerGrantStartupVerifier.preflight(preflight_options)
+
+    refute_received {:tls_verified, _, _, _}
+    Process.delete(:startup_freshness)
+
     assert :ok =
              BeamPeerGrantStartupVerifier.verify(
                manifest_path: "/protected/launch.json",
@@ -127,6 +151,11 @@ defmodule Orchard.Node.BeamPeerGrantStartupVerifierTest do
     Process.delete(:startup_manifest)
     extended_expiry_manifest = Map.put(manifest, :expires_at, ~U[2026-07-13 09:00:00.000000Z])
     Process.put(:startup_manifest, extended_expiry_manifest)
+
+    assert {:error, :beam_distribution_launch_contract_invalid} =
+             BeamPeerGrantStartupVerifier.preflight(preflight_options)
+
+    refute_received {:tls_verified, _, _, _}
 
     assert {:error, :beam_distribution_launch_contract_invalid} =
              BeamPeerGrantStartupVerifier.verify(

@@ -12,6 +12,8 @@ defmodule OrchardConsole.RequestsLiveTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Repo
   alias Orchard.Requests
+  alias Orchard.Requests.Request
+  alias OrchardConsole.RequestsLive
 
   setup do
     Sandbox.mode(Repo, {:shared, self()})
@@ -42,6 +44,7 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       assert html =~ "Requests"
       assert html =~ "requests-tools-row"
+      assert html =~ "max-w-[96rem]"
     end
 
     test "Requests nav is active", %{conn: conn} do
@@ -117,69 +120,262 @@ defmodule OrchardConsole.RequestsLiveTest do
       assert html =~ "\u2014"
     end
 
-    test "renders zero token total as 0", %{conn: conn} do
-      create_request!(%{
-        public_id: "req_live_zero_tok",
-        state: :completed,
-        input_tokens: 0,
-        output_tokens: 0
-      })
-
+    test "DESIGN §16 shows stored usage and timings without a generation-rate claim", %{
+      conn: conn
+    } do
       {:ok, _view, html} = live(conn, "/console/requests")
 
-      # Should render "0", not em-dash
-      refute html =~ "requests-empty-state"
-    end
-
-    test "table headers include performance metric columns", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/requests")
-
+      assert html =~ "Input tokens"
+      assert html =~ "Output tokens"
+      refute html =~ "Output accuracy"
       assert html =~ "TTFT"
-      assert html =~ "Total latency"
-      assert html =~ "Tok/s"
+      assert html =~ "Total time"
+      assert html =~ "first recorded public output"
+      assert html =~ "not client receipt"
+      refute html =~ "Tok/s"
+      refute html =~ "tokens per second"
+      refute html =~ "generation rate"
     end
 
-    test "completed row shows formatted metric values", %{conn: conn} do
-      request =
+    test "SPEC §5.3 and §8 preserve stored counts and nullable output classification", %{
+      conn: conn
+    } do
+      cases = [
+        {"exact", 13, 7, :exact, ["13", "7 Exact"]},
+        {"lower", 13, 7, :lower_bound, ["13", "7 Lower bound"]},
+        {"unknown", 13, 7, nil, ["13", "7 Accuracy unknown"]},
+        {"zero_exact", 0, 0, :exact, ["0", "0 Exact"]},
+        {"zero_lower", 0, 0, :lower_bound, ["0", "0 Lower bound"]},
+        {"zero_unknown", 0, 0, nil, ["0", "0 Accuracy unknown"]}
+      ]
+
+      for {id, input, output, quality, _expected} <- cases do
         create_request!(%{
-          public_id: "req_perf_1",
+          public_id: "req_usage_#{id}",
           state: :completed,
-          input_tokens: 50,
-          output_tokens: 75,
+          input_tokens: input,
+          output_tokens: output,
+          output_usage_status: quality
+        })
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      for {id, _input, _output, _quality, expected} <- cases do
+        assert Enum.slice(row_cells(view, "req_usage_#{id}"), 7, 2) == expected
+      end
+    end
+
+    test "absent counts remain distinct from stored zero at the renderer boundary" do
+      # Persisted counts are non-nullable; nil is a presentation fallback, not a migration.
+      request = create_request!(%{public_id: "req_missing", input_tokens: 0, output_tokens: 0})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      for {input, output, expected} <- [
+            {nil, 0, ["Not recorded", "0 Accuracy unknown"]},
+            {0, nil, ["0", "Not recorded Accuracy unknown"]},
+            {nil, nil, ["Not recorded", "Not recorded Accuracy unknown"]}
+          ] do
+        assigns =
+          Map.put(socket.assigns, :requests, [
+            %{request | input_tokens: input, output_tokens: output}
+          ])
+
+        html = render_component(&RequestsLive.render/1, assigns)
+        assert Enum.slice(row_cells(html, "req_missing"), 7, 2) == expected
+      end
+    end
+
+    test "DESIGN §16 preserves usage and bounded timing for every terminal outcome", %{conn: conn} do
+      for state <- [:completed, :failed, :cancelled, :timed_out, :interrupted] do
+        create_timed_request!(%{
+          public_id: "req_terminal_#{state}",
+          state: state,
+          input_tokens: 13,
+          output_tokens: 7,
+          output_usage_status: :lower_bound,
           first_token_at: ~U[2026-03-15 12:00:00.250000Z],
           completed_at: ~U[2026-03-15 12:00:01.750000Z]
         })
-
-      # Patch inserted_at to a controlled value
-      {1, _} =
-        Repo.update_all(
-          from(r in Orchard.Requests.Request, where: r.id == ^request.id),
-          set: [inserted_at: ~U[2026-03-15 12:00:00.000000Z]]
-        )
+      end
 
       {:ok, view, _html} = live(conn, "/console/requests")
 
-      row_html = element(view, "#request-req_perf_1") |> render()
-      assert row_html =~ "250 ms"
-      assert row_html =~ "1.8 s"
-      assert row_html =~ "50.0"
+      for state <- [:completed, :failed, :cancelled, :timed_out, :interrupted] do
+        cells = row_cells(view, "req_terminal_#{state}")
+        assert Enum.at(cells, 2) == to_string(state)
+        assert Enum.drop(cells, 7) == ["13", "7 Lower bound", "250 ms", "1.75 s"]
+      end
     end
 
-    test "non-completed row shows em dash for metric columns", %{conn: conn} do
-      create_request!(%{
-        public_id: "req_active_1",
-        state: :running,
-        http_status: 200,
-        input_tokens: 10,
-        output_tokens: 0
-      })
+    test "active states show recorded TTFT but never invent a final duration", %{conn: conn} do
+      for state <- [
+            :received,
+            :validated,
+            :admitted,
+            :queued,
+            :scheduled,
+            :dispatching,
+            :running,
+            :streaming
+          ] do
+        create_timed_request!(%{
+          public_id: "req_active_#{state}",
+          state: state,
+          input_tokens: 13,
+          output_tokens: 0,
+          first_token_at: if(state == :streaming, do: ~U[2026-03-15 12:00:00.250000Z])
+        })
+      end
 
       {:ok, view, _html} = live(conn, "/console/requests")
 
-      row_html = element(view, "#request-req_active_1") |> render()
-      # Row should contain em dashes for the 3 metric columns
-      # (node_id and http_status are populated, so dashes come from metrics)
-      assert row_html =~ "—"
+      for state <- Request.active_states() do
+        ttft = if state == :streaming, do: "250 ms", else: "In progress"
+        cells = row_cells(view, "req_active_#{state}")
+        assert Enum.at(cells, 2) == to_string(state)
+        assert Enum.drop(cells, 7) == ["13", "0 Accuracy unknown", ttft, "In progress"]
+      end
+    end
+
+    test "SPEC §5.8 rejects conflicting timing and distinguishes missing evidence from zero", %{
+      conn: conn
+    } do
+      cases = [
+        {"absent", nil, nil, ["Not recorded", "Not recorded"]},
+        {"before_creation", ~U[2026-03-15 11:59:59.000000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]},
+        {"after_completion", ~U[2026-03-15 12:00:02.000000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]},
+        {"negative_duration", nil, ~U[2026-03-15 11:59:59.000000Z],
+         ["Not recorded", "Not recorded"]},
+        {"no_public_output", nil, ~U[2026-03-15 12:00:01.750000Z], ["Not recorded", "1.75 s"]},
+        {"zero", ~U[2026-03-15 12:00:00.000000Z], ~U[2026-03-15 12:00:00.000000Z],
+         ["0 ms", "0 ms"]}
+      ]
+
+      for {id, first, completed, _expected} <- cases do
+        create_timed_request!(%{
+          public_id: "req_timing_#{id}",
+          state: :failed,
+          first_token_at: first,
+          completed_at: completed
+        })
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      for {id, _first, _completed, expected} <- cases do
+        assert Enum.drop(row_cells(view, "req_timing_#{id}"), 9) == expected
+      end
+    end
+
+    test "active state never masks retained conflicting timing as progress", %{conn: conn} do
+      cases = [
+        {"negative_first", ~U[2026-03-15 11:59:59.000000Z], nil,
+         ["Not recorded", "Not recorded"]},
+        {"negative_end", nil, ~U[2026-03-15 11:59:59.000000Z], ["Not recorded", "Not recorded"]},
+        {"after_end", ~U[2026-03-15 12:00:02.000000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]},
+        {"retained_end", ~U[2026-03-15 12:00:00.250000Z], ~U[2026-03-15 12:00:01.750000Z],
+         ["250 ms", "1.75 s"]},
+        {"missing_first_with_end", nil, ~U[2026-03-15 12:00:01.750000Z],
+         ["Not recorded", "1.75 s"]}
+      ]
+
+      for state <- Request.active_states(), {id, first, completed, _expected} <- cases do
+        create_timed_request!(%{
+          public_id: "req_#{state}_#{id}",
+          state: state,
+          first_token_at: first,
+          completed_at: completed
+        })
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      for state <- Request.active_states(), {id, _first, _completed, expected} <- cases do
+        assert Enum.drop(row_cells(view, "req_#{state}_#{id}"), 9) == expected
+      end
+    end
+
+    test "absence prose stays outside monospace identity and metric values" do
+      request = create_request!(%{public_id: "req_absence", state: :running})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      assigns =
+        Map.put(socket.assigns, :requests, [
+          %{
+            request
+            | requested_model: nil,
+              input_tokens: nil,
+              output_tokens: nil,
+              inserted_at: nil
+          }
+        ])
+
+      html = render_component(&RequestsLive.render/1, assigns)
+      assert Enum.drop(row_cells(html, "req_absence"), 9) == ["Not recorded", "Not recorded"]
+      doc = LazyHTML.from_fragment(html)
+
+      assert doc |> LazyHTML.query("#request-req_absence td:nth-child(5)") |> LazyHTML.text() =~
+               "Not recorded"
+
+      refute doc |> LazyHTML.query("#request-req_absence .font-mono") |> LazyHTML.text() =~
+               "Not recorded"
+
+      assert Enum.empty?(LazyHTML.query(doc, "#request-req_absence td:nth-child(5) wbr"))
+    end
+
+    test "compact Node prefix retains full accessible identity and Created does not wrap" do
+      node_id = "12345678-90ab-cdef-1234-567890abcdef"
+      request = create_request!(%{public_id: "req_compact"})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      assigns = Map.put(socket.assigns, :requests, [%{request | node_id: node_id}])
+      doc = render_component(&RequestsLive.render/1, assigns) |> LazyHTML.from_fragment()
+
+      assert doc |> LazyHTML.query("span[aria-hidden='true']") |> LazyHTML.text() == "12345678"
+
+      assert doc |> LazyHTML.query("span[title='#{node_id}'] .sr-only") |> LazyHTML.text() ==
+               node_id
+
+      assert Enum.count(LazyHTML.query(doc, "#request-req_compact td.whitespace-nowrap")) == 1
+
+      assert Enum.count(
+               LazyHTML.query(doc, "#request-req_compact td:nth-child(9) .block.text-xs")
+             ) == 1
+    end
+
+    test "keeps exact model identity and public RequestID navigation", %{conn: conn} do
+      model = "publisher/a-very-long-model-identity@0123456789abcdef"
+      create_request!(%{public_id: "req_identity", requested_model: model})
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      assert Enum.at(row_cells(view, "req_identity"), 4) == model
+      assert has_element?(view, "#request-req_identity a[href='/console/requests/req_identity']")
+
+      assert {:error, {:live_redirect, %{to: "/console/requests/req_identity"}}} =
+               view |> element("#request-req_identity a") |> render_click()
+    end
+
+    test "retains newest-first recent-50 limit without changing the summary scope", %{conn: conn} do
+      for n <- 0..50 do
+        request = create_request!(%{public_id: "req_recent_#{n}"})
+        set_created_at(request, DateTime.add(~U[2026-03-15 12:00:00.000000Z], n, :second))
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      ids =
+        view
+        |> render()
+        |> LazyHTML.from_document()
+        |> LazyHTML.query("#requests-table > tr")
+        |> LazyHTML.attribute("id")
+
+      assert ids == Enum.map(50..1//-1, &"request-req_recent_#{&1}")
+      assert has_element?(view, "#requests-summary-total", "51")
+      assert has_element?(view, "#requests-summary-active", "51")
     end
   end
 
@@ -243,11 +439,92 @@ defmodule OrchardConsole.RequestsLiveTest do
       assert html =~ ~s(phx-hook="LocalTime")
       assert html =~ ~s(data-local-time-format="time_second")
     end
+
+    test "failed refresh discards stale rows and recovers through the existing poll" do
+      create_request!(%{public_id: "req_before_failure"})
+      {:ok, socket} = RequestsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      assert length(socket.assigns.requests) == 1
+
+      previous_repo = Repo.put_dynamic_repo(:requests_unavailable_test)
+
+      failed =
+        try do
+          {:noreply, failed} = RequestsLive.handle_event("refresh_now", %{}, socket)
+          failed
+        after
+          Repo.put_dynamic_repo(previous_repo)
+        end
+
+      assert failed.assigns.requests_status == :error
+      assert failed.assigns.requests == []
+      assert failed.assigns.requests_summary == nil
+      html = render_component(&RequestsLive.render/1, failed.assigns)
+      assert html =~ "Requests unavailable"
+      assert html =~ "Request data unavailable."
+      refute html =~ "req_before_failure"
+      refute html =~ "Last checked"
+      Process.cancel_timer(failed.assigns.refresh_timer)
+
+      {:noreply, recovered} = RequestsLive.handle_info(:refresh_requests, failed)
+      Process.cancel_timer(recovered.assigns.refresh_timer)
+      assert recovered.assigns.requests_status == :ok
+      assert render_component(&RequestsLive.render/1, recovered.assigns) =~ "req_before_failure"
+    end
+
+    test "loading remains explicit without empty or zero evidence" do
+      html = render_component(&RequestsLive.render/1, %{requests_status: :loading})
+      assert html =~ "Loading recent requests"
+      refute html =~ "requests-summary"
+      refute html =~ "requests-empty-state"
+    end
+
+    test "narrow layout and keyboard controls retain semantic navigation", %{conn: conn} do
+      create_request!(%{public_id: "req_keyboard"})
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      assert has_element?(view, "#requests-summary.grid-cols-2.sm\\:grid-cols-4")
+
+      assert has_element?(
+               view,
+               "#requests-table-region.overflow-x-auto[role='region'][tabindex='0'][aria-label='Recent requests'] > .contents > table > #requests-table"
+             )
+
+      summary = element(view, "#requests-evidence-help > summary") |> render()
+      assert summary =~ "focus-visible:ring-2"
+      assert summary =~ "focus-visible:ring-offset-2"
+      assert has_element?(view, "button#requests-refresh-now[phx-click='refresh_now']")
+      link = element(view, "#request-req_keyboard a") |> render()
+      assert link =~ "focus-visible:ring-2"
+      assert link =~ "focus-visible:ring-offset-2"
+      refute link =~ "tabindex"
+    end
   end
 
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp row_cells(view, public_id) do
+    html = if is_binary(view), do: view, else: render(view)
+
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#request-#{public_id} td")
+    |> Enum.map(&(LazyHTML.text(&1) |> String.replace(~r/\s+/, " ") |> String.trim()))
+  end
+
+  defp create_timed_request!(overrides) do
+    request = create_request!(overrides)
+    set_created_at(request, ~U[2026-03-15 12:00:00.000000Z])
+    request
+  end
+
+  defp set_created_at(request, inserted_at) do
+    {1, _} =
+      Repo.update_all(from(r in Request, where: r.id == ^request.id),
+        set: [inserted_at: inserted_at]
+      )
+  end
 
   defp create_request!(overrides) do
     attrs = request_attrs(overrides)

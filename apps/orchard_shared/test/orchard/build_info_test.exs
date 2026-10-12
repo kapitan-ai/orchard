@@ -149,9 +149,59 @@ defmodule Orchard.BuildInfoTest do
     assert File.read!(counter) == "compiled\n"
   end
 
-  test "build_date is the current UTC ISO date" do
-    date = BuildInfo.build_date()
-    assert date == Date.utc_today() |> Date.to_iso8601()
+  test "provenance state changes recompile when SHA and channel are unchanged" do
+    fixture = create_fixture!(clock: true)
+    counter = Path.join(fixture, "compile-counter")
+    date = "2026-10-05"
+    sha = git!(fixture, ["rev-parse", "HEAD"])
+
+    compile!(fixture, counter, date: date, sha: sha)
+    original_info = baked_info!(fixture, counter, date: date, sha: sha)
+
+    inferred_output = compile!(fixture, counter, date: date)
+    assert inferred_output =~ "Compiling 1 file"
+    assert baked_info!(fixture, counter, date: date) == original_info
+
+    overridden_output = compile!(fixture, counter, date: date, sha: sha)
+    assert overridden_output =~ "Compiling 1 file"
+    assert baked_info!(fixture, counter, date: date, sha: sha) == original_info
+    assert File.read!(counter) == "compiled\n"
+  end
+
+  # SPEC.md §13.1: build date is baked at compilation, including across UTC midnight.
+  test "UTC date rollover preserves baked provenance without recompiling" do
+    fixture = create_fixture!(clock: true)
+    counter = Path.join(fixture, "compile-counter")
+    first_date = "2026-10-05"
+    next_date = "2026-10-06"
+
+    compile!(fixture, counter, date: first_date)
+    original_info = baked_info!(fixture, counter, date: first_date)
+    assert original_info.build_date == first_date
+
+    beam =
+      Path.join(fixture, "_build/dev/lib/build_info_fixture/ebin/Elixir.Orchard.BuildInfo.beam")
+
+    original_beam = File.read!(beam)
+
+    rollover_output = compile!(fixture, counter, date: next_date)
+    refute rollover_output =~ "Compiling"
+    assert File.read!(beam) == original_beam
+    assert baked_info!(fixture, counter, date: next_date) == original_info
+    assert File.read!(counter) == "compiled\n"
+
+    changed_output = compile!(fixture, counter, date: next_date, channel: "pilot")
+    assert changed_output =~ "Compiling 1 file"
+    changed_info = baked_info!(fixture, counter, date: next_date, channel: "pilot")
+    assert changed_info.build_date == next_date
+    assert changed_info.build_channel == "pilot"
+    assert changed_info.git_sha == original_info.git_sha
+    assert File.read!(counter) == "compiled\n"
+  end
+
+  test "build_date is an ISO date" do
+    assert {:ok, date} = Date.from_iso8601(BuildInfo.build_date())
+    assert Date.to_iso8601(date) == BuildInfo.build_date()
   end
 
   test "build_channel returns a non-empty trimmed string" do
@@ -162,7 +212,7 @@ defmodule Orchard.BuildInfoTest do
     assert channel == String.trim(channel)
   end
 
-  defp create_fixture! do
+  defp create_fixture!(opts \\ []) do
     fixture =
       Path.join(
         System.tmp_dir!(),
@@ -171,6 +221,22 @@ defmodule Orchard.BuildInfoTest do
 
     File.mkdir_p!(Path.join(fixture, "lib/orchard"))
     File.cp!(@build_info_source, Path.join(fixture, "lib/orchard/build_info.ex"))
+
+    if Keyword.get(opts, :clock, false) do
+      source = File.read!(@build_info_source)
+      assert String.contains?(source, "Date.utc_today()")
+
+      File.write!(
+        Path.join(fixture, "lib/orchard/build_info.ex"),
+        String.replace(source, "Date.utc_today()", "BuildInfoFixture.Clock.utc_today()")
+      )
+
+      File.write!(Path.join(fixture, "lib/clock.ex"), """
+      defmodule BuildInfoFixture.Clock do
+        def utc_today, do: System.fetch_env!("ORCHARD_FIXTURE_BUILD_DATE") |> Date.from_iso8601!()
+      end
+      """)
+    end
 
     File.write!(Path.join(fixture, "mix.exs"), """
     defmodule BuildInfoFixture.MixProject do
@@ -229,11 +295,14 @@ defmodule Orchard.BuildInfoTest do
         "ORCHARD_BUILD_SHA",
         "-u",
         "ORCHARD_BUILD_CHANNEL",
+        "-u",
+        "ORCHARD_FIXTURE_BUILD_DATE",
         "MIX_ENV=dev",
         "ORCHARD_COMPILE_COUNTER=#{counter}"
       ]
       |> maybe_assign("ORCHARD_BUILD_SHA", opts, :sha)
       |> maybe_assign("ORCHARD_BUILD_CHANNEL", opts, :channel)
+      |> maybe_assign("ORCHARD_FIXTURE_BUILD_DATE", opts, :date)
       |> maybe_assign("PATH", opts, :path)
 
     System.cmd("/usr/bin/env", env_args ++ [System.find_executable("mix") | args],

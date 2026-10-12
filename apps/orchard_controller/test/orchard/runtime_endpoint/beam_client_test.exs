@@ -79,6 +79,19 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     end
   end
 
+  defmodule RawInventoryServer do
+    alias Orchard.RuntimeEndpoint.Observation
+
+    # Simulates a Node-built Observation term that bypassed local normalization.
+    def status(target, _opts) do
+      observation =
+        Observation.new(endpoint_id: target.id, target: target, availability: :available)
+
+      inventory = Application.get_env(:orchard_controller, :beam_client_test_host_inventory)
+      {:ok, %{observation | host_inventory: inventory}}
+    end
+  end
+
   defmodule FutureObservationServer do
     alias Orchard.Nodes.Node
     alias Orchard.Repo
@@ -332,6 +345,54 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     assert :ok = BeamClient.disconnect(connection)
   end
 
+  describe "SPEC.md §4.1 BEAM host inventory bound" do
+    setup do
+      on_exit(fn ->
+        Application.delete_env(:orchard_controller, :beam_client_test_host_inventory)
+      end)
+    end
+
+    test "a bounded Node inventory is kept and an unbounded or foreign term is absent" do
+      target =
+        Target.beam(@node_id,
+          address: node(),
+          metadata: %{server_module: RawInventoryServer, source_dev: true}
+        )
+
+      valid = beam_test_inventory()
+      oversized = put_in(valid.cpu.model_name, String.duplicate("x", 300))
+
+      provider = %Orchard.Cluster.V1.AcceleratorProviderObservation{
+        vendor: :ACCELERATOR_VENDOR_NVIDIA
+      }
+
+      improper_top = %{valid | accelerator_providers: [provider | :tail]}
+      improper_nested = %{valid | accelerator_providers: [%{provider | devices: [:d | :tail]}]}
+
+      inventories = [
+        valid,
+        oversized,
+        %{schema_version: 1},
+        {:raw, self()},
+        improper_top,
+        improper_nested,
+        %{valid | __unknown_fields__: :bogus},
+        Map.delete(valid, :__unknown_fields__),
+        %{valid | __unknown_fields__: [{4, 2, <<0xFF>>}]}
+      ]
+
+      results =
+        for inventory <- inventories do
+          Application.put_env(:orchard_controller, :beam_client_test_host_inventory, inventory)
+          assert {:ok, connection} = BeamClient.connect(target)
+          assert {:ok, observation} = BeamClient.status(connection, [])
+          observation.host_inventory
+        end
+
+      assert results == [valid, nil, nil, nil, nil, nil, nil, nil, nil]
+    end
+  end
+
   test "issue #201 SPEC §4.6.1 source-dev BEAM status uses Controller receive time" do
     target =
       Target.beam(@node_id,
@@ -488,6 +549,15 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     assert_receive {:DOWN, ^client_monitor, :process, ^client_pid, :normal}, 1_000
   end
 
+  defp beam_test_inventory do
+    %Orchard.Cluster.V1.HostInventoryObservation{
+      schema_version: 1,
+      observed_at_unix_ms: 1_789_743_600_000,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+      cpu: %Orchard.Cluster.V1.HostCpuObservation{architecture: "x86_64"}
+    }
+  end
+
   defp authenticated_beam_fixture! do
     previous_control_plane = Application.get_env(:orchard_controller, :control_plane)
     previous_node_trust = Application.get_env(:orchard_controller, :node_trust)
@@ -501,6 +571,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
     File.mkdir_p!(root)
+    File.chmod!(root, 0o700)
     Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
     Application.put_env(:orchard_controller, :node_trust, root: trust_root)
 

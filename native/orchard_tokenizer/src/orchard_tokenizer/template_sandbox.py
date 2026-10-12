@@ -13,7 +13,6 @@ from jinja2.visitor import NodeTransformer
 from orchard_tokenizer.safe_segmented import (
     MarkerPair,
     _MarkerString,
-    _TaggedString,
     reject_marker_transform,
     walk_rendered,
 )
@@ -105,6 +104,35 @@ class MarkerPolicy:
     def serialized(self, source: Any, result: str, operation: str) -> str:
         if self.counts(source) != self.counts(result):
             reject_marker_transform(operation)
+        walk_rendered(result, self.pairs)
+        return self.track(result)
+
+    def trimmed(
+        self, value: str, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> str:
+        if len(args) > 1 or set(kwargs) - {"chars"} or (args and kwargs):
+            reject_marker_transform("trim_arguments")
+        chars = args[0] if args else kwargs.get("chars")
+        if chars is not None and (type(chars) is not str or self.sensitive(chars)):
+            reject_marker_transform("trim_arguments")
+        segments = walk_rendered(str(value), self.pairs)
+        plain = "".join(segment.text for segment in segments)
+        start = len(plain) - len(plain.lstrip(chars)) if method != "rstrip" else 0
+        end = len(plain.rstrip(chars)) if method != "lstrip" else len(plain)
+        pairs_by_index = {pair.index: pair for pair in self.pairs}
+        parts: list[str] = []
+        offset = 0
+        for segment in segments:
+            segment_end = offset + len(segment.text)
+            left, right = max(start, offset), min(end, segment_end)
+            if left < right:
+                text = segment.text[left - offset : right - offset]
+                if segment.kind == "caller":
+                    pair = pairs_by_index[segment.marker_index]
+                    text = pair.begin + text + pair.end
+                parts.append(text)
+            offset = segment_end
+        result = "".join(parts)
         walk_rendered(result, self.pairs)
         return self.track(result)
 
@@ -249,8 +277,8 @@ class ProvenanceSandbox(ImmutableSandboxedEnvironment):
             elif isinstance(receiver, str):
                 if name == "replace":
                     return self.literal_replace(receiver, args, kwargs)
-                elif name in {"strip", "lstrip", "rstrip"} and isinstance(receiver, _TaggedString):
-                    pass
+                elif name in {"strip", "lstrip", "rstrip"}:
+                    return self.marker_policy.trimmed(receiver, name, args, kwargs)
                 elif name not in _OBSERVATION_METHODS:
                     reject_marker_transform("method_" + name)
             elif isinstance(receiver, Mapping) and name in {
@@ -277,8 +305,8 @@ class ProvenanceSandbox(ImmutableSandboxedEnvironment):
             )
             if not involved:
                 return function(*args, **kwargs)
-            if name == "trim" and isinstance(value, _TaggedString):
-                return function(*args, **kwargs)
+            if name == "trim" and isinstance(value, str):
+                return self.marker_policy.trimmed(value, "strip", values[1:], kwargs)
             if name == "replace" and isinstance(value, str):
                 return self.literal_replace(value, values[1:], kwargs)
             if name in _OBSERVATION_FILTERS or name in {"default", "d", "attr"}:

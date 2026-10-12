@@ -19,6 +19,16 @@ this service directly.
 
 See `../../docs/architecture.md` for the broader runtime map.
 
+If final stream settlement synchronization or batch runtime idle synchronization
+fails, the Worker reports not-ready with `native_settlement_failed` and refuses
+further generation or loading in that process, including after model unload.
+Recovery requires retiring the Worker process through Node Agent unload or model
+eviction. Automatic quarantine or replacement is not implemented by this change.
+The separate memory-limit helper synchronization remains best-effort and log-only.
+A public terminal event does not prove native settlement; cache cleanup still runs
+after a settlement synchronization failure. This applies to ordinary MLX models as
+well as specialized loaders and does not establish device-drain latency.
+
 ## Backend modes
 
 The standalone CLI supports `--backend stub` and `--backend mlx`. The CLI
@@ -45,8 +55,10 @@ Aggregate capacity is the conservative limit the node agent enforces across load
 
 Issue #409 keeps compatibility and lifecycle regression evidence separate from
 model qualification. The native suite covers normalized EOS IDs independently
-of text stop sequences, manifest identity and bundle-relative paths despite
-misleading names, and empty, partial, and hybrid prefix-cache snapshots.
+of text stop sequences, manifest-bound capability evidence and bundle-relative
+paths despite misleading requested, manifest, folder, and config names, and
+empty, partial, and hybrid prefix-cache snapshots. A name never grants EOS,
+parser, tool, or capability authority.
 
 `test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup`
 holds two synthetic requests in one batch after partial prefill, cancels one,
@@ -54,9 +66,12 @@ and proves the other retains its output, exact usage, and one completion while
 the shared runtime retains both active entries until the batch returns terminal
 responses. It then proves the request and detokenizer registries are empty.
 `test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout` covers
-the distinct reset policy: an undrained cancellation resets the shared batch
-and gives other active requests a retryable collateral failure. It is not a
-peer-preservation path.
+the distinct reset policy. It admits both synthetic requests before cancelling
+one, then proves an undrained cancellation resets the shared batch, leaving the
+cancelled request exactly one terminal event and the collateral request a
+single retryable failure with no terminal event of its own, and leaves the
+runtime request, active, and detokenizer registries empty before teardown. It
+is not a peer-preservation path.
 
 These tests use fake generation dependencies and do not establish MLX-LM cache
 reachability, real Metal behavior, model compatibility, Apple Silicon hardware
@@ -87,7 +102,9 @@ ORCHARD_MLX_LIFECYCLE_BUNDLE="<existing-bundle>" \
 
 The child sets Hugging Face and Transformers offline flags; these are not an OS
 network sandbox. Its runtime pin checks deliberately restrict the evidence to
-MLX 0.32.2, Transformers 5.12.1, and the MLX-LM revision below.
+MLX 0.32.2, Transformers 5.14.1, and the MLX-LM revision below.
+Prior results with Transformers 5.12.1 do not qualify this dependency tuple;
+the updated harness requires a fresh opt-in run before claiming real-runtime evidence.
 It rejects Python optimization (`-O`, `-OO`, or inherited `PYTHONOPTIMIZE`)
 before importing MLX, so qualification assertions cannot silently disappear.
 With the opt-in variable absent, ordinary native validation does not load a model.
@@ -122,7 +139,10 @@ claim, and must not be committed.
 The `mlx` extra pins MLX-LM commit `ab1806e8f5d6aa035973af194a1b9198ab4754dc`.
 The reviewed source range contains 15 commits and 35 changed files after the `v0.31.3` tag.
 The dependency still reports version `0.31.3`, so the full Git revision and committed uv lock are the runtime provenance authority.
-Transformers remains constrained to `>=5.7,<5.13` until its broader compatibility matrix is accepted separately.
+Transformers is pinned to `5.14.1`. The audited MLX-LM revision includes the tokenizer-registration fix for the import failure introduced by Transformers 5.13 (issues #57 and #98).
+Its minimum Safetensors requirement raises that lock entry to `0.8.0`; the other locked dependency versions remain unchanged.
+This pin permits review of the native Bonsai dependency path; it does not add an mlx-vlm adapter or qualify a Bonsai artifact, coding workflow, cancellation, or safe resource reuse.
+Dependency-refresh validation must install the exact locked `mlx` extra and exercise the import and remote-code guards described in `docs/tooling.md`; dev-only tests skip those guards.
 
 Orchard rejects model configurations containing `model_file` before upstream loading.
 Against the pinned commit the production loader passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.

@@ -38,7 +38,7 @@ The canonical Request carries `generation_policy` as `model_default`, `disabled`
 It separately carries `projection` as `legacy_blended`, `final_only`, or `reasoning_structured`.
 It also carries source provenance and a pinned effective contract.
 The outer fields are the sole authority for generation and projection.
-The effective contract is discriminated: omitted requests carry only `mode = legacy`, while negotiated requests carry `mode = negotiated` plus non-empty exact artifact, template, render, parser, runtime, and event-binding identity.
+The effective contract is discriminated: omitted requests carry only `mode = legacy`, the separately defined input-steering route carries `mode = rendered` with its exact input identity, while negotiated requests carry `mode = negotiated` plus non-empty exact artifact, template, render, parser, runtime, and event-binding identity.
 
 The axes are independent because generation and disclosure answer different questions.
 For example, a request may enable reasoning generation while selecting only final answer text for public output.
@@ -48,8 +48,8 @@ When a public request omits reasoning control, Orchard normalizes it to `model_d
 That request stays on the complete legacy path even when every component advertises a newer reasoning capability.
 The synthesized defaults and legacy mode marker remain outside the omitted request's existing `body_hash` domain.
 
-The first-release combination matrix is closed.
-Omitted public requests use only `model_default + legacy_blended`, Console defaults use only `disabled + final_only`, and accepted explicit controls may combine `model_default`, `disabled`, or `enabled` only with `final_only`.
+The negotiated final-only release combination matrix is closed. Rendered input steering follows the separately accepted `request-local-reasoning-effort` change and SPEC §3.4: `enabled + legacy_blended` with an explicit supported tier is permitted without entering this negotiated path.
+Omitted public requests use only `model_default + legacy_blended`, Console defaults use only `disabled + final_only`, and accepted negotiated explicit controls may combine `model_default`, `disabled`, or `enabled` only with `final_only`.
 Structured reasoning stays unavailable until its separate contract expands the matrix.
 
 ### Pin exact capability identity before dispatch
@@ -130,9 +130,8 @@ Orchard does not estimate reasoning tokens by retokenizing decoded text or by su
 
 ### Stage the public API contract
 
-The first public behavior supports explicit final-only semantics for both Chat Completions and Responses after a concrete request-field contract is separately accepted.
-This package defines the semantics but intentionally does not invent the public request field names.
-No ad hoc input field may ship before that gate is accepted.
+The first negotiated public behavior supports explicit final-only semantics for both Chat Completions and Responses after a concrete request-field contract is separately accepted.
+This package defines negotiated output semantics but intentionally does not invent final-only selector names. The separate `request-local-reasoning-effort` change defines Chat `reasoning_effort` and Responses `reasoning.effort` solely for rendered input steering with legacy blended output; those accepted fields do not imply a final-only selector. No ad hoc final-only field may ship before its separate gate is accepted.
 
 Chat Completions raw structured reasoning remains unsupported.
 Responses structured reasoning remains disabled until a later accepted contract defines item and event names, raw-versus-summary semantics, sync and streaming shapes, ordering, terminal behavior, capture, and replay.
@@ -206,8 +205,8 @@ Post-execution parser or generation-policy conformance returns `500 api_error` w
 6. Accept concrete public final-only input fields before enabling the feature on either public endpoint.
 7. Accept a separate Responses structured reasoning contract before defining or emitting any public structured reasoning item or event.
 
-Public field names, event names, protobuf field numbers, manifest encoding, raw-versus-summary semantics, and replay shapes are irreversible compatibility choices.
-They remain blocked until their dedicated contract and mixed-version tests are accepted.
+Negotiated final-only field names, structured event names, protobuf field numbers, manifest encoding, raw-versus-summary semantics, and replay shapes are irreversible compatibility choices.
+They remain blocked until their dedicated contract and mixed-version tests are accepted. Rendered input-effort field names are defined by the separate accepted input-steering contract and do not release these negotiated-output gates.
 
 ## Rejected alternatives
 

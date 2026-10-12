@@ -6,6 +6,7 @@ defmodule Orchard.Tokenizer.Client do
   require Logger
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.ReasoningEffort
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
   alias Orchard.PathUtils
@@ -22,6 +23,7 @@ defmodule Orchard.Tokenizer.Client do
   @render_and_count_contract_version 2
   @render_and_count_segmented_contract_version 3
   @render_and_count_reasoning_contract_version 4
+  @render_and_count_effort_contract_version 5
   @default_timeout_ms 5_000
   @default_runtime_max_stdout_bytes 16_777_216
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json tokenizer_json)
@@ -137,14 +139,15 @@ defmodule Orchard.Tokenizer.Client do
   def executable, do: Orchard.Inference.tokenizer_executable()
 
   defp default_tokenize(
-         %CanonicalRequest{reasoning: %{effective_contract: %{mode: :negotiated}}} = request,
+         %CanonicalRequest{reasoning: %{effective_contract: %{mode: contract_mode}}} = request,
          opts
-       ) do
+       )
+       when contract_mode in [:negotiated, :rendered] do
     if mode() == :port do
       port_tokenize(request, opts)
     else
       {:error,
-       {:invalid_input, "negotiated reasoning tokenization requires tokenizer_mode=:port"}}
+       {:invalid_input, "#{contract_mode} reasoning tokenization requires tokenizer_mode=:port"}}
     end
   end
 
@@ -206,6 +209,17 @@ defmodule Orchard.Tokenizer.Client do
     end
   end
 
+  defp build_tokenization_plan(
+         %CanonicalRequest{reasoning: %{effective_contract: %{mode: :rendered}}} = request,
+         opts
+       ) do
+    if Orchard.Inference.tokenizer_safe_mode() == :off do
+      build_rendered_effort_plan(request, opts)
+    else
+      {:error, {:invalid_input, "rendered effort requires tokenizer_safe_mode=:off"}}
+    end
+  end
+
   defp build_tokenization_plan(%CanonicalRequest{} = request, opts) do
     case Orchard.Inference.tokenizer_safe_mode() do
       :off -> build_legacy_plan(request, opts)
@@ -232,6 +246,42 @@ defmodule Orchard.Tokenizer.Client do
          expected_reasoning: CanonicalRequest.Reasoning.to_wire(reasoning),
          payload: negotiated_payload(request, Map.merge(assets, identity))
        }}
+    end
+  end
+
+  defp build_rendered_effort_plan(%CanonicalRequest{} = request, opts) do
+    with {:ok, assets} <- resolve_negotiated_assets(opts),
+         {:ok, identity} <- negotiated_identity(opts),
+         {:ok, reasoning} <-
+           ReasoningEffort.resolve(
+             request.reasoning.reasoning_effort,
+             identity.model_artifact_digest,
+             identity.chat_template_digest
+           ),
+         true <- reasoning == request.reasoning do
+      {:ok,
+       %{
+         mode: :rendered,
+         expected_reasoning: CanonicalRequest.Reasoning.to_wire(reasoning),
+         expected_arguments: ReasoningEffort.arguments(reasoning),
+         payload: %{
+           contract_version: @render_and_count_effort_contract_version,
+           command: "render_and_count_effort",
+           assets: Map.merge(assets, identity),
+           request:
+             Map.put(
+               request_payload(request),
+               :reasoning,
+               CanonicalRequest.Reasoning.to_wire(reasoning)
+             )
+         }
+       }}
+    else
+      {:error, reason} ->
+        {:error, reason}
+
+      false ->
+        runtime_incompatible_error("rendered effort identity does not match the selected model")
     end
   end
 
@@ -942,6 +992,69 @@ defmodule Orchard.Tokenizer.Client do
 
   defp normalize_response(
          %{
+           "contract_version" => @render_and_count_effort_contract_version,
+           "ok" => true,
+           "result" =>
+             %{
+               "rendered_prompt" => prompt,
+               "input_token_count" => count,
+               "reasoning" => reasoning,
+               "applied_template_arguments" => arguments
+             } = result
+         },
+         0,
+         %{mode: :rendered, expected_reasoning: expected, expected_arguments: expected_arguments}
+       )
+       when is_binary(prompt) and is_integer(count) and count >= 0 do
+    cond do
+      reasoning != expected or arguments != expected_arguments ->
+        runtime_incompatible_error(
+          "tokenizer did not prove selected rendered effort and arguments"
+        )
+
+      Map.has_key?(result, "prompt_token_ids") and
+          not rendered_effort_ids?(result["prompt_token_ids"], count) ->
+        {:error, :invalid_response}
+
+      true ->
+        {:ok,
+         %{
+           rendered_prompt: prompt,
+           input_token_count: count,
+           reasoning: reasoning,
+           applied_template_arguments: arguments
+         }
+         |> maybe_put_rendered_effort_ids(result)}
+    end
+  end
+
+  defp normalize_response(
+         %{
+           "contract_version" => @render_and_count_effort_contract_version,
+           "ok" => false,
+           "error" => %{"category" => "unsupported_reasoning_control"}
+         },
+         _exit_status,
+         %{mode: :rendered}
+       ),
+       do: runtime_incompatible_error("tokenizer cannot honor the bound rendered effort")
+
+  defp normalize_response(
+         %{
+           "contract_version" => @render_and_count_effort_contract_version,
+           "ok" => false,
+           "error" => %{"category" => category, "message" => message}
+         },
+         _exit_status,
+         %{mode: :rendered}
+       )
+       when is_binary(category) and is_binary(message), do: normalized_error(category, message)
+
+  defp normalize_response(_response, _status, %{mode: :rendered}),
+    do: runtime_incompatible_error("tokenizer did not return the bound rendered effort contract")
+
+  defp normalize_response(
+         %{
            "contract_version" => @render_and_count_reasoning_contract_version,
            "ok" => false,
            "error" => %{"category" => category, "message" => message}
@@ -1097,6 +1210,17 @@ defmodule Orchard.Tokenizer.Client do
     length(prompt_token_ids) == input_token_count and
       Enum.all?(prompt_token_ids, &(is_integer(&1) and &1 >= 0))
   end
+
+  # SPEC.md §7.2.9: rendered effort carries the whole-prompt IDs the TensorFold
+  # bridge re-derives at admission. The helper omits them when they disagree
+  # with the count, so a present field must match it exactly.
+  defp rendered_effort_ids?(ids, count),
+    do: is_list(ids) and ids != [] and valid_prompt_token_ids?(ids, count)
+
+  defp maybe_put_rendered_effort_ids(normalized, %{"prompt_token_ids" => ids}),
+    do: Map.put(normalized, :prompt_token_ids, ids)
+
+  defp maybe_put_rendered_effort_ids(normalized, _result), do: normalized
 
   defp maybe_cache_segmented_incompatibility(cache_key, category, error)
        when category in [

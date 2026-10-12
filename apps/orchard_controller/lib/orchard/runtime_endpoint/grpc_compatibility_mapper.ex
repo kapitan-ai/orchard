@@ -49,6 +49,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       runtime_prefix_cache_statuses: list_value(response, :runtime_prefix_cache_statuses),
       worker_crash_counters: list_value(response, :worker_crash_counters),
       worker_recovery_epoch: empty_to_nil(value(response, :worker_recovery_epoch)),
+      host_inventory: value(response, :host_inventory),
       supports_prompt_token_ids: value(response, :supports_prompt_token_ids) == true
     })
   end
@@ -59,21 +60,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
   end
 
   @spec execute_request_to_proto(Operation.ExecuteRequest.t()) :: ExecuteInferenceRequest.t()
-  def execute_request_to_proto(%Operation.ExecuteRequest{} = request) do
-    %ExecuteInferenceRequest{
-      request_id: request.request_id,
-      controller_session_id: request.controller_session_id,
-      model_id: request.model_ref.model_id,
-      version: request.model_ref.version,
-      rendered_prompt_utf8: request.rendered_prompt_utf8,
-      input_tokens: request.input_tokens,
-      params: GrpcMapping.generation_params_to_proto(request.params),
-      deadline_unix_ms: request.deadline_unix_ms || 0,
-      metadata_json: request.metadata_json || "{}",
-      cache_affinity_fingerprint: request.cache_affinity_fingerprint || "",
-      prompt_token_ids: request.prompt_token_ids || []
-    }
-  end
+  defdelegate execute_request_to_proto(request), to: GrpcMapping
 
   @spec cancel_request_to_proto(Operation.CancelRequest.t()) ::
           Orchard.Cluster.V1.CancelInferenceRequest.t()

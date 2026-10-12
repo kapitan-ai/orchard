@@ -2,9 +2,20 @@
 
 ### Requirement: Safe tool-result continuation
 
-Under `SPEC.md` §3.5, contract-v3 segmented rendering SHALL decode assistant tool-call argument JSON strings into objects before baseline rendering and caller-string tagging.
+Under `SPEC.md` §3.5, legacy and contract-v3 segmented rendering SHALL decode assistant tool-call argument JSON strings into objects before rendering and, when applicable, caller-string tagging.
 Malformed, non-object, duplicate-key, and non-finite arguments SHALL fail before inference without echoing their contents.
 Recursive argument keys and string values SHALL remain caller-authored material subject to safe encoding.
+Legacy rendering SHALL forward only each message's `role`, normalized `content`, valid `tool_calls`, and string `tool_call_id` and `name` values.
+Within each tool call it SHALL forward only `id`, `type`, and the function `name` and `arguments`.
+It SHALL NOT forward `reasoning_content`, `reasoning`, or other unlisted message, tool-call, or function fields.
+Legacy rendering SHALL reject invalid tool-call entries as invalid input without echoing their contents.
+Omitted-control legacy content SHALL remain byte-preserved; delimiter-like text SHALL NOT be heuristically reconstructed into a typed reasoning channel under `SPEC.md` §7.2.8–§7.2.9.
+
+#### Scenario: Legacy rendering excludes unlisted history fields
+
+- **WHEN** a legacy render request carries valid tool-call history together with prior-reasoning or other unlisted message, tool-call, or function fields
+- **THEN** the template receives only the allowlisted fields, normalized argument objects, tool-result IDs, names, and byte-preserved content
+- **AND** reasoning-like delimiter text in assistant content is neither split nor reconstructed
 
 #### Scenario: Mapping-based template renders tool history
 
@@ -21,12 +32,14 @@ Recursive argument keys and string values SHALL remain caller-authored material 
 - **AND** all original bytes, including edge whitespace, stay inside ordinary markers during raw and JSON rendering
 - **AND** trimming operates on the original value and keeps every nonempty result tagged
 - **AND** text parts are concatenated before tagging so combined-value trimming preserves internal whitespace
-- **AND** trimming a marker-bearing plain string after coercion fails closed through both filters and bound methods
+- **AND** audited trimming after macro capture or concatenation operates on the unmarked segment text and retains each surviving caller span's original marker identity and provenance
+- **AND** only bytes removed by whole-value trimming may lose their marker envelopes; another occurrence of the original leaf remains protected
+- **AND** unsupported transforms, malformed marker spans, and marker-bearing trim character sets fail closed
 
 #### Scenario: Assistant tool-call content is absent
 
 - **WHEN** valid nonempty assistant function-call history has null or omitted content
-- **THEN** segmented rendering treats the absent text as an empty string
+- **THEN** legacy and segmented rendering treat the absent text as an empty string
 - **AND** invalid tool-call history and absent user or tool content still fail
 
 #### Scenario: One request has incompatible rendering

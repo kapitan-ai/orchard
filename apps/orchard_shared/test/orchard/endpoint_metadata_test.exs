@@ -38,6 +38,25 @@ defmodule Orchard.EndpointMetadataTest do
     )
   end
 
+  test "encode returns the exact sidecar bytes write stores without touching the filesystem" do
+    {root, path} = temp_path()
+    now = fn -> ~U[2026-05-18 01:02:03Z] end
+
+    try do
+      assert {:ok, bytes} = EndpointMetadata.encode(metadata(), now: now)
+      refute File.exists?(root)
+      assert String.ends_with?(bytes, "\n")
+
+      assert :ok = EndpointMetadata.write(metadata(), path: path, now: now)
+      assert File.read!(path) == bytes
+
+      assert {:error, {:invalid, _message}} =
+               EndpointMetadata.encode(metadata(%{public_host: ""}), now: now)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "writes schema v1 with only non-secret endpoint fields and reads it back" do
     {root, path} = temp_path()
 

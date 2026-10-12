@@ -3,6 +3,7 @@ import Config
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
 Code.require_file("source_dev_beam.exs", __DIR__)
 Code.require_file("source_postgres.exs", __DIR__)
+Code.require_file("source_dev_tensorfold.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 dev_root = Path.join([repo_root, "tmp", "dev"])
@@ -39,6 +40,42 @@ env_bool = fn env_name, default ->
     value when value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"] -> true
     value when value in ["0", "false", "FALSE", "no", "NO", "off", "OFF"] -> false
     value -> raise "environment variable #{env_name} must be a boolean, got: #{inspect(value)}"
+  end
+end
+
+env_positive_int = fn env_name, default ->
+  value = env_int.(env_name, default)
+
+  if value < 1 do
+    raise "environment variable #{env_name} must be >= 1, got: #{value}"
+  end
+
+  value
+end
+
+env_non_neg_int = fn env_name, default ->
+  value = env_int.(env_name, default)
+
+  if value < 0 do
+    raise "environment variable #{env_name} must be an integer >= 0, got: #{value}"
+  end
+
+  value
+end
+
+env_float = fn env_name, default ->
+  case System.get_env(env_name) do
+    nil ->
+      default
+
+    value ->
+      case Float.parse(value) do
+        {parsed, ""} ->
+          parsed
+
+        _other ->
+          raise "environment variable #{env_name} must be a number, got: #{inspect(value)}"
+      end
   end
 end
 
@@ -149,6 +186,16 @@ dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 
 source_dev_role =
   Orchard.Config.SourceDevBeam.source_dev_role(System.get_env("ORCHARD_SOURCE_DEV_ROLE"))
+
+node_platform_profile = System.get_env("ORCHARD_NODE_PLATFORM_PROFILE")
+
+unless node_platform_profile in [nil, "ubuntu_24_04_x86_64_node"] do
+  raise "Unknown experimental Node source platform profile"
+end
+
+if node_platform_profile && source_dev_role != :node_agent do
+  raise "Experimental Node profile requires the Node-only source role"
+end
 
 source_postgres_port =
   case source_dev_role do
@@ -432,11 +479,14 @@ worker_backend =
   env_optional_string.("ORCHARD_WORKER_BACKEND") ||
     Keyword.fetch!(node_runtime_defaults, :worker_backend)
 
+worker_defaults =
+  Orchard.Config.SourceDevTensorFold.worker_defaults(worker_backend, node_runtime_defaults)
+
 worker_prefix_cache_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") ||
-         Keyword.fetch!(node_runtime_defaults, :worker_prefix_cache_mode)
+         Keyword.fetch!(worker_defaults, :worker_prefix_cache_mode)
 
      unless mode in ["disabled", "kv", "trie"] do
        raise "ORCHARD_WORKER_PREFIX_CACHE_MODE must be disabled|kv|trie, got: #{inspect(mode)}"
@@ -452,7 +502,7 @@ worker_generation_mode =
          if worker_backend == "stub" do
            "stream"
          else
-           Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
+           Keyword.fetch!(worker_defaults, :worker_generation_mode)
          end
 
      unless mode in ["stream", "batch"] do
@@ -466,7 +516,7 @@ worker_max_concurrent_requests_per_model =
   (fn ->
      value =
        System.get_env("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL") ||
-         Keyword.fetch!(node_runtime_defaults, :worker_max_concurrent_requests_per_model)
+         Keyword.fetch!(worker_defaults, :worker_max_concurrent_requests_per_model)
 
      if value == "auto" do
        "auto"
@@ -490,7 +540,7 @@ worker_auto_max_concurrent_requests_per_model =
      v =
        env_int.(
          "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
-         Keyword.fetch!(node_runtime_defaults, :worker_auto_max_concurrent_requests_per_model)
+         Keyword.fetch!(worker_defaults, :worker_auto_max_concurrent_requests_per_model)
        )
 
      if v < 1 do
@@ -499,6 +549,76 @@ worker_auto_max_concurrent_requests_per_model =
 
      v
    end).()
+
+worker_prefix_cache_max_entries =
+  env_positive_int.(
+    "ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES",
+    Keyword.fetch!(worker_defaults, :worker_prefix_cache_max_entries)
+  )
+
+worker_prefix_cache_max_bytes =
+  env_non_neg_int.(
+    "ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES",
+    Keyword.fetch!(worker_defaults, :worker_prefix_cache_max_bytes)
+  )
+
+worker_memory_budget_mode =
+  (fn ->
+     mode =
+       System.get_env("ORCHARD_WORKER_MEMORY_BUDGET_MODE") ||
+         Keyword.fetch!(worker_defaults, :worker_memory_budget_mode)
+
+     unless mode in ["disabled", "observe", "enforce"] do
+       raise "ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled|observe|enforce, got: #{inspect(mode)}"
+     end
+
+     mode
+   end).()
+
+worker_memory_budget_utilization =
+  (fn ->
+     v =
+       env_float.(
+         "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION",
+         Keyword.fetch!(worker_defaults, :worker_memory_budget_utilization)
+       )
+
+     if v <= 0.0 or v > 1.0 do
+       raise "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION must be > 0.0 and <= 1.0, got: #{v}"
+     end
+
+     v
+   end).()
+
+worker_memory_budget_overhead_bytes =
+  env_non_neg_int.(
+    "ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES",
+    Keyword.fetch!(worker_defaults, :worker_memory_budget_overhead_bytes)
+  )
+
+worker_settings = [
+  worker_prefix_cache_mode: worker_prefix_cache_mode,
+  worker_prefix_cache_max_entries: worker_prefix_cache_max_entries,
+  worker_prefix_cache_max_bytes: worker_prefix_cache_max_bytes,
+  worker_generation_mode: worker_generation_mode,
+  worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,
+  worker_auto_max_concurrent_requests_per_model: worker_auto_max_concurrent_requests_per_model,
+  worker_memory_budget_mode: worker_memory_budget_mode,
+  worker_memory_budget_utilization: worker_memory_budget_utilization,
+  worker_memory_budget_overhead_bytes: worker_memory_budget_overhead_bytes
+]
+
+Orchard.Config.SourceDevTensorFold.validate_worker!(worker_backend, worker_settings)
+
+tensorfold_profiles =
+  Orchard.Config.SourceDevTensorFold.profiles!(
+    source_dev_role,
+    worker_backend,
+    env_source_dev_path
+  )
+
+config :orchard_controller, tensorfold_experiment_profile: tensorfold_profiles.controller
+config :orchard_node_agent, tensorfold_experiment_profile: tensorfold_profiles.node
 
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
@@ -516,27 +636,66 @@ dev_runtime_client_target =
     [host: dev_runtime_client_host, port: dev_runtime_port]
   end
 
-config :orchard_controller,
-  inference:
+request_timeout_ms =
+  env_positive_int.(
+    "ORCHARD_REQUEST_TIMEOUT_MS",
+    Keyword.fetch!(controller_inference_defaults, :request_timeout_ms)
+  )
+
+max_request_deadline_ms =
+  env_positive_int.(
+    "ORCHARD_MAX_REQUEST_DEADLINE_MS",
+    Keyword.fetch!(controller_inference_defaults, :max_request_deadline_ms)
+  )
+
+if request_timeout_ms > max_request_deadline_ms do
+  raise "ORCHARD_REQUEST_TIMEOUT_MS (#{request_timeout_ms}) must be <= " <>
+          "ORCHARD_MAX_REQUEST_DEADLINE_MS (#{max_request_deadline_ms})"
+end
+
+model_load_timeout_ms =
+  env_positive_int.(
+    "ORCHARD_MODEL_LOAD_TIMEOUT_MS",
+    Keyword.fetch!(controller_inference_defaults, :model_load_timeout_ms)
+  )
+
+sse_keepalive_interval_ms =
+  env_positive_int.(
+    "ORCHARD_SSE_KEEPALIVE_INTERVAL_MS",
+    Keyword.fetch!(controller_inference_defaults, :sse_keepalive_interval_ms)
+  )
+
+controller_inference =
+  Keyword.merge(
     Keyword.merge(
-      Keyword.merge(
-        controller_inference_defaults,
-        runtime_client_target: dev_runtime_client_target,
-        runtime_client_targets: dev_runtime_targets,
-        allow_static_runtime_target_fallback: true,
-        tokenizer_executable:
-          System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
-            Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
-        tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
-        tokenizer_safe_mode_prefer_capable:
-          env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
-        cache_affinity: cache_affinity_config,
-        cache_introspection: cache_introspection_config,
-        prefix_cache_scoring: prefix_cache_scoring_config,
-        memory_admission: memory_admission_config
-      ),
-      runtime_endpoint_inference_config
-    )
+      controller_inference_defaults,
+      request_timeout_ms: request_timeout_ms,
+      max_request_deadline_ms: max_request_deadline_ms,
+      model_load_timeout_ms: model_load_timeout_ms,
+      sse_keepalive_interval_ms: sse_keepalive_interval_ms,
+      runtime_client_target: dev_runtime_client_target,
+      runtime_client_targets: dev_runtime_targets,
+      allow_static_runtime_target_fallback: true,
+      tokenizer_executable:
+        System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
+          Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
+      tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
+      tokenizer_safe_mode_prefer_capable:
+        env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
+      cache_affinity: cache_affinity_config,
+      cache_introspection: cache_introspection_config,
+      prefix_cache_scoring: prefix_cache_scoring_config,
+      memory_admission: memory_admission_config
+    ),
+    runtime_endpoint_inference_config
+  )
+
+Orchard.Config.SourceDevTensorFold.validate_controller!(
+  tensorfold_profiles.controller,
+  controller_inference
+)
+
+config :orchard_controller, inference: controller_inference
 
 cond do
   beam_peer_grants_enabled? && beam_peer_grant_mode == :distributed ->
@@ -557,7 +716,47 @@ cond do
     :ok
 end
 
+# Observation-only host inventory is default-off (SPEC.md §4.1 and §4.9).
+# The Linux capability provider and each accelerator vendor are explicit opt-ins.
+host_inventory_provider =
+  case System.get_env("ORCHARD_NODE_HOST_INVENTORY", "disabled") do
+    "disabled" ->
+      nil
+
+    "linux" ->
+      Orchard.Node.LinuxHostInventory
+
+    other ->
+      raise "ORCHARD_NODE_HOST_INVENTORY must be disabled|linux, got: #{inspect(other)}"
+  end
+
+host_inventory_accelerators =
+  "ORCHARD_NODE_HOST_INVENTORY_ACCELERATORS"
+  |> System.get_env("")
+  |> String.split(",", trim: true)
+  |> Enum.map(fn
+    "nvidia" ->
+      :nvidia
+
+    "amd" ->
+      :amd
+
+    other ->
+      raise "ORCHARD_NODE_HOST_INVENTORY_ACCELERATORS entries must be nvidia|amd, got: #{inspect(other)}"
+  end)
+  |> Enum.uniq()
+
+config :orchard_node_agent, :host_inventory,
+  provider: host_inventory_provider,
+  provider_opts: [accelerators: host_inventory_accelerators]
+
 config :orchard_node_agent,
+  source_startup: [
+    profile: node_platform_profile,
+    source_role: source_dev_role,
+    helper_path:
+      Path.join([repo_root, ".local", "linux-node-root-guardian", "orchard-node-root-guardian"])
+  ],
   beam_peer_grants:
     if(node_peer_grant_enabled?,
       do: [
@@ -572,20 +771,33 @@ config :orchard_node_agent,
       else: [enabled: false]
     ),
   runtime:
-    Keyword.merge(
-      node_runtime_defaults,
+    node_runtime_defaults
+    |> Keyword.merge(worker_settings)
+    |> Keyword.merge(
+      worker_ready_timeout_ms:
+        env_positive_int.(
+          "ORCHARD_WORKER_READY_TIMEOUT_MS",
+          Keyword.fetch!(node_runtime_defaults, :worker_ready_timeout_ms)
+        ),
+      worker_load_timeout_ms:
+        env_positive_int.(
+          "ORCHARD_WORKER_LOAD_TIMEOUT_MS",
+          Keyword.fetch!(node_runtime_defaults, :worker_load_timeout_ms)
+        ),
       node_identity_root: dev_node_identity_root,
+      node_identity_path:
+        if(node_platform_profile, do: nil, else: node_runtime_defaults[:node_identity_path]),
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:
         env_source_dev_path.("ORCHARD_WORKER_EXECUTABLE") ||
-          Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+          if(worker_backend == Orchard.Config.SourceDevTensorFold.backend(),
+            do: Orchard.Config.SourceDevTensorFold.worker_executable(repo_root),
+            else:
+              Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"])
+          ),
       worker_socket_dir: worker_socket_dir,
-      worker_backend: worker_backend,
-      worker_prefix_cache_mode: worker_prefix_cache_mode,
-      worker_generation_mode: worker_generation_mode,
-      worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,
-      worker_auto_max_concurrent_requests_per_model: worker_auto_max_concurrent_requests_per_model
+      worker_backend: worker_backend
     )
 
 # Console: enabled with no auth for frictionless local development.

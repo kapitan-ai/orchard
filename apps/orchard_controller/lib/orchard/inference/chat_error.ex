@@ -17,6 +17,7 @@ defmodule Orchard.Inference.ChatError do
   @type kind ::
           :missing_required_field
           | :unsupported_parameter
+          | :unsupported_reasoning_control
           | :invalid_value
           | :model_not_found
           | :model_not_authorized
@@ -85,6 +86,9 @@ defmodule Orchard.Inference.ChatError do
   def from_prepare_reason({:validation, {:unsupported_parameter, field}}),
     do: build(:unsupported_parameter, param: to_string(field))
 
+  def from_prepare_reason({:validation, {:unsupported_reasoning_control, field}}),
+    do: build(:unsupported_reasoning_control, param: to_string(field))
+
   def from_prepare_reason({:validation, {:invalid_value, field, reason}}),
     do: build(:invalid_value, param: to_string(field), detail: reason)
 
@@ -146,6 +150,9 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
     do: build(:request_cancelled, source_code: "request_caller_disconnect")
 
+  def from_execute_error({:dispatch_failed, :runtime_incompatible}),
+    do: build(:tokenization_runtime_incompatible, [])
+
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
   @spec from_failed_event(InferenceEvent.t()) :: t()
@@ -159,6 +166,9 @@ defmodule Orchard.Inference.ChatError do
   end
 
   def from_failed_event(event), do: build(:internal, detail: {:unexpected_failed_event, event})
+
+  # A lost Worker is unavailable capacity: SPEC.md §7.2.7 maps it to 503.
+  @worker_lost_codes ["worker_down", "worker_unavailable"]
 
   @spec api_mapping(t()) :: mapping()
   def api_mapping(%__MODULE__{kind: :missing_required_field, param: field}) do
@@ -187,6 +197,16 @@ defmodule Orchard.Inference.ChatError do
       type: "invalid_request_error",
       code: "invalid_value",
       message: "Invalid value for #{field}: #{reason}",
+      param: field
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :unsupported_reasoning_control, param: field}) do
+    %{
+      status: :bad_request,
+      type: "invalid_request_error",
+      code: "unsupported_reasoning_control",
+      message: "The selected model and rendering route do not support this reasoning control",
       param: field
     }
   end
@@ -362,6 +382,19 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  # The Worker serving the Request was lost. The capacity is unavailable, not
+  # broken, so a sync response reports it like the stream does.
+  def api_mapping(%__MODULE__{kind: :request_failed, source_code: code, source_message: message})
+      when code in @worker_lost_codes do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: code,
+      message: "Inference failed: #{message}",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: kind, source_message: message})
       when kind in [:request_interrupted, :request_failed] do
     %{
@@ -420,6 +453,8 @@ defmodule Orchard.Inference.ChatError do
     :request_interrupted,
     :request_failed
   ]
+  @sse_passthrough_codes InferenceAttemptFailure.stable_error_codes() ++
+                           ~w(invalid_tool_call tool_call_parse_failed tool_choice_not_satisfied)
 
   def sse_mapping(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}) do
     failure
@@ -459,7 +494,8 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: kind} = error) when kind in @sse_passthrough_kinds do
+  def sse_mapping(%__MODULE__{kind: kind, source_code: code} = error)
+      when kind in @sse_passthrough_kinds and code in @sse_passthrough_codes do
     %{
       type: "server_error",
       code: error.source_code,
@@ -468,7 +504,8 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: :internal}) do
+  def sse_mapping(%__MODULE__{kind: kind})
+      when kind in [:internal, :request_failed, :request_interrupted] do
     %{
       type: "server_error",
       code: "internal_error",
@@ -583,6 +620,15 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: "runtime_incompatible",
+      error_message: "Runtime is incompatible"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :reasoning_conformance}) do
     %{
       state: :failed,
@@ -604,7 +650,7 @@ defmodule Orchard.Inference.ChatError do
   def terminal_attrs(%__MODULE__{kind: :request_failed} = error) do
     %{
       state: :failed,
-      http_status: 500,
+      http_status: http_status_for(error),
       error_code: error.source_code || "internal_error",
       error_message: error.source_message || "Inference failed"
     }
@@ -627,6 +673,9 @@ defmodule Orchard.Inference.ChatError do
       error_message: inspect(detail)
     }
   end
+
+  defp http_status_for(%__MODULE__{source_code: code}) when code in @worker_lost_codes, do: 503
+  defp http_status_for(_error), do: 500
 
   defp build(kind, attrs) do
     struct!(__MODULE__, Keyword.merge([kind: kind], attrs))

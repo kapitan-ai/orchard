@@ -6,6 +6,61 @@ defmodule Orchard.Inference.ChatErrorTest do
   alias Orchard.InferenceEvent
   alias Orchard.Requests.CapturePolicy
 
+  test "KAP-119 SPEC.md §7.2.9 every SSE passthrough kind sanitizes unknown codes" do
+    for {kind, code, message} <- [
+          {:request_failed, "internal_error", "Internal error"},
+          {:request_interrupted, "internal_error", "Internal error"},
+          {:request_timed_out, "request_timeout", "Request timed out"},
+          {:request_cancelled, "request_cancelled", "Request was cancelled"}
+        ] do
+      error = %ChatError{
+        kind: kind,
+        source_code: "unknown_runtime_code",
+        source_message: "private runtime detail"
+      }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: code,
+               message: message,
+               param: nil
+             }
+    end
+  end
+
+  test "KAP-119 SPEC.md §§3.7.1, 7.2.9 SSE failures retain only recognized codes" do
+    for code <- ["made_up_retryable", "worker_down/private-detail"] do
+      mapping =
+        code
+        |> InferenceEvent.failed("untrusted worker detail", true)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+    end
+
+    for code <- [
+          "worker_down",
+          "runtime_unavailable",
+          "tool_call_parse_failed",
+          "tool_choice_not_satisfied"
+        ] do
+      mapping =
+        code
+        |> InferenceEvent.failed("recognized failure", false)
+        |> ChatError.from_failed_event()
+        |> ChatError.sse_mapping()
+
+      assert mapping.code == code
+      assert mapping.message == "recognized failure"
+    end
+  end
+
   test "prepare validation mappings preserve OpenAI envelope fields" do
     error = ChatError.from_prepare_reason({:validation, {:missing_required_field, "model"}})
     mapping = ChatError.api_mapping(error)
@@ -90,6 +145,19 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.9 a dispatch-time runtime_incompatible terminalizes as a classified 503" do
+    error = ChatError.from_execute_error({:dispatch_failed, :runtime_incompatible})
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 503,
+             error_code: "runtime_incompatible",
+             error_message: "Runtime is incompatible"
+           }
+
+    assert ChatError.api_mapping(error).code == "runtime_incompatible"
+  end
+
   test "tokenization internal mapping preserves controller-owned internal_error response" do
     mapping =
       {:tokenization, {:boom, "tokenizer crashed"}}
@@ -168,6 +236,38 @@ defmodule Orchard.Inference.ChatErrorTest do
              error_code: "request_caller_disconnect",
              error_message: "caller exited"
            }
+  end
+
+  test "SPEC.md §7.2.7 a lost Worker returns 503 with its stable code on sync and stream" do
+    for code <- ["worker_down", "worker_unavailable"] do
+      error =
+        code
+        |> InferenceEvent.failed("worker process exited unexpectedly", false)
+        |> ChatError.from_failed_event()
+
+      assert ChatError.api_mapping(error) == %{
+               status: :service_unavailable,
+               type: "server_error",
+               code: code,
+               message: "Inference failed: worker process exited unexpectedly",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error).code == code
+
+      assert %{state: :failed, http_status: 503, error_code: ^code} =
+               ChatError.terminal_attrs(error)
+    end
+
+    other =
+      "runtime_stream_error"
+      |> InferenceEvent.failed("worker stream failed", false)
+      |> ChatError.from_failed_event()
+
+    assert %{status: :internal_server_error, code: "internal_error"} =
+             ChatError.api_mapping(other)
+
+    assert %{http_status: 500} = ChatError.terminal_attrs(other)
   end
 
   test "terminal conformance failures stay generic publicly and specific durably" do

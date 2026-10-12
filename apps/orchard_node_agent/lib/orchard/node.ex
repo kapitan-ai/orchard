@@ -6,6 +6,8 @@ defmodule Orchard.Node do
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.{FakeRuntimeAdapter, WorkerRuntimeAdapter}
 
+  require Logger
+
   @default_worker_executable "orchard-worker-mlx"
   @default_worker_backend "mlx"
   @default_worker_ready_timeout_ms 5_000
@@ -74,6 +76,45 @@ defmodule Orchard.Node do
   def listen_address, do: runtime_config()[:listen_address]
   def node_identity_root, do: runtime_config()[:node_identity_root]
   def grpc_security, do: runtime_config()[:grpc_security] || :plaintext_compatibility
+
+  @doc """
+  Returns host-inventory owner options when a capability provider is explicitly
+  configured, otherwise `nil` (default-off, `SPEC.md` §4.9).
+
+  The provider observes disk capacity at the configured Node Identity Root.
+  """
+  @spec host_inventory_options() :: keyword() | nil
+  def host_inventory_options do
+    config = Application.get_env(:orchard_node_agent, :host_inventory, [])
+
+    case Keyword.get(config, :provider) do
+      nil ->
+        nil
+
+      provider ->
+        if host_inventory_provider?(provider) do
+          provider_opts =
+            config
+            |> Keyword.get(:provider_opts, [])
+            |> Keyword.put_new(:disk_path, node_identity_root())
+
+          Keyword.put(config, :provider_opts, provider_opts)
+        else
+          Logger.warning(
+            "host inventory disabled: configured provider #{inspect(provider)} " <>
+              "does not implement Orchard.Node.HostInventory.Provider"
+          )
+
+          nil
+        end
+    end
+  end
+
+  defp host_inventory_provider?(provider) do
+    is_atom(provider) and Code.ensure_loaded?(provider) and
+      function_exported?(provider, :observe, 1) and
+      function_exported?(provider, :error_observation, 2)
+  end
 
   @spec runtime_grpc_listener_enabled?() :: boolean()
   def runtime_grpc_listener_enabled?,

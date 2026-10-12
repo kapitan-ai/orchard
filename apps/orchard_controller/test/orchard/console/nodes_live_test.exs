@@ -34,6 +34,13 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeObservationStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []),
+    do: Application.fetch_env!(:orchard_controller, :nodes_live_test_snapshot)
+end
+
 defmodule OrchardConsole.NodesLiveTest.RuntimeMemoryBudgetStub do
   @moduledoc false
   @default_target [host: "127.0.0.1", port: 50_071]
@@ -614,15 +621,18 @@ defmodule OrchardConsole.NodesLiveTest do
 
   import Phoenix.LiveViewTest
   import Orchard.TestSupport.RepoHelpers, only: [with_repo_unregistered: 1]
+  import Orchard.TestSupport.ToolRegistryTestSupport, only: [with_inference_overrides: 2]
 
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.Inference
   alias Orchard.NodeEnrollments
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Node}
   alias Orchard.NodeTrust
   alias Orchard.Repo
+  alias Orchard.RuntimeEndpoint.Target
   alias OrchardConsole.NodesPageData
 
   @moduletag :live
@@ -741,7 +751,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "/console/nodes/new"
       assert html =~ "Inventory Summary"
       assert html =~ "Node Inventory"
-      assert html =~ "Lifecycle and health are separate"
+      assert html =~ "Successful authenticated status observations"
       assert html =~ "Live Cluster"
       assert html =~ "Control Plane"
     end
@@ -951,11 +961,271 @@ defmodule OrchardConsole.NodesLiveTest do
     end
   end
 
+  describe "SPEC 4.5 persisted inventory health and current local evidence" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: root} do
+      keys = [:local_node_identity_root, :nodes_live_test_snapshot]
+      previous = Map.new(keys, &{&1, Application.get_env(:orchard_controller, &1)})
+
+      on_exit(fn ->
+        Enum.each(previous, fn {key, value} ->
+          if is_nil(value),
+            do: Application.delete_env(:orchard_controller, key),
+            else: Application.put_env(:orchard_controller, key, value)
+        end)
+      end)
+
+      node = insert_node!(display_name: "observation-node")
+      generation = Ecto.UUID.generate()
+      directory = Path.join([root, "generations", generation])
+      File.mkdir_p!(directory)
+      Enum.each([root, Path.dirname(directory), directory], &File.chmod!(&1, 0o700))
+
+      identity = %{
+        node_id: node.id,
+        enrollment_id: Ecto.UUID.generate(),
+        certificate_identifier: "observation-test-certificate",
+        generation_id: generation,
+        state: "registered"
+      }
+
+      for {file, contents} <- [
+            {Path.join(root, "current"), generation},
+            {Path.join(directory, "metadata.json"), Jason.encode!(identity)}
+          ] do
+        File.write!(file, contents)
+        File.chmod!(file, 0o600)
+      end
+
+      target =
+        Target.beam(node.id,
+          address: "orchard_node_agent@192.0.2.8",
+          metadata: %{
+            source: :trusted_node_inventory,
+            enrollment_id: identity.enrollment_id,
+            certificate_identifier: identity.certificate_identifier
+          }
+        )
+
+      [runtime] = __MODULE__.RuntimeFullStub.cluster_snapshot()
+
+      runtime = %{
+        runtime
+        | target: target,
+          node_metadata: %{runtime.node_metadata | node_id: node.id}
+      }
+
+      Application.put_env(:orchard_controller, :local_node_identity_root, root)
+      Application.put_env(:orchard_controller, :nodes_live_test_snapshot, [runtime])
+      put_runtime_stub(__MODULE__.RuntimeObservationStub)
+      %{node: node, runtime: runtime}
+    end
+
+    test "healthy persisted counts do not imply current reachability or serving", ctx do
+      {:ok, view, _html} = live(ctx.conn, "/console/nodes")
+      assert has_element?(view, "#nodes-local-status", "connected and healthy")
+      assert has_element?(view, "#nodes-local-machine", "1 model(s) reported loaded.")
+
+      Application.put_env(:orchard_controller, :nodes_live_test_snapshot, [
+        %{ctx.runtime | status: :timeout}
+      ])
+
+      html = view |> element("#nodes-refresh-now") |> render_click()
+      assert has_element?(view, "#nodes-local-status", "We can’t reach this machine’s Node.")
+      assert has_element?(view, "#nodes-local-machine", "Current model status is unknown.")
+      refute has_element?(view, "#nodes-local-machine", "model(s) reported loaded")
+      assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
+      assert counter_text(html, "nodes-summary-unreachable") == "Unreachable 0"
+
+      assert has_element?(view, "#nodes-summary-healthy p.text-slate-600", "Healthy")
+
+      assert has_element?(
+               view,
+               "#nodes-summary[role='group'][aria-label='Last observed Node health']"
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-summary-card",
+               "Counts reflect last recorded Node health, not live reachability or model-serving readiness."
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-summary-card",
+               "Unreachable means the heartbeat exceeded its configured threshold when health was last derived."
+             )
+
+      assert has_element?(view, "#nodes-inventory-card th", "Last observed Node health")
+      assert has_element?(view, "#nodes-inventory-card th", "Last authenticated observation")
+
+      assert has_element?(
+               view,
+               "#nodes-inventory-card",
+               "Successful authenticated status observations come from the background observer."
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-table-region[role='region'][tabindex='0'][aria-label='Node inventory'] #nodes-table"
+             )
+
+      assert has_element?(view, "#node-#{ctx.node.id}", "healthy")
+      assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == ctx.node.last_heartbeat_at
+      assert Repo.get!(Node, ctx.node.id).health == :healthy
+    end
+
+    test "refresh time does not replace stale observation time or persisted health", ctx do
+      age_ms =
+        max(Inference.node_freshness_threshold_ms(), Inference.node_unreachable_threshold_ms()) +
+          1_000
+
+      observed_at = DateTime.add(DateTime.utc_now(), -age_ms, :millisecond)
+      observed_iso = observed_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      ctx.node |> Ecto.Changeset.change(last_heartbeat_at: observed_at) |> Repo.update!()
+      {:ok, view, _html} = live(ctx.conn, "/console/nodes")
+
+      html = view |> element("#nodes-refresh-now") |> render_click()
+      assert has_element?(view, "#nodes-local-status", "observation is out of date")
+      assert has_element?(view, "#nodes-local-machine", "1 model(s) reported loaded.")
+      assert has_element?(view, "#nodes-local-machine", "Node health alone does not mean")
+      assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
+
+      assert has_element?(
+               view,
+               "#nodes-inventory-card",
+               "Console runtime reads and refresh attempts do not advance this timestamp."
+             )
+
+      assert has_element?(
+               view,
+               "#node-observation-freshness-#{ctx.node.id}",
+               "Freshness: unreachable"
+             )
+
+      assert has_element?(
+               view,
+               "#node-#{ctx.node.id} time[datetime='#{observed_iso}']"
+             )
+
+      assert has_element?(view, "#nodes-freshness", "Last refresh attempt")
+
+      refute has_element?(
+               view,
+               "#nodes-freshness time[datetime='#{observed_iso}']"
+             )
+
+      assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == observed_at
+    end
+
+    test "inventory freshness uses both configured SPEC 4.5 thresholds without changing health",
+         ctx do
+      for {freshness_ms, unreachable_ms} <- [{120_000, 180_000}, {180_000, 120_000}],
+          {age_ms, category} <- [
+            {60_000, "fresh"},
+            {150_000, "stale"},
+            {210_000, "unreachable"}
+          ] do
+        with_inference_overrides(
+          [
+            node_freshness_threshold_ms: freshness_ms,
+            node_unreachable_threshold_ms: unreachable_ms
+          ],
+          fn ->
+            observed_at = DateTime.add(DateTime.utc_now(), -age_ms, :millisecond)
+            observed_iso = observed_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+            ctx.node |> Ecto.Changeset.change(last_heartbeat_at: observed_at) |> Repo.update!()
+            {:ok, view, _html} = live(ctx.conn, "/console/nodes")
+            html = view |> element("#nodes-refresh-now") |> render_click()
+
+            assert has_element?(
+                     view,
+                     "#node-observation-freshness-#{ctx.node.id}",
+                     "Freshness: #{category}"
+                   )
+
+            assert has_element?(view, "#node-#{ctx.node.id} time[datetime='#{observed_iso}']")
+            assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
+            assert counter_text(html, "nodes-summary-unreachable") == "Unreachable 0"
+            assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == observed_at
+            assert Repo.get!(Node, ctx.node.id).health == :healthy
+          end
+        )
+      end
+    end
+
+    test "unknown local association does not erase independently known inventory", ctx do
+      Application.delete_env(:orchard_controller, :local_node_identity_root)
+      ctx.node |> Ecto.Changeset.change(last_heartbeat_at: nil) |> Repo.update!()
+      {:ok, view, html} = live(ctx.conn, "/console/nodes")
+
+      assert has_element?(view, "#nodes-local-status", "not identified yet")
+      assert counter_text(html, "nodes-summary-total") == "Inventory entries 1"
+      assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
+      assert has_element?(view, "#node-#{ctx.node.id}", "observation-node")
+      assert has_element?(view, "#node-#{ctx.node.id}", "Not recorded")
+
+      assert has_element?(
+               view,
+               "#node-observation-freshness-#{ctx.node.id}",
+               "Freshness: unknown"
+             )
+
+      refute has_element?(view, "#node-#{ctx.node.id} time[datetime]")
+      assert has_element?(view, "#node-#{ctx.node.id} a[href='/console/nodes/#{ctx.node.id}']")
+
+      assert repo_query_count(fn ->
+               view |> element("#nodes-section-runtime") |> render_click()
+             end) == 0
+
+      assert_patch(view, "/console/nodes?section=runtime")
+      assert has_element?(view, "#nodes-section-runtime[aria-current='page']")
+      assert has_element?(view, "#nodes-summary-card[hidden]")
+      assert counter_text(render(view), "cluster-reachable") == "Reachable 1"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Inventory table
   # ---------------------------------------------------------------------------
 
   describe "inventory table" do
+    test "SPEC 4.5 freshness belongs to each Node in a mixed inventory", %{conn: conn} do
+      with_inference_overrides(
+        [node_freshness_threshold_ms: 120_000, node_unreachable_threshold_ms: 180_000],
+        fn ->
+          now = DateTime.utc_now()
+
+          fresh =
+            insert_node!(
+              display_name: "fresh-node",
+              last_heartbeat_at: DateTime.add(now, -60_000, :millisecond)
+            )
+
+          unknown = insert_node!(display_name: "unknown-node", last_heartbeat_at: nil)
+
+          stale =
+            insert_node!(
+              display_name: "stale-node",
+              last_heartbeat_at: DateTime.add(now, -150_000, :millisecond)
+            )
+
+          {:ok, view, _html} = live(conn, "/console/nodes")
+
+          for {node, category} <- [{fresh, "fresh"}, {unknown, "unknown"}, {stale, "stale"}] do
+            assert has_element?(
+                     view,
+                     "#node-#{node.id} #node-observation-freshness-#{node.id}",
+                     "Freshness: #{category}"
+                   )
+          end
+
+          assert has_element?(view, "#node-#{unknown.id}", "Not recorded")
+        end
+      )
+    end
+
     test "renders persisted rows", %{conn: conn} do
       insert_node!(
         display_name: "test-node",

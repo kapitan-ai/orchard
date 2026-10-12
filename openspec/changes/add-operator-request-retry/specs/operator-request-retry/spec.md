@@ -84,12 +84,7 @@ retry path.
 
 ### Requirement: Operator Retry Reports an Unrecorded Dispatch Outcome
 
-When a descendant has been created but Orchard cannot record its terminal
-outcome, Orchard SHALL retain the descendant row for audit and recovery, log
-only bounded non-sensitive identifiers and an outcome label, and return a stable
-server error rather than a success response. A dispatch that reaches a durable
-terminal outcome SHALL remain a created-descendant success response carrying that
-state.
+When a descendant has been created but Orchard cannot record its terminal outcome, Orchard SHALL retain the descendant row for audit and recovery, log only bounded non-sensitive identifiers and an outcome label, and return a stable server error rather than a success response. A dispatch that reaches a durable terminal outcome SHALL remain a created-descendant success response carrying that state.
 
 #### Scenario: The terminal row cannot be written after dispatch
 

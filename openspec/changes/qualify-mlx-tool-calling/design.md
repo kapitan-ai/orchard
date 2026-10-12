@@ -45,7 +45,12 @@ Decode history arguments into objects before baseline rendering and caller-strin
 Protect recursive argument keys and string values with the existing segmentation machinery, retain scalar types, and preserve the fail-closed dual-render check.
 Malformed or non-object arguments fail as invalid input without exposing their contents.
 This normalization belongs to the Controller-side tokenizer, independently of the worker's model-output parser.
-Legacy non-segmented rendering is unchanged.
+Legacy non-segmented rendering uses the same validated history normalization, then forwards only `role`, normalized `content`, valid `tool_calls`, and string `tool_call_id` and `name` values.
+Within each tool call it forwards only `id`, `type`, and function `name` and `arguments`.
+`reasoning_content`, `reasoning` and other fields are not forwarded, preserving the earlier legacy behavior of never re-feeding prior reasoning.
+This narrowing neither implements nor proves the `SPEC.md` public rejection of explicit structured prior-reasoning input.
+Controller validation and segmented and negotiated field forwarding remain separate, inherited follow-ups; this change does not accept unsupported public structured reasoning.
+It does not split delimiter-like assistant content or activate negotiated reasoning controls.
 Exactly empty strings remain unmarked because they carry zero caller bytes.
 All nonempty strings retain ordinary markers around every byte, including leading and trailing whitespace.
 A string subtype applies strip, lstrip, and rstrip to the original caller value and retags every nonempty result; only empty results lose their markers.
@@ -58,6 +63,10 @@ The filter registry and callable dispatcher reject other string transformations 
 An AST adaptation routes string slices, iteration, and assignment/loop unpacking through checked operations while retaining whole-value list and mapping traversal.
 Tracked string results also reject direct Python slicing and iteration, including after macro capture and serialization.
 These checks run on every tagged request even when preflight is cached; the mandatory dual-render check independently rejects semantic divergence.
+Audited trim filters and strip/lstrip/rstrip calls additionally support strings produced by macro capture and concatenation.
+The renderer walks the authoritative marker registry, computes trim boundaries on the unmarked combined text, and reconstructs retained segments with their original caller marker identities.
+This explicitly replaces the previous fail-closed rule for coerced trims only; arbitrary string indexing, slicing, iteration, unsupported transforms, malformed spans and protected trim character sets remain rejected.
+No retained caller bytes become template-authored, and a trimmed occurrence cannot declassify another use of the same leaf.
 Exactly empty trims and ignored whole leaves remain valid without globally declassifying another use of their original values.
 Marker-transform rejections identify a stable operation without caller text; sentinel rejections carry artifact-preflight scope and sentinel identity, but do not expand the existing manifest-reason or negative-cache admission vocabulary.
 Legacy non-segmented rendering receives no active marker registry and retains the ordinary template dialect.
@@ -73,6 +82,8 @@ Tool-capable profiles must additionally pass the real-template continuation regr
 - Parser drift: exercise the pinned parser alongside deterministic protocol fixtures and real-model qualification.
 - Model reliability: use exact artifact identity, repeat the synthetic tool-result loop, and distinguish wire correctness from model choice quality.
 - Template compatibility: previously accepted unaudited string transformations now fail closed; qualified operations are covered by the exact pinned Qwen template and adversarial regressions.
+
+- The Qwen3-Coder template's multi-property JSON schema serialization still fails the contract-v3 dual-render guard because tagged keys sort differently from ordinary keys. That guard remains enforced; this foundation does not qualify that artifact for safe contract-v3 rendering.
 
 ## Migration Plan
 

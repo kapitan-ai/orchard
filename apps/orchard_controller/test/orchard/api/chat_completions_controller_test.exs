@@ -63,6 +63,39 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     WorkerRecoveryManagerFixtureScheduler
   }
 
+  test "SPEC §7.2.1 Chat effort rejects unsupported levels and fake rendering with HTTP 400" do
+    model = create_model!(%{state: :active})
+
+    params = %{
+      "model" => "#{model.model_id}@#{model.version}",
+      "messages" => [%{"role" => "user", "content" => "hello"}]
+    }
+
+    for tier <- ["minimal", "xhigh", "medium"] do
+      conn = post_chat(Map.put(params, "reasoning_effort", tier))
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_reasoning_control"
+      assert Jason.decode!(conn.resp_body)["error"]["param"] == "reasoning_effort"
+    end
+  end
+
+  test "structured prior reasoning rejects omitted and explicit controls before Request writes" do
+    model = create_model!(%{state: :active})
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    for explicit <- [false, true], key <- ["reasoning_content", "reasoning", "thinking"] do
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      params = %{"model" => "#{model.model_id}@#{model.version}", "messages" => [message]}
+      params = if explicit, do: Map.put(params, "reasoning_effort", "medium"), else: params
+      conn = post_chat(params)
+      assert conn.status == 400
+      error = Jason.decode!(conn.resp_body)["error"]
+      assert error["code"] == "unsupported_parameter"
+      assert error["param"] == "messages[0].#{key}"
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+  end
+
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.
@@ -1277,6 +1310,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, 503, "server_error", "model_busy"},
         {:queue_full, 429, "rate_limit_error", "queue_full"},
         {:queue_timeout, 504, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
         {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
       ]
 
@@ -1463,7 +1497,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :live
-    test "SPEC.md M4 retries one uncommitted attempt across JSON and SSE", %{bundle: bundle} do
+    test "SPEC.md §5.3 (#329) charges only the selected retry attempt across JSON and SSE", %{
+      bundle: bundle
+    } do
       create_queue_model!(bundle, "chat-bounded-retry")
       %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry")
       grant_active_models!(tenant)
@@ -1471,7 +1507,16 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       for stream? <- [false, true] do
         idempotency_key = "chat-bounded-retry-#{stream?}"
 
-        nodes = configure_retry_nodes!(successful_retry_events())
+        [first, second] = successful_retry_events()
+
+        discarded_usage =
+          InferenceEvent.usage_update(%InferenceEvent.Usage{
+            input_tokens: 1,
+            output_tokens: 5,
+            total_tokens: 6
+          })
+
+        nodes = configure_retry_nodes!([[discarded_usage | first], second])
 
         Process.put(:orchard_retry_started_probe, fn request ->
           send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
@@ -1526,6 +1571,13 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert request.reserved_output_tokens == 0
         assert_logical_identity!(request, idempotency_key, :metadata)
         assert_successful_retry!(request, nodes)
+        assert request.output_tokens == 1
+        assert request.output_usage_status == :exact
+        [_, discarded, _, selected] = Requests.list_request_step_events(request)
+        assert discarded.result["output_tokens"] == 5
+        assert discarded.result["output_usage_status"] == "lower_bound"
+        assert selected.result["output_tokens"] == 1
+        assert selected.result["output_usage_status"] == "exact"
       end
     end
 
@@ -1609,8 +1661,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
             assert error["error"]["code"] == "worker_down"
           else
-            assert conn.status == 500
-            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+            assert conn.status == 503
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
           end
 
           request = latest_request!("#{model_id}@v1", stream?)
@@ -1654,8 +1706,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
             assert error["error"]["code"] == "worker_down"
           else
-            assert conn.status == 500
-            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+            assert conn.status == 503
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
           end
 
           request = latest_request!("#{model_id}@v1", stream?)
@@ -1941,6 +1993,36 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert List.last(events) == {:done, nil}
     end
 
+    test "SPEC §5.9 a stream probes with SSE keepalive comments and never after the terminal" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.output_text_delta("hi"),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ],
+        execute: {:ok, stub_chat_canonical(), []},
+        keepalive_probe_pid: self()
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      interval_ms = Orchard.Inference.sse_keepalive_interval_ms()
+      assert conn.status == 200
+      assert_received {:keepalive, :before_events, :ok, ^interval_ms}
+      assert_received {:keepalive, :after_events, :ok, ^interval_ms}
+
+      # One comment before the first data line; the post-terminal probe writes nothing.
+      assert String.starts_with?(conn.resp_body, ": keepalive\n\ndata: ")
+      assert length(String.split(conn.resp_body, ": keepalive\n\n")) == 2
+      assert String.ends_with?(conn.resp_body, "data: [DONE]\n\n")
+    end
+
     test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
       fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
 
@@ -2056,10 +2138,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert_tool_serializer_failure!(request)
     end
 
-    test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Chat errors" do
+    test "KAP-119 SPEC.md §§7.2.9, 7.5.3a normalize unknown and reasoning Chat SSE failures" do
       worker_message = "<think>worker marker bytes and model output</think>"
 
       for code <- [
+            "made_up_retryable",
+            "request_interrupted/private-detail",
             "reasoning_parser_conformance_failed",
             "reasoning_policy_conformance_failed"
           ] do
@@ -2084,6 +2168,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
         assert [{:error, payload}] =
                  Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert List.last(events) == {:error, payload}
 
         assert payload["error"] == %{
                  "code" => "internal_error",
@@ -2165,6 +2251,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, "server_error", "model_busy"},
         {:queue_full, "rate_limit_error", "queue_full"},
         {:queue_timeout, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"},
         {:request_caller_disconnect, "server_error", "request_cancelled"}
       ]
 
@@ -2643,6 +2730,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         send(pid, {:captured_execute_canonical, canonical, model})
       end
 
+      probe_keepalive(config, opts, :before_events)
+
       if event_handler = Keyword.get(opts, :event_handler) do
         _handler_result =
           Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
@@ -2655,9 +2744,18 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           end)
       end
 
+      probe_keepalive(config, opts, :after_events)
+
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp probe_keepalive(config, opts, phase) do
+      if pid = Keyword.get(config, :keepalive_probe_pid) do
+        result = Keyword.fetch!(opts, :keepalive_handler).()
+        send(pid, {:keepalive, phase, result, Keyword.fetch!(opts, :keepalive_interval_ms)})
       end
     end
 

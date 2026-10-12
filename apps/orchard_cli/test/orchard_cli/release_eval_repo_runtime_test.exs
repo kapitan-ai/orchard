@@ -280,6 +280,7 @@ defmodule OrchardCLI.ReleaseEvalRepoRuntimeTest do
       )
 
     File.mkdir_p!(tmp_dir)
+    File.chmod!(tmp_dir, 0o700)
     on_exit(fn -> File.rm_rf(tmp_dir) end)
 
     output_path = Path.join(tmp_dir, "bootstrap-admin.json")

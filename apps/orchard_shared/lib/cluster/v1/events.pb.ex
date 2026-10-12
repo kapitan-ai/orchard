@@ -114,6 +114,7 @@ defmodule Orchard.Cluster.V1.Failed do
   field(:code, 1, type: :string)
   field(:message, 2, type: :string)
   field(:retryable, 3, type: :bool)
+  field(:usage, 4, type: Orchard.Cluster.V1.TokenUsage)
 end
 
 defmodule Orchard.Cluster.V1.Progress do

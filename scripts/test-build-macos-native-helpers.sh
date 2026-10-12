@@ -20,7 +20,8 @@ fail() {
   --output "$OUTPUT" \
   --include-test-helper >/dev/null
 
-for helper in orchard-secret-tty orchard-secret-tty-test orchard-lifecycle-helper; do
+for helper in orchard-secret-tty orchard-secret-tty-test orchard-lifecycle-helper \
+  orchard-transport-publish orchard-transport-publish-test; do
   if [[ ! -x "$OUTPUT/$helper" ]]; then
     fail "missing executable helper: $helper"
   fi
@@ -30,8 +31,13 @@ for helper in orchard-secret-tty orchard-secret-tty-test orchard-lifecycle-helpe
 done
 
 "$REPO_ROOT/scripts/build-macos-native-helpers.sh" --output "$OUTPUT" >/dev/null
-if [[ -e "$OUTPUT/orchard-secret-tty-test" ]]; then
-  fail 'production-only rebuild retained the test helper'
+for helper in orchard-secret-tty-test orchard-transport-publish-test; do
+  if [[ -e "$OUTPUT/$helper" ]]; then
+    fail "production-only rebuild retained the test helper: $helper"
+  fi
+done
+if [[ ! -x "$OUTPUT/orchard-transport-publish" ]]; then
+  fail 'production-only rebuild omitted the transport publication helper'
 fi
 
 "$REPO_ROOT/scripts/test-lifecycle-process-snapshot.sh" --cover

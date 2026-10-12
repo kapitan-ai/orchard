@@ -5,6 +5,7 @@ import warnings
 
 from cluster.v1 import common_pb2 as cluster_dot_v1_dot_common__pb2
 from cluster.v1 import events_pb2 as cluster_dot_v1_dot_events__pb2
+from cluster.v1 import reasoning_pb2 as cluster_dot_v1_dot_reasoning__pb2
 from cluster.v1 import runtime_pb2 as cluster_dot_v1_dot_runtime__pb2
 from orchard.worker.v1 import worker_runtime_pb2 as orchard_dot_worker_dot_v1_dot_worker__runtime__pb2
 
@@ -62,6 +63,11 @@ class WorkerRuntimeServiceStub:
                 request_serializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
                 response_deserializer=cluster_dot_v1_dot_common__pb2.Ack.FromString,
                 _registered_method=True)
+        self.PrepareInference = channel.unary_unary(
+                '/orchard.worker.v1.WorkerRuntimeService/PrepareInference',
+                request_serializer=cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceRequest.SerializeToString,
+                response_deserializer=cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceResponse.FromString,
+                _registered_method=True)
         self.ScorePrefixCache = channel.unary_unary(
                 '/orchard.worker.v1.WorkerRuntimeService/ScorePrefixCache',
                 request_serializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.SerializeToString,
@@ -97,6 +103,12 @@ class WorkerRuntimeServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Cancel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PrepareInference(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -139,6 +151,11 @@ def add_WorkerRuntimeServiceServicer_to_server(servicer, server):
                     servicer.Cancel,
                     request_deserializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.FromString,
                     response_serializer=cluster_dot_v1_dot_common__pb2.Ack.SerializeToString,
+            ),
+            'PrepareInference': grpc.unary_unary_rpc_method_handler(
+                    servicer.PrepareInference,
+                    request_deserializer=cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceRequest.FromString,
+                    response_serializer=cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceResponse.SerializeToString,
             ),
             'ScorePrefixCache': grpc.unary_unary_rpc_method_handler(
                     servicer.ScorePrefixCache,
@@ -281,6 +298,33 @@ class WorkerRuntimeService:
             '/orchard.worker.v1.WorkerRuntimeService/Cancel',
             cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
             cluster_dot_v1_dot_common__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PrepareInference(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orchard.worker.v1.WorkerRuntimeService/PrepareInference',
+            cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceRequest.SerializeToString,
+            cluster_dot_v1_dot_reasoning__pb2.PrepareInferenceResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -442,3 +442,26 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
 #request-detail :is(summary, button, a, pre):focus-visible {
   @apply outline-none ring-2 ring-navy ring-offset-2 ring-offset-white dark:ring-sky-400 dark:ring-offset-slate-800;
 }
+
+#overview-command summary:focus-visible {
+  @apply outline-none ring-2 ring-navy ring-offset-2 ring-offset-white dark:ring-sky-400 dark:ring-offset-slate-800;
+}
+
+#overview-command #overview-polling-paused {
+  display: none;
+}
+
+#overview-command #overview-refresh-now[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-polling-active,
+.phx-error #overview-command #overview-polling-active {
+  display: none;
+}
+
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-polling-paused,
+.phx-error #overview-command #overview-polling-paused {
+  display: inline;
+}

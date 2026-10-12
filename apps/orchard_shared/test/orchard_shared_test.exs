@@ -221,6 +221,20 @@ defmodule OrchardSharedTest do
     decoded = legacy |> StatusResponse.encode() |> StatusResponse.decode()
     assert decoded.node_metadata == nil
     assert decoded.runtime_health == nil
+    assert decoded.host_inventory == nil
+  end
+
+  # SPEC.md §4.1 and §13.4: host inventory is an additive observation-only
+  # StatusResponse field at tag 15; older writers decode as absent evidence.
+  test "StatusResponse carries observation-only host inventory at field 15" do
+    # field 15, wire type 2, length 4: HostInventoryObservation{schema_version: 1, authority: 1}
+    wire = <<0x7A, 0x04, 0x08, 0x01, 0x18, 0x01>>
+
+    decoded = StatusResponse.decode(wire)
+
+    assert decoded.host_inventory.schema_version == 1
+    assert decoded.host_inventory.authority == :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY
+    assert StatusResponse.encode(decoded) == wire
   end
 
   test "StatusResponse with runtime_health containing affected_model round-trips" do

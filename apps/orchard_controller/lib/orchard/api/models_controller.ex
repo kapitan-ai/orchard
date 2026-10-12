@@ -8,6 +8,7 @@ defmodule Orchard.API.ModelsController do
 
   use Phoenix.Controller, formats: [:json]
 
+  alias Orchard.Inference.ReasoningEffort
   alias Orchard.Models
 
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -22,7 +23,8 @@ defmodule Orchard.API.ModelsController do
       id: model_display_id(model),
       object: "model",
       created: to_unix_seconds(model.inserted_at),
-      owned_by: "local"
+      owned_by: "local",
+      orchard_reasoning_effort: ReasoningEffort.capabilities(model)
     }
   end
 

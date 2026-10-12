@@ -12,9 +12,10 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   @optional_fields ~w(
     output_commitment_kind node_id target_ref failure_class failure_code runtime_retryable
     retry_decision raw_source_code finish_reason input_tokens output_tokens http_status error_message
+    output_usage_status
   )
   @fields @required_fields ++ @optional_fields
-  @persisted_usage_fields ~w(output_usage_status reasoning_tokens)
+  @persisted_usage_fields ~w(reasoning_tokens)
   @persisted_fields @fields ++ @persisted_usage_fields
 
   # Keep the established marker vocabulary literal: `output_tokens` alone has
@@ -98,10 +99,9 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   `SPEC.md` §3.7.1 `reasoning` commitment kind is readable only here, while
   `new/3` holds every current writer to the pre-reasoning vocabulary.
 
-  Deploy this compatibility reader to every Controller and background reader
-  before future #329 classified writers activate; pre-bridge binaries reject
-  their evidence. Merged #418 supplies Worker usage updates but deliberately
-  retains Completed-only accounting. The nullable column does not activate writers.
+  Classified usage writers require this compatibility reader on every Controller
+  and background reader; pre-bridge binaries reject their evidence. New writes
+  classify total usage but do not enable reasoning-token subsets.
   """
   @spec from_persisted(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
   def from_persisted(event_type, attempt, result) when is_map(result),

@@ -27,6 +27,8 @@ unrelated_arg_pid=""
 relative_socket_dir=""
 baseline_pid=""
 default_effective_pid=""
+tensorfold_pid=""
+tensorfold_foreign_pid=""
 
 cleanup() {
   local pid
@@ -50,7 +52,9 @@ cleanup() {
     "$path_pid" \
     "$unrelated_arg_pid" \
     "$baseline_pid" \
-    "$default_effective_pid"; do
+    "$default_effective_pid" \
+    "$tensorfold_pid" \
+    "$tensorfold_foreign_pid"; do
     [[ -n "$pid" ]] || continue
     [[ "$active_jobs" == *" $pid "* ]] || continue
     kill -KILL "$pid" 2>/dev/null || true
@@ -439,6 +443,8 @@ orchard_source_dev_cleanup_workers \
   "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE" >/dev/null 2>&1
 wait "$default_effective_pid" 2>/dev/null || true
 default_effective_pid=""
+tensorfold_pid=""
+tensorfold_foreign_pid=""
 
 original_path="$PATH"
 export PATH="$TMP_ROOT:$PATH"
@@ -524,5 +530,49 @@ process_is_running "$race_pid" || fail "worker with changed process identity was
 kill -TERM "$race_pid" 2>/dev/null || true
 wait "$race_pid" 2>/dev/null || true
 race_pid=""
+
+# SPEC.md §7.2.9: the TensorFold backend selects its wrapper and cleans up the
+# exec'd bridge entrypoint with the same ownership checks as MLX Workers.
+TF_REPO="$TMP_ROOT/tensorfold-repo"
+TF_WRAPPER="$TF_REPO/native/orchard_tensorfold_http/bin/orchard-worker-tensorfold"
+TF_EFFECTIVE="$TF_REPO/native/orchard_tensorfold_http/.venv/bin/orchard-worker-tensorfold"
+mkdir -p "$(dirname "$TF_WRAPPER")" "$(dirname "$TF_EFFECTIVE")"
+cp "$FAKE_WORKER" "$TF_WRAPPER"
+cp "$FAKE_WORKER" "$TF_EFFECTIVE"
+chmod +x "$TF_WRAPPER" "$TF_EFFECTIVE"
+tf_socket_dir="$TMP_ROOT/tensorfold-ws"
+mkdir -p "$tf_socket_dir"
+unset ORCHARD_WORKER_EXECUTABLE ORCHARD_WORKER_EFFECTIVE_EXECUTABLE
+export ORCHARD_WORKER_SOCKET_DIR="$tf_socket_dir"
+ORCHARD_WORKER_BACKEND=tensorfold orchard_source_dev_configure_worker_runtime "$TF_REPO"
+[[ "$ORCHARD_WORKER_EXECUTABLE" == "$(orchard_source_dev_canonical_existing_path "$TF_WRAPPER")" ]] ||
+  fail "tensorfold backend did not select the TensorFold wrapper"
+[[ "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE" == "$(orchard_source_dev_canonical_existing_path "$TF_EFFECTIVE")" ]] ||
+  fail "TensorFold wrapper did not resolve its effective entrypoint"
+
+bash "$TF_EFFECTIVE" --socket-path "$tf_socket_dir/owned-$$.sock" &
+tensorfold_pid=$!
+bash "$TF_EFFECTIVE" --socket-path "$FOREIGN_SOCKET_DIR/tensorfold-$$.sock" &
+tensorfold_foreign_pid=$!
+sleep 0.2
+[[ "$(orchard_source_dev_worker_processes)" == *"$tf_socket_dir/owned-$$.sock"* ]] ||
+  fail "TensorFold worker was not enumerated"
+orchard_source_dev_cleanup_workers \
+  "$TF_REPO" \
+  "$ORCHARD_WORKER_EXECUTABLE" \
+  "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE" >/dev/null 2>&1
+wait "$tensorfold_pid" 2>/dev/null || true
+process_is_running "$tensorfold_pid" && fail "owned TensorFold worker survived cleanup"
+tensorfold_pid=""
+process_is_running "$tensorfold_foreign_pid" || fail "foreign TensorFold worker was signalled"
+kill -TERM "$tensorfold_foreign_pid" 2>/dev/null || true
+wait "$tensorfold_foreign_pid" 2>/dev/null || true
+tensorfold_foreign_pid=""
+
+unset ORCHARD_WORKER_EXECUTABLE ORCHARD_WORKER_EFFECTIVE_EXECUTABLE
+export ORCHARD_WORKER_SOCKET_DIR="$default_socket_dir"
+orchard_source_dev_configure_worker_runtime "$DEFAULT_REPO"
+[[ "$ORCHARD_WORKER_EXECUTABLE" == "$(orchard_source_dev_canonical_existing_path "$DEFAULT_WRAPPER")" ]] ||
+  fail "default backend no longer selects the MLX wrapper"
 
 echo "source-dev worker cleanup tests passed"

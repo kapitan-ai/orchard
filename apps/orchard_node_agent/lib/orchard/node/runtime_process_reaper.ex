@@ -24,11 +24,24 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   gated on the identity snapshot so a recycled PID belonging to an unrelated
   process is never targeted.
 
-  A kill the reaper cannot confirm within its escalation budget leaves a pending
-  resolution record instead of discarding the lease evidence. Callers re-probe it
-  through `ownership_resolved?/1` and `owner_custody/1`, so a runtime process that
-  exits after the budget — or one an operator kills through host controls per
-  SPEC §12.2.2 — still resolves custody for its placement.
+  The reaper ends a lease only when it confirms the process exit: the PID is
+  gone, or it now belongs to a different process. A KILL that is not yet confirmed, or an
+  identity that cannot be read, keeps the lease and rechecks on a timer with
+  backoff. `custody_model_keys/0` reports the model of every lease, so the Node
+  does not start a replacement or treat a slot as free while a runtime it
+  launched may still run.
+
+  When a lease ends, the reaper keeps Worker recovery evidence for its owner. Proof
+  that the recorded runtime no longer exists records resolved ownership. A lease
+  that ends without that proof leaves a pending resolution record: for example, a
+  caller released it while the PID still runs, or the PID now belongs to another
+  process. `ownership_resolved?/1` and `owner_custody/1` re-probe that record, so a
+  runtime that exits later, or one an operator kills through host controls per
+  SPEC §12.2.2, still resolves ownership for its placement.
+
+  Slot custody and recovery ownership answer different questions. A PID that now
+  belongs to another process ends the lease and frees the slot. SPEC §12.2
+  automatic recovery still waits for proof that the recorded runtime is gone.
   """
 
   use GenServer
@@ -37,13 +50,14 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   require Logger
 
   @type lease_ref :: reference()
+  @type phase :: :loading | :loaded | :unloading
 
   @type lease_meta :: %{
           optional(:os_identity) => WorkerProcessLifecycle.custody_identity() | nil,
           optional(:socket_path) => String.t() | nil,
           shutdown_timeout_ms: pos_integer(),
           model_ref: term(),
-          phase: :loading | :loaded | :unloading
+          phase: phase()
         }
 
   @type lease :: %{
@@ -52,7 +66,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           os_pid: pos_integer(),
           os_identity: WorkerProcessLifecycle.custody_identity() | nil,
           model_ref: term(),
-          phase: :loading | :loaded | :unloading,
+          phase: phase(),
           shutdown_timeout_ms: pos_integer(),
           socket_path: String.t() | nil,
           term_deadline: integer() | nil,
@@ -72,9 +86,13 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   # cut short by a brutal kill from the supervisor.
   @sweep_budget_ms 4_000
 
-  # Cleanup records custody resolution only from a settled process, so the
-  # escalation spends a bounded wait confirming the kill it just requested.
-  @escalation_exit_budget_ms 1_000
+  # Recheck an unconfirmed exit with exponential backoff up to this cap.
+  @confirm_base_ms 200
+  @confirm_max_ms 5_000
+  @grace_poll_ms 50
+
+  # A custody query that cannot answer in time is treated as unavailable.
+  @query_timeout_ms 2_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -102,9 +120,36 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @spec watch_beam_only(pid(), term()) :: :ok
   def watch_beam_only(owner, key), do: GenServer.call(__MODULE__, {:watch_beam_only, owner, key})
 
+  @doc """
+  The `{model_id, version}` of every runtime the reaper holds custody of.
+
+  A key stays here until that runtime's exit is confirmed. A reaper that does not
+  answer returns `{:error, :unavailable}`, which is never evidence that no
+  runtime remains.
+  """
+  @spec custody_model_keys(timeout()) ::
+          {:ok, MapSet.t({String.t(), String.t()})} | {:error, :unavailable}
+  def custody_model_keys(timeout_ms \\ @query_timeout_ms) do
+    {:ok, GenServer.call(__MODULE__, :custody_model_keys, timeout_ms)}
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  @doc """
+  Ends custody after the caller confirmed the process exited.
+
+  Synchronous, so a later `custody_model_keys/0` never sees the released lease.
+  """
   @spec release(lease_ref()) :: :ok
   def release(ref) do
-    GenServer.cast(__MODULE__, {:release, ref})
+    GenServer.call(__MODULE__, {:release, ref}, @query_timeout_ms)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  @spec mark_phase(lease_ref(), phase()) :: :ok
+  def mark_phase(ref, phase) when phase in [:loading, :loaded, :unloading] do
+    GenServer.cast(__MODULE__, {:mark_phase, ref, phase})
   end
 
   @spec reap(lease_ref(), term()) :: :ok
@@ -207,13 +252,32 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:reply, {:ok, ref}, state}
   end
 
-  @impl true
-  def handle_cast({:release, ref}, state) do
-    {:noreply, cleanup_lease(state, ref)}
+  def handle_call(:custody_model_keys, _from, state) do
+    keys =
+      for {_ref, %{model_ref: model_ref}} <- state.leases,
+          key = model_key(model_ref),
+          key != nil,
+          into: MapSet.new(),
+          do: key
+
+    {:reply, keys, state}
   end
 
+  def handle_call({:release, ref}, _from, state) do
+    {:reply, :ok, cleanup_lease(state, ref)}
+  end
+
+  @impl true
   def handle_cast({:reap, ref, reason}, state) do
     {:noreply, start_reaping(state, ref, {:requested, reason})}
+  end
+
+  def handle_cast({:mark_phase, ref, phase}, state) do
+    if Map.has_key?(state.leases, ref) do
+      {:noreply, put_in(state, [Access.key(:leases), ref, :phase], phase)}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -239,23 +303,19 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   def handle_info({:escalate, ref}, state) do
-    case state.leases[ref] do
-      nil ->
-        {:noreply, state}
+    {:noreply, kill_until_confirmed(state, ref, 1)}
+  end
 
-      %{os_pid: os_pid, os_identity: os_identity} = _lease ->
-        now = System.monotonic_time(:millisecond)
+  def handle_info({:confirm_exit, ref, attempt}, state) do
+    {:noreply, kill_until_confirmed(state, ref, attempt)}
+  end
 
-        _ =
-          WorkerProcessLifecycle.escalate_owned_exit(
-            os_pid,
-            os_identity,
-            now,
-            now + @escalation_exit_budget_ms
-          )
+  def handle_info({:retry_term, ref, timeout, attempt}, state) do
+    {:noreply, retry_term(state, ref, timeout, attempt)}
+  end
 
-        {:noreply, cleanup_lease(state, ref)}
-    end
+  def handle_info({:grace_poll, ref}, state) do
+    {:noreply, poll_term_grace(state, ref)}
   end
 
   def handle_info({:EXIT, _pid, :normal}, state) do
@@ -328,7 +388,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         state
 
       %{os_pid: os_pid, shutdown_timeout_ms: timeout, timer_ref: nil} = lease ->
-        log_orphan_reap(lease, reason)
+        log_reap(lease, reason)
         _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
@@ -342,23 +402,133 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     end
   end
 
-  defp start_live_process_reaping(state, ref, lease, timeout) do
+  defp start_live_process_reaping(state, ref, lease, timeout),
+    do: term_or_retry(state, ref, lease, timeout, 1)
+
+  defp term_or_retry(state, ref, lease, timeout, attempt) do
     signal_result =
       WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
 
-    if WorkerProcessLifecycle.custody_refused?(signal_result) do
-      cleanup_lease(state, ref)
-    else
-      timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+    cond do
+      signal_result == {:error, :identity_mismatch} ->
+        # The PID now belongs to another process, so ours has exited.
+        cleanup_lease(state, ref)
 
-      state
-      |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-      |> put_in(
-        [Access.key(:leases), ref, :term_deadline],
-        System.monotonic_time(:millisecond) + timeout
-      )
+      WorkerProcessLifecycle.custody_refused?(signal_result) ->
+        # An unreadable identity proves nothing. Keep custody and retry TERM, so
+        # the runtime still gets its grace once the identity reads again.
+        log_unconfirmed_exit(lease, attempt)
+
+        timer_ref =
+          Process.send_after(self(), {:retry_term, ref, timeout, attempt}, backoff_ms(attempt))
+
+        put_in(state, [Access.key(:leases), ref, :timer_ref], timer_ref)
+
+      true ->
+        start_term_grace(state, ref, timeout)
     end
   end
+
+  defp retry_term(state, ref, timeout, attempt) do
+    case state.leases[ref] do
+      nil ->
+        state
+
+      lease ->
+        if exit_confirmed?(lease),
+          do: cleanup_lease(state, ref),
+          else: term_or_retry(state, ref, lease, timeout, attempt + 1)
+    end
+  end
+
+  defp start_term_grace(state, ref, timeout) do
+    timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+    Process.send_after(self(), {:grace_poll, ref}, @grace_poll_ms)
+
+    state
+    |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+    |> put_in(
+      [Access.key(:leases), ref, :term_deadline],
+      System.monotonic_time(:millisecond) + timeout
+    )
+  end
+
+  # A runtime that exits within its TERM grace frees its slot at once instead of
+  # holding custody until the escalation timer fires.
+  defp poll_term_grace(state, ref) do
+    case state.leases[ref] do
+      %{term_deadline: deadline} = lease when is_integer(deadline) ->
+        cond do
+          exit_confirmed?(lease) ->
+            cleanup_lease(state, ref)
+
+          System.monotonic_time(:millisecond) < deadline ->
+            Process.send_after(self(), {:grace_poll, ref}, @grace_poll_ms)
+            state
+
+          true ->
+            state
+        end
+
+      _other ->
+        state
+    end
+  end
+
+  defp kill_until_confirmed(state, ref, attempt) do
+    case state.leases[ref] do
+      nil ->
+        state
+
+      lease ->
+        if exit_confirmed?(lease) do
+          cleanup_lease(state, ref)
+        else
+          log_unconfirmed_exit(lease, attempt)
+          _ = WorkerProcessLifecycle.kill_owned_process_tree(lease.os_pid, lease.os_identity)
+          schedule_confirm(state, ref, attempt + 1)
+        end
+    end
+  end
+
+  # Exit is confirmed when the process is gone, or when its PID now belongs to a
+  # different process. A missing or unreadable identity is not proof.
+  defp exit_confirmed?(%{os_pid: os_pid, os_identity: identity}) do
+    cond do
+      not WorkerProcessLifecycle.os_process_alive?(os_pid) ->
+        true
+
+      is_nil(identity) ->
+        false
+
+      true ->
+        case WorkerProcessLifecycle.process_identity(os_pid) do
+          {:ok, current} -> current != identity
+          {:error, :identity_unavailable} -> false
+        end
+    end
+  end
+
+  defp backoff_ms(attempt),
+    do: min(@confirm_base_ms * Integer.pow(2, min(attempt - 1, 5)), @confirm_max_ms)
+
+  defp schedule_confirm(state, ref, attempt) do
+    timer_ref = Process.send_after(self(), {:confirm_exit, ref, attempt}, backoff_ms(attempt))
+
+    put_in(state, [Access.key(:leases), ref, :timer_ref], timer_ref)
+  end
+
+  defp log_unconfirmed_exit(lease, attempt) when attempt == 1 or rem(attempt, 10) == 0 do
+    Logger.warning(
+      "worker process exit not yet confirmed; keeping custody " <>
+        inspect(%{model_ref: lease.model_ref, os_pid: lease.os_pid, attempt: attempt})
+    )
+  end
+
+  defp log_unconfirmed_exit(_lease, _attempt), do: :ok
+
+  defp model_key(%{model_id: model_id, version: version}), do: {model_id, version}
+  defp model_key(_model_ref), do: nil
 
   defp cleanup_lease(state, ref) do
     case Map.pop(state.leases, ref) do
@@ -454,19 +624,27 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     end)
   end
 
-  defp log_orphan_reap(lease, {:owner_down, reason}) do
-    Logger.warning(
-      "reaping orphaned worker process " <>
-        inspect(%{
-          model_ref: lease.model_ref,
-          os_pid: lease.os_pid,
-          owner_reason: reason,
-          phase: lease.phase
-        })
-    )
+  defp log_reap(lease, {:owner_down, reason}) do
+    details =
+      inspect(%{
+        model_ref: lease.model_ref,
+        os_pid: lease.os_pid,
+        owner_reason: reason,
+        phase: lease.phase
+      })
+
+    if owner_stopped?(reason) do
+      Logger.info("reaping worker process after its owner stopped " <> details)
+    else
+      Logger.warning("reaping orphaned worker process " <> details)
+    end
   end
 
-  defp log_orphan_reap(_lease, _reason), do: :ok
+  defp log_reap(_lease, _reason), do: :ok
+
+  defp owner_stopped?(:shutdown), do: true
+  defp owner_stopped?({:shutdown, _detail}), do: true
+  defp owner_stopped?(_reason), do: false
 
   defp watch_after_reaper_check(owner_pid, os_pid, meta) do
     case prewatch_custody_proof(os_pid) do

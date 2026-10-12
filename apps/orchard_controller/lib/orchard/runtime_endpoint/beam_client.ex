@@ -13,7 +13,14 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   alias Orchard.BeamPeerGrants
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{BeamConfig, Operation, Target, WorkerRecoveryClient}
+
+  alias Orchard.RuntimeEndpoint.{
+    BeamConfig,
+    HostInventory,
+    Operation,
+    Target,
+    WorkerRecoveryClient
+  }
 
   defstruct [:authenticated_peer, :node, :target, :server_module]
 
@@ -110,7 +117,13 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
     with {:ok, response} when is_map(response) <-
            rpc(connection, :status, [target, opts], opts) do
       observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-      {:ok, Map.put(response, :observed_at, observed_at)}
+
+      # A Node-built term skips Controller decoding, so inventory gets the same
+      # bound as gRPC compatibility status (SPEC.md §4.1).
+      host_inventory = HostInventory.normalize(Map.get(response, :host_inventory))
+
+      {:ok,
+       response |> Map.put(:observed_at, observed_at) |> Map.put(:host_inventory, host_inventory)}
     end
   end
 

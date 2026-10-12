@@ -3,6 +3,83 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-10-04
+
+### Breaking changes
+
+- Native `Orchard.app` and DMG distribution is paused: the app, signing, and DMG entrypoints now refuse with exit status 78 before build, credential, image, or network work, while source development remains active. **Required action:** stop automation that invokes `scripts/build-app.sh`, `scripts/sign-app.sh`, or `scripts/build-dmg.sh`, and use the documented source-development path until the accountable product owner explicitly resumes distribution through the committed control. ([#463](https://github.com/kapitan-ai/orchard/pull/463))
+
+### Features
+
+- Experimental Linux Node source development can opt into bounded, expiring CPU, memory, disk, platform, network, NVIDIA, and AMD host observations. The inventory is default-off, volatile, and observation-only: it grants no readiness, scheduling, allocation, custody, or support authority. ([#466](https://github.com/kapitan-ai/orchard/pull/466))
+- Console Overview now presents separately scoped Controller readiness and default Runtime Endpoint status, six sourced metrics, browser-local Quickstart guidance, durable Request and Catalog summaries, and reconnect-safe refresh behavior without conflating unavailable evidence with zero. ([#471](https://github.com/kapitan-ai/orchard/pull/471))
+- Console Request detail now lets operators select a loaded event or validated attempt and inspect its persisted identity, timing, outcome, and capture-aware retained payload; refresh revalidates the selection instead of showing stale evidence. ([#473](https://github.com/kapitan-ai/orchard/pull/473))
+- Authenticated operator health now includes a nullable, schema-versioned runtime diagnostics block with redacted inventory counts, provenance, age, runtime health, and Worker state. The projection performs no additional probe and does not affect readiness or public health. ([#477](https://github.com/kapitan-ai/orchard/pull/477))
+- The experimental Ubuntu 24.04 x86_64 Node source path now has opt-in, per-identity-root startup exclusion with fail-closed host and process ownership checks, plus portable Peer Grant store locking through Linux `flock` or macOS `lockf`. This is bounded implementation progress, not Linux Node qualification or support. ([#480](https://github.com/kapitan-ai/orchard/pull/480), [#481](https://github.com/kapitan-ai/orchard/pull/481))
+
+### Bug fixes
+
+- Unknown Worker failure codes and messages no longer pass through public Chat Completions or Responses streams; unrecognized streaming failures now use the generic `internal_error` envelope while documented runtime and tool codes retain their mappings. ([#452](https://github.com/kapitan-ai/orchard/pull/452))
+- Interrupted, failed, timed-out, or disconnected attempts now retain the latest validated cumulative output usage as a lower bound, or exact terminal usage when a closed stream proves a buffered completion, without reporting a failed Request as successful or charging discarded retry attempts twice. ([#451](https://github.com/kapitan-ai/orchard/pull/451), [#453](https://github.com/kapitan-ai/orchard/pull/453))
+- Nodes Inventory now labels health as last-recorded evidence, shows freshness beside the last authenticated observation time, and keeps Console refreshes from implying a new heartbeat. ([#470](https://github.com/kapitan-ai/orchard/pull/470))
+- The recent Requests table now shows stored input and output counts with Exact, Lower bound, or Accuracy unknown classification, and distinguishes active timing from missing or conflicting terminal evidence instead of deriving a misleading token rate. ([#472](https://github.com/kapitan-ai/orchard/pull/472))
+- `orchardctl transport enable-local-https` now validates support-root ancestry and private configuration custody before TLS work, generates inside an owner-only stage, serializes publishers, and reports partial or uncertain publication explicitly instead of exposing unfinished local-CA material. ([#474](https://github.com/kapitan-ai/orchard/pull/474))
+- Worker-supplied failure text is now excluded from dispatch timing logs, parity-drift telemetry, and Sentry context; only the stable normalized failure code crosses those diagnostic boundaries, while existing full-capture retention remains unchanged. ([#454](https://github.com/kapitan-ai/orchard/pull/454))
+
+### Improvements
+
+- Orchard now defines a provider- and agent-client-neutral Agentic Execution Profile that separates deterministic protocol conformance, immutable-tuple workload qualification, and production activation while keeping tool execution client-owned. ([#450](https://github.com/kapitan-ai/orchard/pull/450))
+- The experimental Ubuntu 24.04 x86_64 Node source-development contract is accepted with explicit host, lifecycle, trust, and qualification gates; implementation and qualification remain incomplete, and Apple Silicon macOS remains the only supported platform profile. ([#464](https://github.com/kapitan-ai/orchard/pull/464), [#465](https://github.com/kapitan-ai/orchard/pull/465))
+- Negotiated reasoning now has dormant shared protobuf types, generated Elixir and Python bindings, and reciprocal current/N-1 compatibility fixtures. No runtime advertisement, selection, public control, or model support is activated. ([#455](https://github.com/kapitan-ai/orchard/pull/455))
+- Erlang/OTP was upgraded from 29.0.2 to 29.1.1, fixing the critical TLS 1.3 server-authentication bypass and other applicable OTP transport advisories. ([#461](https://github.com/kapitan-ai/orchard/pull/461))
+- HTTP and MLX worker dependencies were refreshed to remediate applicable Mint, Cowlib, AnyIO, and Click security advisories while preserving Orchard's existing protocol and configuration contracts. ([#458](https://github.com/kapitan-ai/orchard/pull/458), [#459](https://github.com/kapitan-ai/orchard/pull/459))
+- Development and CI tooling was refreshed with Dialyxir 1.4.8, mise-action 4.3.0, OpenSpec CLI 1.13.1, Ruff 0.16.8, Sentry 13.5.1, ExSlop 0.4.5, Phoenix Template 1.1.0, and h2 0.12.1. ([#447](https://github.com/kapitan-ai/orchard/pull/447), [#448](https://github.com/kapitan-ai/orchard/pull/448), [#456](https://github.com/kapitan-ai/orchard/pull/456), [#457](https://github.com/kapitan-ai/orchard/pull/457), [#460](https://github.com/kapitan-ai/orchard/pull/460))
+- macOS test setup now finds Homebrew's `gtimeout` and `gnubin/timeout` variants, while Linux test fixtures no longer depend on the caller's umask and contributor docs identify the required POSIX ACL tools. ([#468](https://github.com/kapitan-ai/orchard/pull/468), [#469](https://github.com/kapitan-ai/orchard/pull/469))
+- Required CI now routes changes under application `lib/` and `test/` trees, plus application `mix.exs` changes, through macOS host validation, retains bounded structured evidence for Linux portable checks, and emits redacted diagnostics when mise bootstrap fails without weakening the original gate. ([#475](https://github.com/kapitan-ai/orchard/pull/475), [#476](https://github.com/kapitan-ai/orchard/pull/476), [#479](https://github.com/kapitan-ai/orchard/pull/479))
+- Contributor delivery guidance now records scope, ownership, independent review, exact-head readiness, and protected integration expectations, and CI verifies every mise-action consumer against one reviewed immutable pin. ([#478](https://github.com/kapitan-ai/orchard/pull/478))
+
+## 2026-09-27
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+- The Responses API now accepts canonical flattened function tools, named tool choices, and ordered function-call/result history, while retaining the nested compatibility form. Successful streams publish correlated function-call lifecycle events after validated completion; tool execution remains client-owned. ([#449](https://github.com/kapitan-ai/orchard/pull/449))
+- Nodes Inventory now identifies this machine's Node from its registered local identity and separates current reachability, persisted health, and model-serving evidence across healthy, stale, unavailable, attention, and unknown states. The association grants no trust, admission, dispatch, or serving authority. ([#442](https://github.com/kapitan-ai/orchard/pull/442))
+
+### Bug fixes
+
+- Negotiated reasoning parser and policy conformance failures now return a generic, content-free `internal_error` through synchronous and streaming APIs, remain non-retryable, and omit raw provider codes, messages, control markers, and model output from durable evidence under every capture mode. ([#434](https://github.com/kapitan-ai/orchard/pull/434))
+
+### Improvements
+
+- Generated tool-argument handling now has shared worker-to-Elixir fixtures and regressions for ordered calls, large integers, malformed or truncated blocks, unknown tools, and safe failure after an earlier valid block. ([#438](https://github.com/kapitan-ai/orchard/pull/438))
+
+## 2026-09-20
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+- Cluster operators can now retry an eligible terminal full-capture Request through `POST /ops/v1/requests/:id/retry`. Retries revalidate current Model access, retain the original timeout duration, narrow capture and routing budgets, and are capped at three descendants per original Request; retained negotiated-reasoning Requests remain ineligible until their reconstruction contract ships. ([#423](https://github.com/kapitan-ai/orchard/pull/423))
+
+### Bug fixes
+
+- Generic Runtime Endpoint status and candidate observations now respect Controller Node-lifecycle write authority: refused observations cannot persist lifecycle evidence or publish positive queue capacity, and may clear only fresh capacity sources safely owned by the original target without waking queued work. ([#443](https://github.com/kapitan-ai/orchard/pull/443))
+
+### Improvements
+
+- Provider-neutral reasoning parsing now has a dormant, chunk-invariant conformance implementation and corpus for tagged-pair and prompt-opened output, including fail-closed malformed, truncation, cancellation, and hidden-reasoning cases; no production parser registration or model support claim is activated. ([#420](https://github.com/kapitan-ai/orchard/pull/420))
+- Canonical `low`, `medium`, and `high` reasoning-effort tiers now flow through exact artifact- and template-bound renderer contracts with fail-closed metadata checks and content-free runtime-incompatibility errors. Production registrations and public controls remain unavailable pending qualification and later protocol work. ([#425](https://github.com/kapitan-ai/orchard/pull/425))
+- Console Request detail now leads with the logical outcome, adjacent TTFT and total time, a shared-scale attempt timeline, expandable attempt diagnostics, and keyboard-accessible retained-JSON copying without treating missing timing or usage as zero. ([#426](https://github.com/kapitan-ai/orchard/pull/426))
+- Mint was upgraded from 1.9.3 to 1.10.0, adding bounded HTTP/1 parsing that remediates the applicable memory- and CPU-exhaustion advisories; unchanged Gun and Cowlib advisory metadata remains outside this update. ([#440](https://github.com/kapitan-ai/orchard/pull/440))
+- Contributor guidance now distinguishes private Linear planning from public GitHub intake, review, and release work, requires explicit public-ready approval for private material, and retires the former tracker adapter without changing merge, release, or deployment authority. ([#445](https://github.com/kapitan-ai/orchard/pull/445))
+- The tokenizer helper now resolves tokenizers 0.23.2, bringing upstream performance and maintenance improvements while preserving Orchard's existing tokenizer and helper protocol contracts. ([#441](https://github.com/kapitan-ai/orchard/pull/441))
+
 ## 2026-09-13
 
 ### Breaking changes

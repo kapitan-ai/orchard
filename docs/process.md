@@ -104,6 +104,9 @@ Source visibility alone grants no rights beyond the applicable license terms.
 No official binary, supported release, SLA, or maintenance commitment follows from source availability.
 Third-party terms and notices remain applicable to their material.
 Public binary support requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
+Native `Orchard.app` and DMG distribution is currently paused under `SPEC.md` §11.0, and source development is the active installation path.
+The committed `packaging/distribution-control` is the only switch.
+Lifting the pause requires the accountable product owner's explicit approval recorded on a reviewed pull request that changes that control; tracker state, agent instructions, and local overrides do not lift it.
 
 ## Re-Grounding Rule
 

@@ -58,7 +58,7 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     end
   end
 
-  test "SPEC.md §§3.7.1 and 5.3 read next-format usage evidence without enabling writers" do
+  test "SPEC.md §§3.7.1 and 5.3 (#329) write classified totals without reasoning subsets" do
     next_format =
       failed_result(%{
         "output_tokens" => 7,
@@ -75,8 +75,19 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     assert InferenceAttemptResult.enriched?(%{"output_usage_status" => "lower_bound"})
     assert InferenceAttemptResult.enriched?(%{"reasoning_tokens" => 0})
 
-    assert {:error, "unexpected inference attempt result field \"output_usage_status\""} =
+    assert {:error, "unexpected inference attempt result field \"reasoning_tokens\""} =
              InferenceAttemptResult.new("request_step.failed", 1, next_format)
+
+    for status <- ["exact", "lower_bound"], count <- [0, 7] do
+      total =
+        next_format
+        |> Map.delete("reasoning_tokens")
+        |> Map.merge(%{"output_usage_status" => status, "output_tokens" => count})
+
+      assert {:ok, written} = InferenceAttemptResult.new("request_step.failed", 1, total)
+      assert written["output_usage_status"] == status
+      assert written["output_tokens"] == count
+    end
   end
 
   test "SPEC.md §3.7.1 rejects malformed, incomplete, and unknown persisted usage evidence" do
