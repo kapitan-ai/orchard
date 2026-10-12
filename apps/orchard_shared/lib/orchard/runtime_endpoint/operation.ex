@@ -144,6 +144,7 @@ defmodule Orchard.RuntimeEndpoint.Operation do
               metadata_json: "{}",
               cache_affinity_fingerprint: nil,
               prompt_token_ids: nil,
+              tensorfold_history_projection_json: nil,
               artifact_sha256: nil,
               artifact_source_uri: nil,
               preload: false
@@ -159,6 +160,7 @@ defmodule Orchard.RuntimeEndpoint.Operation do
             metadata_json: binary(),
             cache_affinity_fingerprint: String.t() | nil,
             prompt_token_ids: [non_neg_integer()] | nil,
+            tensorfold_history_projection_json: binary() | nil,
             artifact_sha256: String.t() | nil,
             artifact_source_uri: String.t() | nil,
             preload: boolean()
@@ -195,6 +197,11 @@ defmodule Orchard.RuntimeEndpoint.Operation do
           ),
         prompt_token_ids:
           Operation.optional_token_ids!(Operation.value(attrs, :prompt_token_ids)),
+        tensorfold_history_projection_json:
+          Operation.optional_binary!(
+            Operation.value(attrs, :tensorfold_history_projection_json),
+            :tensorfold_history_projection_json
+          ),
         artifact_sha256:
           Operation.optional_binary!(Operation.value(attrs, :artifact_sha256), :artifact_sha256),
         artifact_source_uri:

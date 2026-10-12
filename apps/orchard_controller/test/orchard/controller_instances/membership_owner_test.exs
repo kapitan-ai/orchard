@@ -275,7 +275,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     assert log =~ "reason=node_trust_not_initialized"
     assert :sys.get_state(pid).timer_ref != nil
 
-    {:ok, trust} = NodeTrust.initialize(root: trust_root, now: enrolled_at)
+    {:ok, trust} = NodeTrust.initialize(root: trust_root, now: DateTime.utc_now())
     beat(pid, 1)
 
     await_timestamp(trust.controller_id, observed_at)
@@ -808,7 +808,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
     now = ~U[2026-07-16 01:00:00.000000Z]
-    {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+    {:ok, trust} = NodeTrust.initialize(root: trust_root, now: DateTime.utc_now())
 
     opts = [
       private_ipv4: "10.0.0.10",

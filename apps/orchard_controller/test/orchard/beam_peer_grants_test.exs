@@ -202,7 +202,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert pid =
@@ -260,7 +260,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, controller} =
@@ -319,7 +319,7 @@ defmodule Orchard.BeamPeerGrantsTest do
          trust_root: trust_root,
          authorization_root: authorization_root
        } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, controller} =
@@ -347,7 +347,7 @@ defmodule Orchard.BeamPeerGrantsTest do
          trust_root: trust_root,
          authorization_root: authorization_root
        } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, controller} =
@@ -473,7 +473,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, _controller} =
@@ -500,7 +500,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     :ok = Sandbox.checkin(Repo)
     on_exit(&clean_unboxed_grant_fixture/0)
 
@@ -584,7 +584,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, _controller} =
@@ -1150,7 +1150,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     trust_root: trust_root,
     authorization_root: authorization_root
   } do
-    now = ~U[2026-07-13 08:00:00.000000Z]
+    now = DateTime.utc_now()
     assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
     assert {:ok, _controller} =
@@ -1295,6 +1295,18 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert authorization.encoded_secret =~ ~r/\A[A-Za-z0-9_-]{43}\z/
     assert authorization.authenticated_peer.node_id == target.node_id
     assert authorization.authenticated_peer.scheme == :mtls
+  end
+
+  test "SPEC.md §7.5.0 active grant validity does not depend on the session time zone", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {grant, target} = active_grant_target!(trust_root, authorization_root)
+
+    Repo.query!("SET LOCAL TIME ZONE 'America/Los_Angeles'")
+
+    assert {:ok, authorization} = BeamPeerGrants.authorize_target(target)
+    assert authorization.grant.id == grant.id
   end
 
   test "SPEC.md §7.5.0 authorization rechecks expiry before returning the secret", %{
