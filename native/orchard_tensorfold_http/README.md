@@ -1,5 +1,23 @@
 # TensorFold Worker source experiment
 
+## Status: frozen, not maintained
+
+Orchard chose the stock MLX-LM Worker with strict-prefix checkpoint reuse for the Qwen3.8 coding-agent tuple instead of TensorFold (see OpenSpec change `add-stock-strict-prefix-checkpoints`). Measured on the same hardware and model, the stock Worker with reuse gave output identical to the stock Worker without reuse, matched TensorFold on long-context follow-ups and agentic sessions, and used no more memory.
+
+This package therefore stays in the repository as a frozen, default-off source experiment:
+
+- It stays pinned to TensorFold 0.6.6. Orchard does not add features to it, retune it, mirror TensorFold or move its pins.
+- It is not part of required CI or `make setup`. Its model-free test suite, about 400 tests, runs only when someone runs it by hand. That is deliberate: Orchard does not spend CI time or maintenance on a path it no longer develops.
+- A change elsewhere, for example in `native/orchard_worker_mlx`, which this package imports, can break it without a CI signal.
+
+For contributors and agents:
+
+- If you change this package, run its tests: `mise exec -- uv run --directory native/orchard_tensorfold_http pytest`.
+- If you change shared code it depends on, running its tests is optional. A failure here does not block a merge. Say so in the pull request instead.
+- Do not add this package to CI or setup, and do not start new TensorFold work, without a new decision.
+
+The rest of this README describes the experiment as it was built.
+
 This package supplies a separately selected, default-off Worker backend. It embeds TensorFold Scheduler raw chunks in one Node-owned Worker PID and reuses Orchard's gRPC service, detokenizer, tool parser and events. The historical package path retains `http`; no HTTP child is launched. The normal MLX runtime and its lockfiles remain unchanged. The trusted public Controller dispatch path is available only under explicit default-off Controller and Node profile configuration.
 
 `orchard-worker-tensorfold --experimental-tensorfold --backend tensorfold --profile-file <local-profile.json> --socket-path <owned-socket>` is the explicit executable boundary. Node Agent remains the process owner; Controller must act through Node Agent. The committed source-dev wrapper `bin/orchard-worker-tensorfold` adds the experiment flag and the `ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE` profile to the Node's Worker arguments and execs the venv entrypoint, so the Node still owns the Python process. `ORCHARD_WORKER_BACKEND=tensorfold` selects it in source dev; see the [source-dev guide](../../docs/local-dev.md#tensorfold-experiment-source-dev). Prefix caching and observe/enforce memory sampling are disabled for this experiment; generation is stream/C1. The positive legacy prefix-cache entries hint supplied by Node is accepted as inert; only the frozen driver configuration controls TensorFold checkpoints. Existing socket paths are refused, and cleanup removes only the inode created by this executable.
