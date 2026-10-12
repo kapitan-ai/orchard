@@ -66,6 +66,12 @@ defmodule Orchard.Inference.MessageValidation do
     role = Map.get(message, "role")
 
     cond do
+      Enum.any?(["reasoning_content", "reasoning", "thinking"], &Map.has_key?(message, &1)) ->
+        key =
+          Enum.find(["reasoning_content", "reasoning", "thinking"], &Map.has_key?(message, &1))
+
+        {:error, :unsupported_parameter, "#{field}[#{idx}].#{key}"}
+
       is_nil(role) ->
         {:error, :invalid_value, "#{field}[#{idx}].role", "is required"}
 

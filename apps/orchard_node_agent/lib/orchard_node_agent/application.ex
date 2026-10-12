@@ -7,7 +7,8 @@ defmodule Orchard.NodeAgent.Application do
     BeamPeerGrantBootstrap,
     BeamPeerGrantStartupVerifier,
     Identity,
-    SentryTelemetryBridge
+    SentryTelemetryBridge,
+    SourceStartup
   }
 
   alias Orchard.Node.Supervisor, as: NodeSupervisor
@@ -15,6 +16,8 @@ defmodule Orchard.NodeAgent.Application do
 
   @impl true
   def start(_type, _args) do
+    startup_guard = SourceStartup.before_identity!()
+
     case Orchard.SentryLogger.install_handler() do
       :ok ->
         :ok
@@ -27,6 +30,7 @@ defmodule Orchard.NodeAgent.Application do
     # Resolve and persist node identity before starting the supervision tree.
     # This ensures GetStatus can report stable metadata from first request.
     Identity.ensure_identity!()
+    SourceStartup.after_identity!(startup_guard)
 
     start_result =
       Supervisor.start_link(child_specs(),

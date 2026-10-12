@@ -1,0 +1,5 @@
+{
+  "filesystems": [
+    {"target": "/srv/orchard", "fstype": "ext4", "size": 1000000000000, "avail": 500000000000}
+  ]
+}

@@ -3,7 +3,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
   Transport-independent Runtime Endpoint status observation.
   """
 
-  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, PlacementCapacity, Target}
+  alias Orchard.RuntimeEndpoint.{HostInventory, ModelRef, Placement, PlacementCapacity, Target}
 
   defstruct endpoint_id: nil,
             target: nil,
@@ -25,6 +25,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             runtime_memory_budgets: [],
             runtime_prefix_cache_statuses: [],
             worker_crash_counters: [],
+            host_inventory: nil,
             supports_prompt_token_ids: false
 
   @type availability :: :unknown | :available | :unavailable | :degraded | atom()
@@ -49,6 +50,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           runtime_memory_budgets: [term()],
           runtime_prefix_cache_statuses: [term()],
           worker_crash_counters: [term()],
+          host_inventory: Orchard.Cluster.V1.HostInventoryObservation.t() | nil,
           supports_prompt_token_ids: boolean()
         }
 
@@ -73,6 +75,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       runtime_memory_budgets: list_value(attrs, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(attrs, :runtime_prefix_cache_statuses),
       worker_crash_counters: list_value(attrs, :worker_crash_counters),
+      host_inventory: HostInventory.normalize(value(attrs, :host_inventory)),
       supports_prompt_token_ids: value(attrs, :supports_prompt_token_ids) == true
     }
   end

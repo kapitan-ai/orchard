@@ -1,7 +1,20 @@
-#!/bin/bash
+#!/bin/bash -p
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Direct execution runs in privileged mode, which ignores BASH_ENV and shell
+# functions imported from the environment. The repository root is derived
+# with shell builtins so the distribution pause guard reads this checkout.
+unset CDPATH
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+REPO_ROOT="$(builtin cd -P -- "$SCRIPT_DIR/.." && builtin pwd -P)"
+DISTRIBUTION_CONTROL_LIB="$REPO_ROOT/scripts/lib/distribution-control.sh"
+if [[ ! -f "$DISTRIBUTION_CONTROL_LIB" ]]; then
+  printf 'sign-app: distribution control library is missing; refusing\n' >&2
+  exit 78
+fi
+# shellcheck source=scripts/lib/distribution-control.sh
+source "$DISTRIBUTION_CONTROL_LIB"
 IDENTITY=""
 APP=""
 
@@ -33,6 +46,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+orchard_require_distribution_active "$REPO_ROOT" sign-app || exit $?
 
 if [[ -z "$IDENTITY" || ! -d "$APP" ]]; then
   usage >&2

@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ROOT="$REPO_ROOT/packaging/macos/native_helpers"
+SHARED_SOURCE_ROOT="$REPO_ROOT/packaging/native_helpers"
 OUTPUT=""
 INCLUDE_TEST_HELPER=false
 
@@ -62,18 +63,21 @@ compile_helper() {
   shift 2
 
   xcrun clang -std=c11 -Wall -Wextra -Werror -pedantic -O2 \
-    "$@" "$SOURCE_ROOT/$source" -o "$BUILD_ROOT/$target"
+    "$@" "$source" -o "$BUILD_ROOT/$target"
   install -m 0755 "$BUILD_ROOT/$target" "$OUTPUT/$target"
 }
 
-compile_helper orchard_secret_tty.c orchard-secret-tty
-compile_helper orchard_lifecycle_helper.c orchard-lifecycle-helper
+compile_helper "$SOURCE_ROOT/orchard_secret_tty.c" orchard-secret-tty
+compile_helper "$SOURCE_ROOT/orchard_lifecycle_helper.c" orchard-lifecycle-helper
+compile_helper "$SHARED_SOURCE_ROOT/orchard_transport_publish.c" orchard-transport-publish
 
 if [[ "$INCLUDE_TEST_HELPER" == "true" ]]; then
-  compile_helper orchard_secret_tty.c orchard-secret-tty-test \
+  compile_helper "$SOURCE_ROOT/orchard_secret_tty.c" orchard-secret-tty-test \
     -DORCHARD_SECRET_TTY_TEST
+  compile_helper "$SHARED_SOURCE_ROOT/orchard_transport_publish.c" \
+    orchard-transport-publish-test -DORCHARD_TRANSPORT_PUBLISH_TEST
 else
-  rm -f "$OUTPUT/orchard-secret-tty-test"
+  rm -f "$OUTPUT/orchard-secret-tty-test" "$OUTPUT/orchard-transport-publish-test"
 fi
 
 printf '%s\n' "$OUTPUT"

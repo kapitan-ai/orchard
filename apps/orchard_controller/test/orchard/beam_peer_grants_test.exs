@@ -1004,7 +1004,7 @@ defmodule Orchard.BeamPeerGrantsTest do
              )
   end
 
-  @tag :macos
+  @tag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)
   test "SPEC.md §7.5.0 Node retrieves and stores a grant over a real mTLS control stream", %{
     root: root,
     trust_root: trust_root,
@@ -1295,6 +1295,18 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert authorization.encoded_secret =~ ~r/\A[A-Za-z0-9_-]{43}\z/
     assert authorization.authenticated_peer.node_id == target.node_id
     assert authorization.authenticated_peer.scheme == :mtls
+  end
+
+  test "SPEC.md §7.5.0 active grant validity does not depend on the session time zone", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {grant, target} = active_grant_target!(trust_root, authorization_root)
+
+    Repo.query!("SET LOCAL TIME ZONE 'America/Los_Angeles'")
+
+    assert {:ok, authorization} = BeamPeerGrants.authorize_target(target)
+    assert authorization.grant.id == grant.id
   end
 
   test "SPEC.md §7.5.0 authorization rechecks expiry before returning the secret", %{

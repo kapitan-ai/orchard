@@ -1384,6 +1384,100 @@ defmodule OrchardNodeAgentTest do
     refute NodeSupervisor.grpc_server_id() in child_ids
   end
 
+  defmodule InventoryTestProvider do
+    @behaviour Orchard.Node.HostInventory.Provider
+
+    @impl true
+    def observe(opts), do: Keyword.fetch!(opts, :observation)
+
+    @impl true
+    def error_observation(now_ms, _error_code) do
+      %Orchard.Cluster.V1.HostInventoryObservation{
+        schema_version: 1,
+        observed_at_unix_ms: now_ms,
+        authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY
+      }
+    end
+  end
+
+  # SPEC.md §4.9: host inventory is selected only by explicit configuration and
+  # is default-off, so the portable Node Agent carries no platform branch.
+  test "a configured inventory provider adds an isolated last child bound to the identity root" do
+    previous = Application.get_env(:orchard_node_agent, :host_inventory)
+    Application.put_env(:orchard_node_agent, :host_inventory, provider: InventoryTestProvider)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:orchard_node_agent, :host_inventory, previous),
+        else: Application.delete_env(:orchard_node_agent, :host_inventory)
+    end)
+
+    assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+    assert %{id: Orchard.Node.HostInventory, start: {_, _, [opts]}} = List.last(child_specs)
+    assert opts[:provider] == InventoryTestProvider
+    assert opts[:provider_opts][:disk_path] == Node.node_identity_root()
+  end
+
+  test "a provider that does not implement the capability-provider contract starts no owner" do
+    previous = Application.get_env(:orchard_node_agent, :host_inventory)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:orchard_node_agent, :host_inventory, previous),
+        else: Application.delete_env(:orchard_node_agent, :host_inventory)
+    end)
+
+    for provider <- [true, String, :not_a_loaded_module] do
+      Application.put_env(:orchard_node_agent, :host_inventory, provider: provider)
+
+      assert Node.host_inventory_options() == nil
+      assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+      refute Enum.any?(child_specs, &(&1.id == Orchard.Node.HostInventory))
+    end
+  end
+
+  test "without a configured provider no inventory owner starts and status carries no inventory" do
+    assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+    refute Enum.any?(child_specs, &(&1.id == Orchard.Node.HostInventory))
+    assert NodeStatus.current().host_inventory == nil
+  end
+
+  test "status carries the inventory snapshot without waiting on a suspended owner" do
+    inventory = %Orchard.Cluster.V1.HostInventoryObservation{
+      schema_version: 1,
+      observed_at_unix_ms: 1_789_743_600_000,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+      cpu: %Orchard.Cluster.V1.HostCpuObservation{architecture: "x86_64"}
+    }
+
+    owner =
+      start_supervised!(
+        {Orchard.Node.HostInventory,
+         provider: InventoryTestProvider, provider_opts: [observation: inventory]}
+      )
+
+    assert wait_for_inventory(inventory)
+    :ok = :sys.suspend(owner)
+
+    {micros, status} = :timer.tc(fn -> NodeStatus.current() end)
+    :ok = :sys.resume(owner)
+
+    assert status.host_inventory == inventory
+    assert micros < 1_000_000
+  end
+
+  defp wait_for_inventory(inventory, attempts \\ 100)
+  defp wait_for_inventory(_inventory, 0), do: false
+
+  defp wait_for_inventory(inventory, attempts) do
+    if NodeStatus.current().host_inventory == inventory do
+      true
+    else
+      Process.sleep(10)
+      wait_for_inventory(inventory, attempts - 1)
+    end
+  end
+
   test "node agent application supervisor is running" do
     assert is_pid(Process.whereis(NodeAgentSupervisor))
   end

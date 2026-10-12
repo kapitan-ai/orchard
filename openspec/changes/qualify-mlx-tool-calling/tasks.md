@@ -16,3 +16,9 @@
 - [x] 3.2 Run the native package formatting, lint, tests, and coverage workflow and any additional affected quality gates; report actual results.
 - [x] 3.3 Obtain independent review, resolve findings, and verify the final diff and strict OpenSpec validation.
 - [ ] 3.4 When the accepted change is archived or synced, inspect generated main specs for placeholder prose and run strict all-spec validation.
+
+## 4. History and captured-trim compatibility follow-up
+
+- [x] 4.1 Forward only allowlisted legacy history fields after validated argument normalization, excluding prior-reasoning and unknown fields; preserve opaque content; add exact CLI regressions.
+- [x] 4.2 Extend audited trimming to captured/concatenated spans with original marker provenance, including empty and repeated leaves; retain unsupported-transform rejection and mandatory dual-render comparison.
+- [x] 4.3 Run affected native checks, coverage and strict validation, and record exact source limits in the PR. Exact-head independent review and required CI remain PR merge gates.

@@ -76,6 +76,8 @@ defmodule Orchard.Inference.ChatOrchestrator do
       `{:error, :serializer_failed}`.
     * `:caller` — optional pid to monitor for dispatch cancellation semantics
       (defaults to the current process)
+    * `:keepalive_handler` and `:keepalive_interval_ms` - optional streaming
+      transport probe forwarded to the dispatcher; see `Orchard.Dispatch.RequestDispatcher`
     * `:idempotency` — optional tenant-scoped idempotency context built from
       the public request header and raw body
   """

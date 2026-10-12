@@ -7,16 +7,21 @@ FIXTURE_ROOT="$(mktemp -d /tmp/orchard-worker-runtime-drift.XXXXXX)"
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
 mkdir -p \
+  "$FIXTURE_ROOT/apps/orchard_shared/lib/cluster/v1" \
   "$FIXTURE_ROOT/apps/orchard_node_agent/lib/orchard/node" \
   "$FIXTURE_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated" \
-  "$FIXTURE_ROOT/proto/orchard/worker/v1"
+  "$FIXTURE_ROOT/proto/orchard/worker/v1/fixtures"
 
+cp "$REPO_ROOT"/apps/orchard_shared/lib/cluster/v1/*.pb.ex \
+  "$FIXTURE_ROOT/apps/orchard_shared/lib/cluster/v1/"
 cp "$REPO_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex" \
   "$FIXTURE_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex"
 cp -R "$REPO_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated/." \
   "$FIXTURE_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated/"
 cp "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.descriptor.pb" \
   "$FIXTURE_ROOT/proto/orchard/worker/v1/worker_runtime.descriptor.pb"
+cp "$REPO_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb" \
+  "$FIXTURE_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb"
 
 if ! "$REPO_ROOT/scripts/check-worker-runtime-bindings.sh" \
   --committed-root "$FIXTURE_ROOT" >/dev/null; then
@@ -33,4 +38,15 @@ if "$REPO_ROOT/scripts/check-worker-runtime-bindings.sh" \
   exit 1
 fi
 
-printf 'deliberate Worker Runtime binding drift was rejected\n'
+cp "$REPO_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex" \
+  "$FIXTURE_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex"
+printf '\n# deliberate shared binding drift regression\n' >> \
+  "$FIXTURE_ROOT/apps/orchard_shared/lib/cluster/v1/reasoning.pb.ex"
+
+if "$REPO_ROOT/scripts/check-worker-runtime-bindings.sh" \
+  --committed-root "$FIXTURE_ROOT" >/dev/null 2>&1; then
+  printf 'deliberate shared Elixir binding drift was not rejected\n' >&2
+  exit 1
+fi
+
+printf 'deliberate Worker Runtime and shared Elixir binding drift was rejected\n'

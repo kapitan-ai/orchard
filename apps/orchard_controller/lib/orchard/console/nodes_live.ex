@@ -81,6 +81,13 @@ defmodule OrchardConsole.NodesLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :inventory_statuses_by_id,
+        Map.new(assigns.inventory.statuses, &{&1.resource.id, &1})
+      )
+
     ~H"""
     <div class="space-y-6">
       <div class="flex justify-end">
@@ -123,9 +130,9 @@ defmodule OrchardConsole.NodesLive do
       <div id="nodes-summary-card" hidden={@section != :inventory}>
       <.card>
         <:title>Inventory Summary</:title>
-        <:subtitle>Persisted node inventory with periodic runtime refresh.</:subtitle>
+        <:subtitle>Counts reflect last recorded Node health, not live reachability or model-serving readiness. Unreachable means the heartbeat exceeded its configured threshold when health was last derived.</:subtitle>
 
-        <div id="nodes-summary" class="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <div id="nodes-summary" role="group" aria-label="Last observed Node health" class="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <.summary_tile id="nodes-summary-total" label="Inventory entries" value={format_count(@inventory.summary.total)} tone={:neutral} />
           <.summary_tile id="nodes-summary-healthy" label="Healthy" value={format_count(@inventory.summary.by_health[:healthy])} tone={:success} />
           <.summary_tile id="nodes-summary-degraded" label="Degraded" value={format_count(@inventory.summary.by_health[:degraded])} tone={:warning} />
@@ -218,7 +225,7 @@ defmodule OrchardConsole.NodesLive do
           <div id="nodes-inventory-card" hidden={@section != :inventory}>
           <.card>
             <:title>Node Inventory</:title>
-            <:subtitle>Lifecycle and health are separate. Inspect a Node for admission, observation freshness, and scheduling evidence.</:subtitle>
+            <:subtitle>Successful authenticated status observations come from the background observer. Console runtime reads and refresh attempts do not advance this timestamp.</:subtitle>
 
             <%= cond do %>
               <% @inventory.status == :loading -> %>
@@ -251,7 +258,9 @@ defmodule OrchardConsole.NodesLive do
                   </:action>
                 </.state_message>
               <% @inventory.status == :ok -> %>
-                <.table id="nodes-table" rows={@inventory.rows} row_id={fn node -> "node-#{node.id}" end}>
+                <div id="nodes-table-region" role="region" aria-label="Node inventory" tabindex="0"
+                  class="overflow-x-auto rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800">
+                <.table id="nodes-table" rows={@inventory.rows} row_id={fn node -> "node-#{node.id}" end} class="contents">
                   <:col :let={node} label="Display Name">
                     <.link
                       navigate={~p"/console/nodes/#{node.id}"}
@@ -265,17 +274,23 @@ defmodule OrchardConsole.NodesLive do
                   <:col :let={node} label="Lifecycle">
                     <.badge tone={state_badge_tone(node.state)}>{node.state}</.badge>
                   </:col>
-                  <:col :let={node} label="Health">
+                  <:col :let={node} label="Last observed Node health">
                     <.badge tone={health_badge_tone(node.health)}>{node.health}</.badge>
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
-                  <:col :let={node} label="Last Seen" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} /></:col><:action :let={node}>
+                  <:col :let={node} label="Last authenticated observation" mono>
+                    <.local_time value={node.last_heartbeat_at} format={:datetime_second} placeholder="Not recorded" />
+                    <span id={"node-observation-freshness-#{node.id}"} class="mt-1 block font-sans text-xs text-slate-500 dark:text-slate-400">
+                      Freshness: {@inventory_statuses_by_id[node.id].freshness.status}
+                    </span>
+                  </:col><:action :let={node}>
     <.link navigate={~p"/console/nodes/#{node.id}"} class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800" aria-label={"Inspect #{node.display_name || node.hostname || node.id}"}>
     Inspect Node <.icon name="hero-arrow-left" class="ml-1 h-4 w-4 rotate-180" />
     </.link>
     </:action>
 
                 </.table>
+                </div>
               <% true -> %>
                 <.state_message id="nodes-inventory-error" kind={:error} layout={:compact} title="Node inventory unavailable." body={@inventory.message} />
               <% end %>
@@ -1448,7 +1463,7 @@ defmodule OrchardConsole.NodesLive do
       "rounded-lg px-4 py-3 ring-1",
       summary_tile_classes(@tone)
     ]}>
-      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <p class="text-xs font-medium uppercase tracking-wide text-slate-600 dark:text-slate-400">
         {@label}
       </p>
       <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">

@@ -86,6 +86,7 @@ defmodule Orchard.MixProject do
              "proto/cluster/v1/common.proto",
              "proto/cluster/v1/events.proto",
              "proto/cluster/v1/peer_grant.proto",
+             "proto/cluster/v1/reasoning.proto",
              "proto/cluster/v1/runtime.proto"
            ],
            into: IO.stream(:stdio, :line),

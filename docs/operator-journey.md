@@ -28,7 +28,11 @@ The target journey keeps these states distinct:
 
 ### Current Status Boundary
 
-The current app-primary DMG provides a verified `Orchard.app` and an app-owned root-authorized service lifecycle.
+Native `Orchard.app` and DMG distribution is currently paused (`SPEC.md` §11.0).
+No new app or DMG distribution set is produced while the pause holds, and source development in [`local-dev.md`](local-dev.md) is the current active installation path.
+The packaged journey below describes the approved app-primary design and existing rehearsal installations; it is not a currently available release.
+
+The app-primary DMG design provides a verified `Orchard.app` and an app-owned root-authorized service lifecycle.
 The app lifecycle supports `all`, `controller`, and `node-agent` Install Roles and preserves operator-owned state during update and default uninstall.
 It does not yet provide an app setup wizard.
 

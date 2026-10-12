@@ -91,8 +91,12 @@ grep -Fq 'mix test --cover --exclude macos' <<<"$linux_cover_plan" ||
   fail 'Linux coverage plan did not exclude macOS-tagged tests'
 
 peer_grant_case="$(grep -B 2 -F 'Node retrieves and stores a grant over a real mTLS control stream' "$PEER_GRANT_TEST")"
-grep -Fq '@tag :macos' <<<"$peer_grant_case" ||
-  fail 'Darwin lockf-backed peer-grant case was not tagged for macOS routing'
+grep -Fq '@tag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)' <<<"$peer_grant_case" ||
+  fail 'peer-grant bootstrap must run in both the Darwin host and Linux portable lanes'
+
+grep -Fq '@moduletag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)' \
+  "$ROOT/apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs" ||
+  fail 'peer-grant store cases must run in both the Darwin host and Linux portable lanes'
 
 for fixture in "${PORTABLE_HELPER_FIXTURES[@]}"; do
   stat_probe="$(grep -F 'stat -c' "$fixture" | grep -F 'stat -f' | head -n 1)"
@@ -119,7 +123,11 @@ host_stub_marker="$host_stub_dir/mise-called"
 trap 'rm -rf "$host_stub_dir"' EXIT
 
 printf '#!/bin/sh\nprintf "FreeBSD\\n"\n' >"$host_stub_dir/uname"
-printf '#!/bin/sh\ntouch "$ORCHARD_TEST_MISE_MARKER"\nexit 99\n' >"$host_stub_dir/mise"
+cat >"$host_stub_dir/mise" <<'STUB'
+#!/bin/sh
+touch "$ORCHARD_TEST_MISE_MARKER"
+exit 99
+STUB
 chmod +x "$host_stub_dir/uname" "$host_stub_dir/mise"
 
 host_guard_status=0
@@ -130,5 +138,33 @@ ORCHARD_TEST_MISE_MARKER="$host_stub_marker" PATH="$host_stub_dir:$PATH" \
   fail "Linux portable test accepted FreeBSD host (status $host_guard_status)"
 [[ ! -e "$host_stub_marker" ]] ||
   fail 'Linux portable test invoked mise on FreeBSD host'
+
+NODE_TEST_HELPER="$ROOT/apps/orchard_node_agent/test/test_helper.exs"
+NODE_GUARDED_PROBE_TEST="$ROOT/apps/orchard_node_agent/test/orchard/node/host_inventory/command_test.exs"
+NODE_GUARDIAN_SUPPORT="$ROOT/apps/orchard_node_agent/test/support/gnu_timeout_guardian.ex"
+
+grep -Fq 'gnu_timeout' "$LINUX_PORTABLE_TEST" &&
+  fail 'Linux portable tests excluded the real host-inventory guardian probe tests'
+grep -Fq 'GnuTimeoutGuardian.discover()' "$NODE_TEST_HELPER" ||
+  fail 'node test helper does not discover the GNU timeout guardian'
+for guardian_path in \
+  /usr/bin/timeout \
+  /opt/homebrew/bin/timeout \
+  /usr/local/bin/timeout \
+  /opt/homebrew/bin/gtimeout \
+  /usr/local/bin/gtimeout \
+  /opt/homebrew/opt/coreutils/libexec/gnubin/timeout \
+  /usr/local/opt/coreutils/libexec/gnubin/timeout; do
+  grep -Fq "\"$guardian_path\"" "$NODE_GUARDIAN_SUPPORT" ||
+    fail "GNU timeout guardian discovery does not check $guardian_path"
+done
+grep -Eq 'System\.(find_executable|cmd)' "$NODE_GUARDIAN_SUPPORT" &&
+  fail 'GNU timeout guardian discovery uses PATH lookup or runs unbounded commands'
+grep -Eq 'exclude:.*gnu_timeout' "$NODE_TEST_HELPER" &&
+  fail 'node test helper excludes guardian probe tests, so Darwin would not run every test'
+grep -Fq 'GnuTimeoutGuardian.verified!()' "$NODE_GUARDED_PROBE_TEST" ||
+  fail 'guarded probe tests do not require a verified GNU timeout guardian'
+grep -Fq 'brew install coreutils' "$NODE_GUARDIAN_SUPPORT" ||
+  fail 'missing GNU timeout guardian does not fail with an actionable install message'
 
 printf 'platform test-routing tests passed\n'

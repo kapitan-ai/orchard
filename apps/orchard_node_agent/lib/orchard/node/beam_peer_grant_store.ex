@@ -13,7 +13,6 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   @directory_mode 0o700
   @file_mode 0o600
-  @lock_command "/usr/bin/lockf"
   @lock_file ".beam-peer-grants.install.lock"
   @lock_marker "orchard-peer-grant-lock-ready\n"
   @lock_timeout_seconds 5
@@ -326,9 +325,11 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp with_store_lock(identity_root, expected_uid, opts, operation) do
     lock_path = Path.join(identity_root, @lock_file)
-    lock_command = Keyword.get(opts, :lock_command, @lock_command)
 
-    with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid, lock_command) do
+    with {:ok, default_command, arguments} <- lock_process(lock_path),
+         lock_command = Keyword.get(opts, :lock_command, default_command),
+         {:ok, lock_port} <-
+           acquire_store_lock(lock_path, expected_uid, lock_command, arguments) do
       try do
         result = operation.()
 
@@ -343,9 +344,25 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp acquire_store_lock(lock_path, expected_uid, lock_command) do
+  defp lock_process(lock_path) do
+    timeout = Integer.to_string(@lock_timeout_seconds)
+
+    case :os.type() do
+      {:unix, :darwin} ->
+        {:ok, "/usr/bin/lockf", ["-k", "-s", "-t", timeout, lock_path, "/bin/cat"]}
+
+      {:unix, :linux} ->
+        {:ok, "/usr/bin/flock",
+         ["--exclusive", "--timeout", timeout, "--no-fork", lock_path, "/bin/cat"]}
+
+      _other ->
+        {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp acquire_store_lock(lock_path, expected_uid, lock_command, arguments) do
     with :ok <- validate_lock_candidate(lock_path, expected_uid),
-         {:ok, lock_port} <- open_lock_port(lock_path, lock_command) do
+         {:ok, lock_port} <- open_lock_port(arguments, lock_command) do
       finish_lock_acquisition(lock_port, lock_path, expected_uid)
     else
       {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
@@ -372,7 +389,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp open_lock_port(lock_path, lock_command) do
+  defp open_lock_port(arguments, lock_command) do
     port =
       Port.open(
         {:spawn_executable, lock_command},
@@ -381,18 +398,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
           :exit_status,
           :use_stdio,
           :stderr_to_stdout,
-          args:
-            Enum.map(
-              [
-                "-k",
-                "-s",
-                "-t",
-                Integer.to_string(@lock_timeout_seconds),
-                lock_path,
-                "/bin/cat"
-              ],
-              &String.to_charlist/1
-            )
+          args: Enum.map(arguments, &String.to_charlist/1)
         ]
       )
 

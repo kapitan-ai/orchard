@@ -1,5 +1,10 @@
 defmodule Orchard.Inference.ChatRequestValidator do
-  alias Orchard.Inference.{MessageValidation, SamplingValidation, ToolingValidation}
+  alias Orchard.Inference.{
+    MessageValidation,
+    ReasoningEffort,
+    SamplingValidation,
+    ToolingValidation
+  }
 
   @moduledoc """
   Validates incoming `/v1/chat/completions` request parameters.
@@ -29,12 +34,14 @@ defmodule Orchard.Inference.ChatRequestValidator do
                       "tools",
                       "tool_choice",
                       "response_format",
-                      "seed"
+                      "seed",
+                      "reasoning_effort"
                     ])
 
   @type validation_error ::
           {:error, :missing_required_field, String.t()}
           | {:error, :unsupported_parameter, String.t()}
+          | {:error, :unsupported_reasoning_control, String.t()}
           | {:error, :invalid_value, String.t(), String.t()}
 
   @doc """
@@ -58,7 +65,8 @@ defmodule Orchard.Inference.ChatRequestValidator do
          :ok <- ToolingValidation.validate(params),
          :ok <- check_stream_options(params),
          :ok <- check_metadata(params),
-         :ok <- check_seed(params) do
+         :ok <- check_seed(params),
+         :ok <- ReasoningEffort.validate(params, :chat_completions) do
       {:ok, params}
     end
   end

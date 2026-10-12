@@ -40,7 +40,7 @@
 
 ## 6. Accept and implement public final-only controls
 
-- [ ] 6.1 Accept a separate API contract for the concrete Chat Completions and Responses request field names before exposing either field.
+- [ ] 6.1 Accept a separate API contract for the concrete Chat Completions and Responses request field names before exposing either final-only selector. The separately accepted rendered-effort input fields do not select final-only.
 - [ ] 6.2 Implement explicit final-only sync and streaming behavior after task 6.1 is accepted.
 - [ ] 6.3 Reject Chat raw structured reasoning and explicit structured prior-reasoning input.
 - [ ] 6.4 Preserve the closed `unsupported_reasoning_control`, `runtime_incompatible`, and `internal_error` mappings when concrete public fields are accepted.

@@ -22,6 +22,8 @@ from orchard_tokenizer.catalog import (
     extract_safe_tokenization_catalog,
     extract_wrapper_tool_markers,
 )
+from orchard_tokenizer.effort_contracts import resolve as resolve_rendered_effort
+from orchard_tokenizer.effort_contracts import valid_value as valid_rendered_effort_value
 from orchard_tokenizer.reasoning_contracts import resolve as resolve_reasoning_contract
 from orchard_tokenizer.safe_segmented import (
     MarkerPair,
@@ -60,9 +62,10 @@ _EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset(
 
 CONTRACT_VERSION: Final[int] = 3
 REASONING_RENDER_CONTRACT_VERSION: Final[int] = 4
+EFFORT_RENDER_CONTRACT_VERSION: Final[int] = 5
 RENDER_AND_COUNT_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, CONTRACT_VERSION})
 SUPPORTED_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset(
-    {1, 2, CONTRACT_VERSION, REASONING_RENDER_CONTRACT_VERSION}
+    {1, 2, CONTRACT_VERSION, REASONING_RENDER_CONTRACT_VERSION, EFFORT_RENDER_CONTRACT_VERSION}
 )
 HF_TOKENIZER_KINDS: Final[set[str]] = {"huggingface_tokenizer_json", "tokenizer_json"}
 SENTENCEPIECE_KINDS: Final[set[str]] = {
@@ -261,6 +264,16 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
             **_execute_render_and_count_reasoning(payload),
         }
 
+    if command == "render_and_count_effort":
+        if int(contract_version) != EFFORT_RENDER_CONTRACT_VERSION:
+            raise TokenizerCliError(
+                "invalid_input", "render_and_count_effort requires contract_version 5", 2
+            )
+        return {
+            "contract_version": int(contract_version),
+            **_execute_render_and_count_effort(payload),
+        }
+
     if command == "render_and_count_segmented":
         if int(contract_version) != CONTRACT_VERSION:
             raise TokenizerCliError(
@@ -362,7 +375,7 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _execute_render_and_count(payload: dict[str, Any], contract_version: int) -> dict[str, Any]:
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
 
     tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
     tokenizer_path = Path(
@@ -372,7 +385,7 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         require_non_empty_string(assets, "chat_template_path", category="missing_assets")
     )
 
-    messages = normalize_messages(request)
+    messages = _legacy_template_messages(normalize_messages_preserving_message_fields(request))
     tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
@@ -392,6 +405,101 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
     }
+
+
+def _execute_render_and_count_effort(payload: dict[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(payload, {"contract_version", "command", "assets", "request"}, "payload")
+    assets = require_mapping(payload, "assets")
+    request = require_mapping(payload, "request")
+    _require_exact_keys(
+        assets,
+        {
+            "tokenizer_kind",
+            "tokenizer_path",
+            "tokenizer_config_path",
+            "chat_template_path",
+            "model_artifact_digest",
+            "chat_template_digest",
+        },
+        "assets",
+    )
+    _require_exact_keys(request, {"input_items", "tools", "tool_choice", "reasoning"}, "request")
+    reasoning = require_mapping(request, "reasoning")
+    _require_exact_keys(
+        reasoning,
+        {
+            "generation_policy",
+            "projection",
+            "reasoning_effort",
+            "source",
+            "effective_contract",
+        },
+        "request.reasoning",
+    )
+    _require_reasoning_enum(reasoning, "generation_policy", {"enabled"})
+    _require_reasoning_enum(reasoning, "projection", {"legacy_blended"})
+    _require_reasoning_enum(reasoning, "source", {"explicit_public"})
+    tier = reasoning.get("reasoning_effort")
+    if not valid_rendered_effort_value(tier):
+        raise TokenizerCliError(
+            "unsupported_reasoning_control", "request.reasoning.reasoning_effort is unsupported", 2
+        )
+    artifact_digest = _require_sha256_digest(assets, "model_artifact_digest")
+    template_digest = _require_sha256_digest(assets, "chat_template_digest")
+    resolved = resolve_rendered_effort(artifact_digest, template_digest, tier)
+    if resolved is None or reasoning["effective_contract"] != resolved[0]:
+        raise TokenizerCliError(
+            "unsupported_reasoning_control",
+            "no exact rendered effort contract supports this request",
+            2,
+        )
+
+    _, arguments = resolved
+    template_path = Path(
+        require_non_empty_string(assets, "chat_template_path", category="missing_assets")
+    )
+    verified_template_text = _verify_chat_template_digest(template_path, template_digest)
+    config_path = Path(
+        require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
+    )
+    if not config_path.is_file():
+        raise TokenizerCliError("missing_assets", "tokenizer configuration asset is missing", 3)
+    items = request.get("input_items")
+    if isinstance(items, list) and any(
+        isinstance(item, Mapping)
+        and {"reasoning_content", "reasoning", "thinking"}.intersection(item)
+        for item in items
+    ):
+        raise TokenizerCliError("invalid_input", "structured prior reasoning is unsupported", 2)
+    # The same integrated legacy allowlist and history normalization as omission.
+    messages = _legacy_template_messages(
+        normalize_messages_preserving_message_fields(normalize_tool_history(request))
+    )
+    rendered = render_prompt(
+        messages,
+        [f"{message['role']} {message['content']}" for message in messages],
+        template_path,
+        config_path,
+        tools=normalize_optional_tools(request["tools"]),
+        tool_choice=request["tool_choice"],
+        template_arguments=arguments,
+        strict_template_arguments=True,
+        verified_template_text=verified_template_text,
+    )
+    count, prompt_token_ids = count_effort_tokens(
+        rendered,
+        require_non_empty_string(assets, "tokenizer_kind", category="invalid_input"),
+        Path(require_non_empty_string(assets, "tokenizer_path", category="missing_assets")),
+    )
+    result: dict[str, Any] = {
+        "rendered_prompt": rendered,
+        "input_token_count": count,
+        "reasoning": dict(reasoning),
+        "applied_template_arguments": arguments,
+    }
+    if prompt_token_ids is not None:
+        result["prompt_token_ids"] = prompt_token_ids
+    return result
 
 
 def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, Any]:
@@ -436,7 +544,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
             3,
         )
 
-    _verify_chat_template_digest(chat_template_path, chat_template_digest)
+    verified_template_text = _verify_chat_template_digest(chat_template_path, chat_template_digest)
 
     reasoning = require_mapping(request, "reasoning")
     _require_exact_keys(
@@ -508,6 +616,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
         tools=tools,
         tool_choice=tool_choice,
         template_arguments=resolved_contract.template_arguments,
+        verified_template_text=verified_template_text,
     )
     input_token_count = count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path)
 
@@ -925,9 +1034,10 @@ def _require_sha256_digest(payload: dict[str, Any], field_name: str) -> str:
     return value
 
 
-def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
+def _verify_chat_template_digest(path: Path, expected_digest: str) -> str:
     try:
-        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        template_bytes = path.read_bytes()
+        actual_digest = hashlib.sha256(template_bytes).hexdigest()
     except OSError as exc:
         raise TokenizerCliError(
             "missing_assets", f"chat template asset is missing: {path}", 3
@@ -939,6 +1049,11 @@ def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
             "chat template digest does not match the exact tokenizer contract",
             2,
         )
+
+    try:
+        return template_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TokenizerCliError("missing_assets", "chat template is not valid UTF-8", 3) from exc
 
 
 def _require_optional_reasoning_effort(payload: dict[str, Any]) -> str | None:
@@ -957,7 +1072,7 @@ def _require_optional_reasoning_effort(payload: dict[str, Any]) -> str | None:
 def _require_reasoning_enum(payload: dict[str, Any], field_name: str, supported: set[str]) -> str:
     value = payload.get(field_name)
 
-    if value in supported:
+    if isinstance(value, str) and value in supported:
         return cast(str, value)
 
     raise TokenizerCliError(
@@ -1092,6 +1207,31 @@ def _valid_history_function_call(call: Any) -> bool:
         and bool(function["name"])
         and isinstance(function.get("arguments"), dict)
     )
+
+
+def _legacy_template_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Forward only supported history fields on the ordinary legacy path."""
+    projected: list[dict[str, Any]] = []
+    for message in messages:
+        result = {key: message[key] for key in ("role", "content")}
+        for key in ("name", "tool_call_id"):
+            if isinstance(message.get(key), str):
+                result[key] = message[key]
+        calls = message.get("tool_calls")
+        if calls is not None:
+            if not isinstance(calls, list) or not all(
+                _valid_history_function_call(call) for call in calls
+            ):
+                raise TokenizerCliError("invalid_input", "tool history calls must be valid", 2)
+            result["tool_calls"] = [
+                {
+                    **{key: call[key] for key in ("id", "type") if key in call},
+                    "function": {key: call["function"][key] for key in ("name", "arguments")},
+                }
+                for call in calls
+            ]
+        projected.append(result)
+    return projected
 
 
 def _unique_argument_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1247,27 +1387,47 @@ def render_prompt(
     render_time: datetime | None = None,
     marker_pairs: Sequence[MarkerPair] = (),
     template_arguments: Mapping[str, bool | str] | None = None,
+    strict_template_arguments: bool = False,
+    verified_template_text: str | None = None,
 ) -> str:
-    if not chat_template_path.is_file():
-        raise TokenizerCliError(
-            "missing_assets",
-            f"chat template asset is missing: {chat_template_path}",
-            3,
-        )
-
-    try:
-        template_text = chat_template_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise TokenizerCliError(
-            "missing_assets",
-            f"failed to read chat template asset: {chat_template_path}",
-            3,
-        ) from exc
+    # Identity-bound contracts render the exact snapshot that was hashed.
+    # Legacy callers retain the original asset-reading path.
+    if verified_template_text is None:
+        if not chat_template_path.is_file():
+            raise TokenizerCliError(
+                "missing_assets",
+                f"chat template asset is missing: {chat_template_path}",
+                3,
+            )
+        try:
+            template_text = chat_template_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise TokenizerCliError(
+                "missing_assets",
+                f"failed to read chat template asset: {chat_template_path}",
+                3,
+            ) from exc
+    else:
+        template_text = verified_template_text
 
     environment = _chat_template_environment(render_time, marker_pairs)
 
     # Discover which variables the template references via AST introspection.
     referenced_vars = _discover_template_variables(template_text, environment)
+
+    if strict_template_arguments:
+        reserved = (
+            {"messages", "prompt_lines", "add_generation_prompt", "tools", "tool_choice"}
+            | _EXTRACTABLE_SPECIAL_TOKENS
+            | set(environment.globals)
+        )
+        supplied = set(template_arguments or {})
+        if supplied & reserved or supplied - referenced_vars:
+            raise TokenizerCliError(
+                "unsupported_reasoning_control",
+                "rendered effort arguments are reserved or unreferenced",
+                2,
+            )
 
     # Determine which prompt-shaping tokens this template requires.
     required_tokens = frozenset(referenced_vars & _REQUIRED_SPECIAL_TOKENS)
@@ -1392,6 +1552,35 @@ def count_tokens(rendered_prompt: str, tokenizer_kind: str, tokenizer_path: Path
         f"unsupported tokenizer_kind: {tokenizer_kind}",
         4,
     )
+
+
+def count_effort_tokens(
+    rendered_prompt: str, tokenizer_kind: str, tokenizer_path: Path
+) -> tuple[int, list[int] | None]:
+    """Count a rendered effort prompt and return its whole-prompt token IDs.
+
+    The IDs are the whole rendered string encoded without added special tokens,
+    which is the encoding the TensorFold bridge re-derives at admission. They are
+    returned only when they agree with the unchanged count; otherwise the count
+    alone is returned and an ID-requiring caller rejects the request.
+    """
+    if tokenizer_kind not in HF_TOKENIZER_KINDS:
+        return count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path), None
+    if not tokenizer_path.is_file():
+        raise TokenizerCliError(
+            "missing_assets", f"tokenizer asset is missing: {tokenizer_path}", 3
+        )
+    try:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        count = len(tokenizer.encode(rendered_prompt).ids)
+        ids = list(tokenizer.encode(rendered_prompt, add_special_tokens=False).ids)
+    except Exception as exc:
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer asset is invalid: {tokenizer_path}",
+            3,
+        ) from exc
+    return count, ids if len(ids) == count else None
 
 
 def count_huggingface_tokens(rendered_prompt: str, tokenizer_path: Path) -> int:

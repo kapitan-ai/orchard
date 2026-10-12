@@ -173,6 +173,24 @@ defmodule Orchard.Inference do
 
   @spec artifacts_root() :: String.t() | nil
   def artifacts_root, do: config()[:artifacts_root]
+
+  @doc """
+  Interval between SSE keepalive comments on a streaming inference response.
+
+  A failed comment write is how a closed client socket is detected while the
+  runtime produces no output, for example during a long prefill.
+  """
+  @spec sse_keepalive_interval_ms() :: pos_integer()
+  def sse_keepalive_interval_ms do
+    case Keyword.get(config(), :sse_keepalive_interval_ms, 5_000) do
+      interval_ms when is_integer(interval_ms) and interval_ms > 0 ->
+        interval_ms
+
+      _invalid ->
+        raise ArgumentError, ":sse_keepalive_interval_ms must be a positive integer"
+    end
+  end
+
   @spec tokenizer_mode() :: atom() | nil
   def tokenizer_mode, do: config()[:tokenizer_mode]
 

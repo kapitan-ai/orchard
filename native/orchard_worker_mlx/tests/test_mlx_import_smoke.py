@@ -58,6 +58,88 @@ def test_mlx_lm_imports_with_autotokenizer_path(tmp_path: Path) -> None:
     assert loaded.unk_token == "[UNK]"
 
 
+def _save_bpe_tokenizer(path: Path) -> None:
+    tokenizers = importlib.import_module("tokenizers")
+    transformers = importlib.import_module("transformers")
+    backend = tokenizers.Tokenizer(
+        tokenizers.models.BPE(
+            {
+                "[UNK]": 0,
+                "a": 1,
+                "<": 2,
+                "n": 3,
+                ">": 4,
+                "b": 5,
+                "a<": 6,
+                "a<n": 7,
+                "a<n>": 8,
+                "a<n>b": 9,
+                "[EOS]": 10,
+            },
+            merges=[("a", "<"), ("a<", "n"), ("a<n", ">"), ("a<n>", "b")],
+            unk_token="[UNK]",
+        )
+    )
+    tokenizer = transformers.TokenizersBackend(
+        tokenizer_object=backend, unk_token="[UNK]", eos_token="[EOS]"
+    )
+    tokenizer.save_pretrained(path)
+
+
+def test_production_loader_preserves_local_token_ids_and_eos(tmp_path: Path) -> None:
+    """SPEC §6.4: production loading preserves local tokenizer IDs and stop tokens."""
+    _save_bpe_tokenizer(tmp_path)
+
+    loaded = _default_mlx_deps().load_tokenizer(tmp_path / "tokenizer.json")
+
+    assert loaded.encode("a<n>b", add_special_tokens=False) == [9]
+    assert loaded.decode([9]) == "a<n>b"
+    assert loaded.eos_token_ids == {10}
+    assert loaded.encode("[EOS]", add_special_tokens=False) == [10]
+
+
+def test_registered_newline_tokenizer_preserves_preloaded_backend(tmp_path: Path) -> None:
+    """Issue #57: the registered class still supports its explicit backend path."""
+    _save_bpe_tokenizer(tmp_path)
+    tokenizer_utils = importlib.import_module("mlx_lm.tokenizer_utils")
+    tokenizer = tokenizer_utils.NewlineTokenizer(
+        tokenizer_file=str(tmp_path / "tokenizer.json"), unk_token="[UNK]", eos_token="[EOS]"
+    )
+
+    assert tokenizer.encode("a\nb", add_special_tokens=False) == [9]
+    assert tokenizer.decode([9]) == "a\nb"
+    assert tokenizer.eos_token_id == 10
+
+
+def test_production_tokenizer_rejects_custom_code_without_execution(tmp_path: Path) -> None:
+    """SPEC §6.4: tokenizer metadata must not enable artifact-shipped Python."""
+    _save_bpe_tokenizer(tmp_path)
+    side_effect = tmp_path / "custom-tokenizer-code-executed"
+    (tmp_path / "tokenization_custom.py").write_text(
+        "from pathlib import Path\n"
+        "from transformers import PreTrainedTokenizerFast\n"
+        f"Path({str(side_effect)!r}).write_text('executed', encoding='utf-8')\n"
+        "class CustomTokenizer(PreTrainedTokenizerFast):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "tokenizer_config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["tokenizer_class"] = "CustomTokenizer"
+    config["auto_map"] = {
+        "AutoTokenizer": [
+            "tokenization_custom.CustomTokenizer",
+            "tokenization_custom.CustomTokenizer",
+        ]
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="trust_remote_code"):
+        _default_mlx_deps().load_tokenizer(tmp_path / "tokenizer.json")
+
+    assert not side_effect.exists()
+
+
 def test_mlx_lm_install_and_loader_signatures_match_the_approved_commit() -> None:
     """Issue #98: the resolved runtime exposes the audited default-off gates."""
     distribution = importlib.metadata.distribution("mlx-lm")

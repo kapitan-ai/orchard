@@ -8,10 +8,32 @@
 
 ## 2. Deterministic reusable corpus
 
-- [ ] 2.1 Define a versioned corpus format for request inputs, scripted provider-neutral events, expected public events, terminal outcomes, usage, client decisions, and tool side effects.
-- [ ] 2.2 Implement the scripted provider-neutral fixture and corpus runner before any hardware qualification.
+- [x] 2.1 Define a versioned corpus format for request inputs, scripted provider-neutral events, expected public events, terminal outcomes, usage, client decisions, and tool side effects.
+- [x] 2.2 Implement the scripted provider-neutral fixture and corpus runner before any hardware qualification.
 - [ ] 2.3 Add applicable positive, negative, and dependency-blocked cases for typed final text, reasoning, tool calls and continuation, structured output, caller/generated schema handling, attempt-scoped usage, scoped terminal outcomes, disconnect cancellation and proven native drain, bounded cache identity/affinity, retry/errors, and `parallel_tool_calls=true` rejection.
 - [ ] 2.4 Produce a sanitized machine-readable result that identifies corpus version, Orchard revision, endpoint/mode, client adapter identity, and every pass/fail assertion without prompts, generated content, credentials, local paths, or tool/session identifiers.
+
+The initial runner and synthetic client live with the Controller tests under
+`test/fixtures/agentic_execution` and `test/support/agentic_execution_*`.
+The runner now crosses the production Worker Runtime adapter, Unix-socket gRPC
+transport and native service using a model-free scripted generation backend.
+It covers incremental success and failure traces, full successful Responses item
+contents, public disconnect with scripted native drain and Node occupancy,
+bounded fingerprint identity, native failure mapping, unmanaged retry refusal,
+and separately labelled ranking/capacity/quarantine and retry-policy checks.
+Managed two-attempt retry, exhaustion and pinned dispatch identity use the
+existing scripted Controller Runtime Endpoint fixture, not two native workers.
+The public/native disconnect lane uses scripted capacity-policy inputs and the
+real allocation authority: cooperative drain retains allocation, while the
+timeout case requires quarantine and refuses reuse before native drain.
+This is not a completed profile. Native two-Node retry, verified quarantine
+reconciliation, exhaustive trace mutations, positive rendered-effort application
+on a registered template and complete assertion-level JSONL reporting remain
+open. Synthesized lower-bound usage and unknown-code public streaming
+normalization now pass on current source. Controller quarantine and allocation
+refusal before native drain still fail. They are §7.2.9 profile gates rather
+than established §4.6.2 defects; the runner records them as known gaps under
+investigation in #417 and fails if one starts to pass, so it is promoted.
 
 ## 3. First conformance client
 

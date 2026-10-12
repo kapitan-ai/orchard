@@ -7,10 +7,31 @@ single-node; multi-node source-dev testing is supported via env vars
 Read [`architecture.md`](architecture.md) first if you need repo/runtime boundary
 orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
+For an attended, preloaded single-developer coding workflow, see the
+[Qwen3.8 medium OpenCode source pilot](pilots/opencode-qwen3-medium.md).
+Its artifact identity, trust boundary, client settings and qualification limits
+are explicit; it does not select a global model default.
+
+Source development accepts these positive-integer millisecond overrides before
+startup. Unset values retain the shared defaults; invalid values fail startup.
+The request deadline still follows [ADR 0022](decisions/0022-request-deadline-ceiling-and-proxy-timeouts.md).
+`ORCHARD_REQUEST_TIMEOUT_MS` must not exceed `ORCHARD_MAX_REQUEST_DEADLINE_MS`;
+setting only the former above the default ceiling fails startup.
+
+| Variable | Default | Scope |
+| --- | ---: | --- |
+| `ORCHARD_REQUEST_TIMEOUT_MS` | 120000 | Controller generation budget |
+| `ORCHARD_MAX_REQUEST_DEADLINE_MS` | 360000 | Controller absolute request ceiling |
+| `ORCHARD_MODEL_LOAD_TIMEOUT_MS` | 120000 | Controller cap on a public cold model load |
+| `ORCHARD_SSE_KEEPALIVE_INTERVAL_MS` | 5000 | Controller interval between SSE keepalive comments on a streaming request; a failed write is a caller disconnect |
+| `ORCHARD_WORKER_READY_TIMEOUT_MS` | 5000 | NodeAgent Worker readiness phase |
+| `ORCHARD_WORKER_LOAD_TIMEOUT_MS` | 120000 | NodeAgent load fallback without an explicit deadline |
+
 ## Supported development platform
 
 Source development is currently supported on Apple Silicon macOS.
 The accepted Linux Controller profile is a Milestone 8 target, not an operational setup described by this guide.
+The accepted experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target. That profile documents the explicit source startup guard, its helper build and the portable Peer Grant store lock; full Linux Node setup is not yet qualified, with candidate-host, systemd, controlled cross-host mesh and credential-lifecycle evidence still outstanding.
 Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions remain the macOS implementation baseline and migration inputs rather than portable Orchard control-plane core requirements.
 
 ## Prerequisites
@@ -19,6 +40,9 @@ Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions r
 |------------|---------|-------|
 | mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, uv, Node.js, and npm |
 | PostgreSQL | ≥ 15 | Local instance |
+| GNU coreutils | any with GNU `timeout` | Required to run the test suite: Node Agent host-inventory probe tests need GNU `timeout` (Linux `/usr/bin/timeout`; macOS `brew install coreutils`, which provides `gtimeout` and a `gnubin` `timeout`) |
+| POSIX ACL tools (Linux only) | any providing `/usr/bin/getfacl` and `/usr/bin/setfacl` | Required to run the test suite on Linux: CLI output-path ACL inspection and its tests call these tools (Ubuntu `sudo apt-get install acl`) |
+| C compiler | host `cc` (or `CC`) | Required for the explicit native-helper builders; on Linux `make test` builds the Transport publication helper with it (Ubuntu `build-essential`) |
 
 See [Tooling](tooling.md) for the pinned runtime versions and standard
 `mise exec --` command forms.
@@ -195,6 +219,9 @@ The output CSV contains `organization`, `api_client`, `external_ref`, `key_name`
 
 ### Orchard.app install
 
+Native `Orchard.app` and DMG distribution is paused (`SPEC.md` §11.0), so the source-development setup in this guide is the current active installation path.
+The notes below describe the approved app lifecycle for existing packaged rehearsal installations and for use after distribution is resumed.
+
 When installed through the macOS app lifecycle:
 
 - Controller defaults to degraded **loopback HTTP** (`plain_http_localhost`) until an operator chooses a transport mode
@@ -301,11 +328,20 @@ ELIXIR
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_FORCE_FULL_MODEL_VERIFICATION` | `false` | Bypass verification receipts and recompute the authoritative Catalog tree digest on every cache load. Restart the Node Agent after changing it. |
 | `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
-| `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
-| `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
-| `ORCHARD_WORKER_GENERATION_MODE` | `batch` for `mlx`, `stream` for unset `stub` | Worker generation runtime (`stream` or `batch`). Leave unset when using the stub backend. |
-| `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `auto` | Batch request admission limit reported by MLX workers for loaded placement capacity. Use an integer `>= 1` or `auto`. |
-| `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `3` | Effective worker request limit when the max-concurrency setting is `auto`. |
+| `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root); `native/orchard_tensorfold_http/bin/orchard-worker-tensorfold` for `tensorfold` | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
+| `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx`, `stub`, or `tensorfold` for the [TensorFold experiment](#tensorfold-experiment-source-dev)) |
+| `ORCHARD_WORKER_GENERATION_MODE` | `batch` for `mlx`, `stream` for unset `stub` and `tensorfold` | Worker generation runtime (`stream` or `batch`). Leave unset when using the stub backend. |
+| `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `auto` (`1` for `tensorfold`) | Batch request admission limit reported by MLX workers for loaded placement capacity. Use an integer `>= 1` or `auto`. |
+| `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `3` (`1` for `tensorfold`) | Effective worker request limit when the max-concurrency setting is `auto`. |
+| `ORCHARD_WORKER_PREFIX_CACHE_MODE` | `kv` (`disabled` for `tensorfold`) | Worker prefix cache (`disabled`, `kv`, or `trie`). |
+| `ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES` | `8` | Worker prefix cache entry limit (`>= 1`). |
+| `ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES` | `0` | Worker prefix cache byte limit (`>= 0`). |
+| `ORCHARD_WORKER_MEMORY_BUDGET_MODE` | `observe` (`disabled` for `tensorfold`) | Worker memory budget (`disabled`, `observe`, or `enforce`). |
+| `ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION` | `0.9` | Worker memory budget utilization (`> 0.0` and `<= 1.0`). |
+| `ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES` | `1073741824` (`0` for `tensorfold`) | Worker memory budget overhead (`>= 0`). |
+| `ORCHARD_TENSORFOLD_CONTROLLER_PROFILE_FILE` | unset | Controller profile for the [TensorFold experiment](#tensorfold-experiment-source-dev). Unset keeps it off. |
+| `ORCHARD_TENSORFOLD_NODE_PROFILE_FILE` | unset | Node profile; required with `ORCHARD_WORKER_BACKEND=tensorfold`. |
+| `ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE` | unset | Worker profile; required with `ORCHARD_WORKER_BACKEND=tensorfold`. |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
 
 Node-agent runtime env vars are read when `config/dev.exs` is evaluated at BEAM
@@ -953,8 +989,15 @@ The application smoke starts the admitted Node with its Runtime Endpoint gRPC li
 ## Testing
 
 On Darwin hosts, `make test` and `make cover` stage the retained macOS native helpers into `_build/test/lib/orchard_cli/priv` before running every test, because ordinary portable `mix compile` no longer emits them.
-On non-Darwin hosts, the same Make targets skip helper staging and exclude tests tagged `macos`.
-Invoke `mix test` directly on Darwin only after `make macos-native-test-helpers`.
+On Linux hosts, the same Make targets stage the Linux Transport publication helpers and exclude tests tagged `macos`.
+Invoke `mix test` directly only after `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux).
+
+`orchardctl transport enable-local-https` publishes the local CA and endpoint metadata through the `orchard-transport-publish` helper (`SPEC.md` §10.7, ADR 0036).
+Source development needs `make macos-native-helpers` or `make linux-native-helpers` before that command; without the helper it refuses before TLS generation.
+The helper qualifies only local APFS/HFS volumes on Darwin and ext4 on Linux, and refuses ACL-bearing, symlinked, group- or world-writable, or foreign-owned support roots and ancestors unchanged.
+It also refuses before TLS generation when `config/` is wider than `0700` (as `orchardctl env init` creates it) or when `controller.env` or a `config/tls/` source is a symlink, foreign-owned, group-writable, or ACL-bearing.
+Tests place support roots under the canonical temporary directory (`/private/tmp` on Darwin) with explicit `0700` fixture roots; the test-only helper additionally accepts tmpfs.
+On Linux, Transport tests that run the production helper place their fixtures under `TMPDIR` (or `/tmp`), so that directory must be on ext4; on a tmpfs `/tmp` those tests refuse with an unqualified-filesystem error. The test-only helper's tmpfs acceptance is a test-fixture convenience, not a claim that tmpfs hosts qualify for production publication.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
@@ -1200,6 +1243,212 @@ BundleBuilder will keep emitting the legacy field until a separate accepted chan
 |-------|------|--------------------|-------|
 | `mlx-community/Qwen3-0.6B-4bit` | ~335 MB | Fast | Default for `prepare-mlx-smoke-bundle.sh`. Not a CI gate. |
 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Optional mid-size validation |
+
+## TensorFold Experiment (Source Dev)
+
+The default-off TensorFold Worker is a source experiment under `SPEC.md` §7.2.9.
+It runs through the normal source-dev launchers with the variables below.
+A successful start proves the configuration only. Native load, memory fit,
+cancellation settlement and process reaping need separately approved
+qualification, and none of this is a support claim.
+
+### Requirements
+
+- Apple Silicon macOS.
+- A model bundle that the experiment admits: the exact artifact and chat
+  template pair registered for rendered medium effort in
+  `native/orchard_tokenizer/src/orchard_tokenizer/effort_profiles.json`,
+  a Qwen3.5-family architecture, and the Qwen3 Coder tool parser.
+- Approved Worker bounds (memory, cache, buffer, token and time limits) for
+  that bundle on that host. Do not copy limits from another host.
+
+### 1. Install the native packages
+
+After `make setup`, install the experiment's isolated native tuple
+(TensorFold, MLX, MLX-LM and Transformers at the pinned versions):
+
+```bash
+mise exec -- uv sync --locked --directory native/orchard_tensorfold_http --extra native
+```
+
+A later plain `uv sync` in that directory removes the native packages again.
+Run the command above again before a qualification run.
+
+### 2. Prepare without the experiment
+
+Start source dev normally, then import the bundle and create the Tenant and
+API Token as in [Quick Start](#quick-start). Grant Model access through a
+routing policy that requires a loaded model. The default policy allows only a
+15000 ms cold start, which is too short for a first load of a large bundle, so
+the experiment preloads instead (step 5):
+
+```elixir
+OrchardCLI.main(["models", "routing-policy", "create", "--tenant", "<tenant-slug>",
+  "--name", "tensorfold-preloaded", "--residency-preference", "required_loaded",
+  "--max-cold-start-ms", "180000", "--max-queue-wait-ms", "3000"])
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>",
+  "--tenant", "<tenant-slug>", "--routing-policy-id", "<returned-policy-id>"])
+```
+
+Read the identities the profiles need, and the Node UUID, in the same IEx
+session:
+
+```elixir
+model = Orchard.Models.get_model_by_identity("<model_id>", "<version>")
+{model.version, model.artifact_sha256}
+{:ok, bundle} = Orchard.Models.artifact_local_path(model)
+for file <- ["chat_template.jinja", "tokenizer_config.json"],
+    do: {file, :crypto.hash(:sha256, File.read!(Path.join(bundle, file))) |> Base.encode16(case: :lower)}
+Orchard.Node.node_id()
+```
+
+The template and tokenizer configuration digests are of the files the bundle
+manifest names; the file names above are the usual ones.
+
+The Node caches the bundle at the real path of
+`<ORCHARD_MODELS_ROOT>/<model_id>/<version>` (default `tmp/dev/models`).
+Use that resolved path in the Worker profile. For example, `/tmp` resolves
+to `/private/tmp` on macOS, and the Worker compares resolved paths.
+
+### 3. Write the profiles
+
+Keep profile files outside the model bundle. The values are exact identities
+of the imported bundle, not examples.
+
+The Controller and Node profiles share these keys:
+
+```json
+{
+  "schema_version": 1,
+  "profile_id": "<name>",
+  "model_id": "<model_id>",
+  "version": "<64-hex version>",
+  "artifact_sha256": "<64-hex Catalog artifact digest>",
+  "template_sha256": "<64-hex chat template digest>",
+  "tokenizer_config_sha256": "<64-hex tokenizer_config.json digest>",
+  "enable_thinking": true,
+  "reasoning_effort": "medium",
+  "output_projection": "legacy_blended",
+  "max_projection_bytes": 65536
+}
+```
+
+- The Controller profile also requires `authorized_node_ids` (the Node UUIDs
+  from step 2) and accepts `max_request_seconds`, `max_input_tokens`,
+  `max_output_tokens` and `max_context_tokens`. Set each to the matching
+  Worker profile value so the Controller refuses a deadline or token count the
+  Worker would reject, before the request reaches the Node.
+- The Node profile requires `max_projection_bytes` and accepts
+  `offer_timeout_ms` (1 to 1000).
+- Both validators ignore keys they do not use, so one file can serve as both
+  profiles on a single host.
+
+The Worker profile is a separate file with exactly three objects:
+`profile`, `bounds` and `native`. Its field reference is in
+[`native/orchard_tensorfold_http/README.md`](../native/orchard_tensorfold_http/README.md).
+Its `profile` uses `artifact_digest`, `template_digest` and
+`tokenizer_config_digest` for the same identities as `artifact_sha256`,
+`template_sha256` and `tokenizer_config_sha256`. Set `native.model_path` to
+the resolved Node path from step 2.
+
+### 4. Start with the experiment
+
+Stop source dev and start it again with these variables. Relative paths
+resolve from the repository root.
+
+```bash
+ORCHARD_WORKER_BACKEND=tensorfold \
+ORCHARD_TENSORFOLD_CONTROLLER_PROFILE_FILE=/path/to/controller-profile.json \
+ORCHARD_TENSORFOLD_NODE_PROFILE_FILE=/path/to/node-profile.json \
+ORCHARD_TENSORFOLD_WORKER_PROFILE_FILE=/path/to/worker-profile.json \
+ORCHARD_REQUEST_TIMEOUT_MS=90000 \
+ORCHARD_MAX_REQUEST_DEADLINE_MS=90000 \
+ORCHARD_MODEL_LOAD_TIMEOUT_MS=180000 \
+ORCHARD_WORKER_LOAD_TIMEOUT_MS=180000 \
+ORCHARD_FORCE_FULL_MODEL_VERIFICATION=true \
+make dev
+```
+
+For split roles, give the Controller variables to `bin/dev-controller` and the
+Node and Worker variables to `bin/dev-node-agent`. Each role reads only its
+own profile files.
+
+`ORCHARD_WORKER_BACKEND=tensorfold` selects the
+`native/orchard_tensorfold_http/bin/orchard-worker-tensorfold` wrapper and the
+only Worker settings the bridge accepts: prefix cache `disabled`, `stream`
+generation, concurrency `1`, memory budget `disabled` with overhead `0`.
+Startup fails when:
+
+- an explicit Worker setting conflicts with those values;
+- a profile file is missing, larger than 64 KiB, or not a JSON object;
+- the Node or Worker profile is missing with the `tensorfold` backend, or set
+  without it;
+- a Controller profile is set and `ORCHARD_TOKENIZER_SAFE_MODE` is not `off`,
+  `ORCHARD_CACHE_AFFINITY_LIVE_FINGERPRINT_MATCH_ENABLED` is `true`, or
+  `ORCHARD_MAX_REQUEST_DEADLINE_MS` exceeds its `max_request_seconds`.
+
+Wrong identities or bounds are refused later, at Controller preparation, Node
+preparation or Worker load, without a fallback to an ordinary Worker.
+
+### 5. Preload the model
+
+Load the model through the Node Agent before the first request, so each
+request's deadline covers generation only. The first load in a new cache path
+does a full artifact verification. In the running IEx session, use the Node
+Agent port you started with (default `50071`):
+
+```elixir
+model = Orchard.Models.get_model_by_identity("<model_id>", "<version>")
+{:ok, channel} = GRPC.Stub.connect("127.0.0.1:50071")
+{:ok, status} = Orchard.Cluster.V1.NodeRuntimeService.Stub.get_status(
+  channel, %Orchard.Cluster.V1.StatusRequest{})
+request = %Orchard.Cluster.V1.EnsureModelLoadedRequest{
+  node_id: status.node_metadata.node_id, model_id: model.model_id, version: model.version,
+  artifact_sha256: model.artifact_sha256, artifact_source_uri: model.artifact_source_uri,
+  preload: true, deadline_unix_ms: System.system_time(:millisecond) + 270_000
+}
+{:ok, %{placement_state: :PLACEMENT_STATE_LOADED}} =
+  Orchard.Cluster.V1.NodeRuntimeService.Stub.ensure_model_loaded(channel, request,
+    timeout: 275_000)
+```
+
+A Worker setup failure appears in the Worker log under `tmp/dev/logs/workers`.
+
+### 6. Send requests
+
+Selected requests must set `reasoning_effort` (Chat Completions) or
+`reasoning.effort` (Responses) to `medium`. Seed, stop sequences, JSON
+response mode and explicit `tool_choice` are refused. `tool_choice: "auto"`
+with declared tools is the default and is admitted. A refused request
+returns `503 runtime_incompatible` before Worker execution. The Worker log
+records each admission rejection's code and reason, never request content.
+
+A failure after the request is accepted arrives as an SSE `error` event.
+Find its stage in the Controller's `dispatch_timing` line for the request:
+`outcome=model_load_failed` means the model was not loaded (go back to step 5),
+and a Worker-side failure leaves a `tensorfold admission rejected` line or a
+Worker error in the Worker log.
+
+### 7. Finish
+
+Revoke the API Token, then stop source dev:
+
+```elixir
+OrchardCLI.main(["api-keys", "revoke", "--api-key-id", "<api-key-id>"])
+System.stop()
+```
+
+### Restart and rollback
+
+Profiles are read at startup. Restart the Controller after Controller profile
+changes, and the Node Agent after Node or Worker profile changes. To roll back,
+stop source dev, unset the `ORCHARD_TENSORFOLD_*` variables and
+`ORCHARD_WORKER_BACKEND`, and start again. The installed native packages do
+not enable the experiment on their own.
+
+To run beside other source-dev stacks on one host, use a separate worktree and
+set `PORT`, `ORCHARD_NODE_AGENT_LISTEN_PORT`, `ORCHARD_RUNTIME_CLIENT_PORT` and
+`PGDATABASE` to unused values.
 
 ## Legacy product-license compatibility
 

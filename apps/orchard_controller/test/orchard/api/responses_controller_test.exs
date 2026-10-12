@@ -25,6 +25,38 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests.Request
   alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
+  test "SPEC §7.2.1 Responses effort rejects unsupported levels and fake rendering with HTTP 400" do
+    model = create_model!(%{state: :active})
+    params = %{"model" => "#{model.model_id}@#{model.version}", "input" => "hello"}
+
+    for tier <- ["minimal", "xhigh", "medium"] do
+      conn = post_responses(Map.put(params, "reasoning", %{"effort" => tier}))
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_reasoning_control"
+      assert Jason.decode!(conn.resp_body)["error"]["param"] == "reasoning.effort"
+    end
+  end
+
+  test "structured prior reasoning rejects omitted and explicit controls before Request writes" do
+    model = create_model!(%{state: :active})
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    for explicit <- [false, true], key <- ["reasoning_content", "reasoning", "thinking"] do
+      message = %{"role" => "assistant", "content" => "prior answer", key => "prior thought"}
+      params = %{"model" => "#{model.model_id}@#{model.version}", "input" => [message]}
+
+      params =
+        if explicit, do: Map.put(params, "reasoning", %{"effort" => "medium"}), else: params
+
+      conn = post_responses(params)
+      assert conn.status == 400
+      error = Jason.decode!(conn.resp_body)["error"]
+      assert error["code"] == "invalid_value"
+      assert error["param"] == "input[0]"
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+  end
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")
@@ -489,6 +521,31 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert conn.status == 500
       assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_tool_call"
     end
+  end
+
+  test "SPEC §5.9 a Responses stream probes with SSE keepalive comments and never after the terminal" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        InferenceEvent.output_text_delta("hi"),
+        InferenceEvent.completed(:finish_reason_stop, nil)
+      ],
+      keepalive_probe_pid: self()
+    )
+
+    conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hi", "stream" => true})
+
+    interval_ms = Orchard.Inference.sse_keepalive_interval_ms()
+    assert conn.status == 200
+    assert_received {:keepalive, :before_events, :ok, ^interval_ms}
+    assert_received {:keepalive, :after_events, :ok, ^interval_ms}
+
+    # response.created comes first, then one comment; the post-terminal probe writes nothing.
+    assert [created, rest] = String.split(conn.resp_body, ": keepalive\n\n")
+    assert created =~ "event: response.created"
+    assert rest =~ "event: response.completed"
+    assert List.last(parse_typed_sse_events(conn)).type == "response.completed"
   end
 
   test "SPEC §7.2.5 required and named choices cannot finish without a call" do
@@ -999,6 +1056,7 @@ defmodule Orchard.API.ResponsesControllerTest do
       {:model_busy, 503, "server_error", "model_busy"},
       {:queue_full, 429, "rate_limit_error", "queue_full"},
       {:queue_timeout, 504, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
       {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
     ]
 
@@ -1382,7 +1440,8 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   @tag :live
-  test "SPEC.md M4 retries one uncommitted attempt across JSON and typed SSE", %{bundle: bundle} do
+  test "SPEC.md §5.3 (#329) charges only the selected retry attempt across JSON and typed SSE",
+       %{bundle: bundle} do
     create_queue_model!(bundle, "responses-bounded-retry")
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-bounded-retry")
     grant_active_models!(tenant)
@@ -1390,7 +1449,16 @@ defmodule Orchard.API.ResponsesControllerTest do
     for stream? <- [false, true] do
       idempotency_key = "responses-bounded-retry-#{stream?}"
 
-      nodes = configure_retry_nodes!(successful_retry_events())
+      [first, second] = successful_retry_events()
+
+      discarded_usage =
+        InferenceEvent.usage_update(%InferenceEvent.Usage{
+          input_tokens: 1,
+          output_tokens: 5,
+          total_tokens: 6
+        })
+
+      nodes = configure_retry_nodes!([[discarded_usage | first], second])
 
       Process.put(:orchard_retry_started_probe, fn request ->
         send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
@@ -1443,6 +1511,13 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert request.reserved_output_tokens == 0
       assert_logical_identity!(request, idempotency_key, :metadata)
       assert_successful_retry!(request, nodes)
+      assert request.output_tokens == 1
+      assert request.output_usage_status == :exact
+      [_, discarded, _, selected] = Requests.list_request_step_events(request)
+      assert discarded.result["output_tokens"] == 5
+      assert discarded.result["output_usage_status"] == "lower_bound"
+      assert selected.result["output_tokens"] == 1
+      assert selected.result["output_usage_status"] == "exact"
     end
   end
 
@@ -1526,8 +1601,8 @@ defmodule Orchard.API.ResponsesControllerTest do
           assert terminal.type == "response.failed"
           assert terminal.data["response"]["error"]["code"] == "worker_down"
         else
-          assert conn.status == 500
-          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+          assert conn.status == 503
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
         end
 
         request = latest_request!("#{model_id}@v1", stream?)
@@ -1570,8 +1645,8 @@ defmodule Orchard.API.ResponsesControllerTest do
           assert terminal.type == "response.failed"
           assert terminal.data["response"]["error"]["code"] == "worker_down"
         else
-          assert conn.status == 500
-          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+          assert conn.status == 503
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
         end
 
         request = latest_request!("#{model_id}@v1", stream?)
@@ -2054,7 +2129,8 @@ defmodule Orchard.API.ResponsesControllerTest do
     cases = [
       {:model_busy, "server_error", "model_busy"},
       {:queue_full, "rate_limit_error", "queue_full"},
-      {:queue_timeout, "server_error", "queue_timeout"}
+      {:queue_timeout, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"}
     ]
 
     for {reason, type, code} <- cases do
@@ -2576,6 +2652,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         send(pid, {:captured_execute_canonical, canonical, model})
       end
 
+      probe_keepalive(config, opts, :before_events)
+
       if event_handler = Keyword.get(opts, :event_handler) do
         _handler_result =
           Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
@@ -2588,9 +2666,18 @@ defmodule Orchard.API.ResponsesControllerTest do
           end)
       end
 
+      probe_keepalive(config, opts, :after_events)
+
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp probe_keepalive(config, opts, phase) do
+      if pid = Keyword.get(config, :keepalive_probe_pid) do
+        result = Keyword.fetch!(opts, :keepalive_handler).()
+        send(pid, {:keepalive, phase, result, Keyword.fetch!(opts, :keepalive_interval_ms)})
       end
     end
 

@@ -9,7 +9,14 @@ defmodule Orchard.Node.Supervisor do
 
   use Supervisor
 
-  alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
+  alias Orchard.Node.{
+    Endpoint,
+    HostInventory,
+    ModelManager,
+    RuntimeProcessReaper,
+    RuntimeTLS,
+    WorkerSupervisor
+  }
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -28,6 +35,7 @@ defmodule Orchard.Node.Supervisor do
         {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
       ]
       |> maybe_add_runtime_grpc_listener()
+      |> maybe_add_host_inventory()
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -51,6 +59,15 @@ defmodule Orchard.Node.Supervisor do
         [Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)]
     else
       children
+    end
+  end
+
+  # Last under :rest_for_one, so an inventory restart never restarts runtime
+  # custody or the listener.
+  defp maybe_add_host_inventory(children) do
+    case Orchard.Node.host_inventory_options() do
+      nil -> children
+      opts -> children ++ [{HostInventory, opts}]
     end
   end
 

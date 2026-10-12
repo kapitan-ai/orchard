@@ -1,6 +1,6 @@
 ## Why
 
-`SPEC.md` §7.5.3a already requires an exact negotiated reasoning contract, a loaded-worker proof before model invocation, and the indivisible eleven-field tuple with field 8/9 allocations. Issue #327 still needs the owner-confirmed concrete schema decision recorded before any declaration or runtime work. This change records that decision and does not implement the schema or runtime behavior.
+`SPEC.md` §7.5.3a already requires an exact negotiated reasoning contract, a loaded-worker proof before model invocation, and the indivisible eleven-field tuple with field 8/9 allocations. Issue #327 needs the owner-confirmed concrete schema, generated bindings, and reciprocal compatibility fixtures before runtime work. This first slice adds those dormant artifacts and no runtime behavior.
 
 The generic `WorkerCapabilities` envelope is diagnostic-only by its accepted contract. Negotiated reasoning needs a narrower exception: an explicit negotiated request may select only a loaded placement that proves its exact tuple through fresh live reasoning evidence. This does not promote generic capability evidence into readiness, admission, capacity, retry, or ordinary scheduler authority.
 
@@ -9,7 +9,7 @@ That exception is already reconciled in the landed `SPEC.md` §5.6 and §5.5 lan
 ## What Changes
 
 - Trace the already-landed indivisible eleven-field reasoning tuple and its loaded-binding association; source provenance is not tuple identity.
-- Record the owner-confirmed schema decision in `design.md` §2.1 as proposed-only declarations. Schema declarations, generated bindings, and runtime implementation remain separate and blocked until this change is accepted.
+- Record the owner-confirmed schema decision in `design.md` §2.1 and implement its dormant declarations, generated bindings, and reciprocal current/N-1 fixtures unchanged.
 - Accept the deferred `WorkerLoadedBinding` allocation in `WorkerCapabilities` field 8, a sibling reasoning envelope in field 9, and shared Controller/Worker-facing definitions in `proto/cluster/v1/reasoning.proto`, after this change's source review confirmed those allocations are available.
 - Accept a unary `PrepareInference` operation whose proof and opaque single-use authorization form the pre-inference barrier. The authorization is redeemed only by the matching execution request after Controller proof validation.
 - Require opt-in, live-probe-only reasoning evidence and selection from already loaded placements. Heartbeats, persisted observations, and legacy projections do not carry or refresh reasoning evidence.
@@ -23,6 +23,8 @@ That exception is already reconciled in the landed `SPEC.md` §5.6 and §5.5 lan
 - Define presence-aware terminal wire totals, including `Failed.usage`; leave durable `output_usage_status` and Controller lower-bound synthesis to #329.
 - Pin automatic retry to the accepted tuple. For an operator retry, reuse `requests.canonical_request["reasoning"]` only when full capture retains it; otherwise fail with `retry_source_unavailable`. This adds no database column.
 - Keep production tuple registries empty and the feature dormant until #328's parser, accounting, and capture guarantees and model-qualification governance permit activation.
+- Keep the Controller-to-Node `NodeRuntimeService` gRPC compatibility binding legacy-only and non-advertising; declare `PrepareInference` only on `WorkerRuntimeService` and place no negotiated Request through a gRPC-compatibility-only candidate.
+- Add no manifest typed fields; any such extension remains separately accepted work under `SPEC.md` §6.4 and is not a #327 closure criterion.
 - For selected-effort tuples, governance readiness means the ability to classify the exact tuple, not approved semantic qualification or a support claim as a technical advertisement, admission, selection, scheduling, preparation, or dispatch gate. Semantic offerings/support governance remains separate, as `SPEC.md` §7.5.3a requires.
 
 ## Capabilities
@@ -44,6 +46,6 @@ None.
 - This PR does not amend `SPEC.md`. It traces the already-landed §7.5.3a encoding, activation, and sequencing contract, including the eleven-field tuple and field 8/9 allocations.
 - The landed `SPEC.md` §5.6 Tier 0-only negotiated exception, §3.4 and §12.4 routing-policy and deadline inapplicability, §5.5 bounded reasoning wave, and §13.1 non-advertising `N-1` confirmed non-support remain the apex contract. This package does not rewrite them.
 - `proto/cluster/v1/reasoning.proto` adds one `cluster.v1` dependency of the provider-neutral Worker Runtime boundary; its relocation or removal is sequenced by the later `cluster.v1` deprecation, not by this contract.
-- Future implementation may modify shared protocol source, Runtime Endpoint bindings, Worker Runtime bindings, Node Agent, Controller, and provider-neutral fixtures only after this change is accepted, and only by reproducing `design.md` §2.1 unchanged in a separate implementing change. PR #401 has already merged.
-- This PR intentionally contains no `.proto` field declaration, generated binding, migration, runtime implementation, registry entry, model-specific policy, or public API change.
+- This slice modifies shared protocol source, Runtime Endpoint and Worker Runtime generated bindings, descriptor goldens, and provider-neutral reciprocal fixtures by reproducing `design.md` §2.1 unchanged. PR #401 has already merged.
+- This PR intentionally contains no migration, runtime implementation, registry entry, model-specific policy, manifest typed field, or public API behavior change.
 - The parent `define-reasoning-output-contract` implementation tasks remain incomplete; this package authorizes their #327 implementation handoff but does not mark code work complete.

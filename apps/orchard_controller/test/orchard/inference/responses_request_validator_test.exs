@@ -26,8 +26,8 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
     assert {:ok, _} = ResponsesRequestValidator.validate(params)
   end
 
-  test "rejects unaccepted reasoning controls and arbitrary template keyword arguments" do
-    assert {:error, :unsupported_parameter, "reasoning"} =
+  test "accepts SPEC §7.2.1 effort while rejecting arbitrary template keyword arguments" do
+    assert {:ok, _params} =
              @valid_params
              |> Map.put("reasoning", %{"effort" => "low"})
              |> ResponsesRequestValidator.validate()

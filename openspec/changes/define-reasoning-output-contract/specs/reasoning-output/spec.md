@@ -3,7 +3,7 @@
 ### Requirement: Canonical reasoning behavior follows the apex contract
 
 Orchard SHALL implement reasoning policy, projection, legacy compatibility, staged public exposure, Console defaults, and assistant-history handling from `SPEC.md` sections 3.4, 3.5, 7.2.1, and 7.2.8 without creating a second normative contract in OpenSpec.
-Implementation MUST preserve omitted public controls on the complete legacy pipeline and MUST keep concrete public reasoning fields and structured reasoning wire shapes disabled until their separate contracts are accepted.
+Implementation MUST preserve omitted public controls on the complete legacy pipeline and MUST keep unaccepted concrete public final-only selectors and structured reasoning wire shapes disabled until their separate contracts are accepted.
 
 #### Scenario: A capable endpoint receives an omitted public control
 
@@ -13,6 +13,12 @@ Implementation MUST preserve omitted public controls on the complete legacy pipe
 
 #### Scenario: An explicit control lacks an accepted contract
 
-- **WHEN** a caller requests reasoning behavior whose public field or exact negotiated contract has not been accepted
+- **WHEN** a caller requests reasoning behavior whose required public input or exact effective contract has not been accepted
 - **THEN** Orchard rejects the request before dispatch
 - **AND** it does not downgrade the request to legacy blended output
+
+#### Scenario: Accepted input effort preserves legacy blended projection
+
+- **WHEN** a caller selects a supported request-local effort under the exact rendered-input contract defined by `request-local-reasoning-effort` and SPEC §3.4
+- **THEN** Orchard applies and verifies its exact native render arguments before scheduling
+- **AND** legacy blended output does not imply negotiated separation, final-only privacy or structured reasoning support

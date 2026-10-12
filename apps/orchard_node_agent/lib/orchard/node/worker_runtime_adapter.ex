@@ -34,6 +34,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   }
 
   alias Orchard.Node.RuntimeProcessReaper
+  alias Orchard.Node.TensorFoldProjection
   alias Orchard.Node.WorkerCapabilityEvidence
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.PathUtils
@@ -106,6 +107,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   def get_status(_adapter_state, _opts), do: {:error, :worker_unavailable}
+
+  @impl true
+  def prepare_request(%{channel: channel, model_ref: model_ref}, request, _opts) do
+    config = TensorFoldProjection.config()
+
+    with true <- request.model_id == model_ref.model_id and request.version == model_ref.version,
+         {:ok, timeout} <- TensorFoldProjection.lookup_timeout(request, config),
+         {:ok, %{loaded: true, ready: true} = status} <- fetch_offer_status(channel, timeout) do
+      TensorFoldProjection.bind(request, status.tensorfold_profile_admission_json, config)
+    else
+      _other -> {:error, :tensorfold_projection_rejected}
+    end
+  end
+
+  def prepare_request(_state, _request, _opts), do: {:error, :tensorfold_projection_rejected}
+
+  defp fetch_offer_status(channel, timeout) do
+    WorkerRuntimeService.Stub.get_status(channel, %WorkerStatusRequest{}, timeout: timeout)
+  end
 
   @spec score_prefix_cache(state() | term(), ScorePrefixCacheRequest.t(), keyword()) ::
           {:ok, ScorePrefixCacheResponse.t()} | {:error, term()}
@@ -364,6 +384,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     emit_runtime_start([:orchard, :node, :worker_runtime, :unload, :start], unload_meta)
     start_time = System.monotonic_time(:millisecond)
 
+    if is_reference(state[:reaper_ref]),
+      do: RuntimeProcessReaper.mark_phase(state.reaper_ref, :unloading)
+
     unload_result = if skip_rpc?, do: :ok, else: unload_model_rpc(state.channel, state.model_ref)
 
     stop_result =
@@ -379,7 +402,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     socket_result = WorkerProcessLifecycle.remove_owned_socket(state.socket_path)
 
     if is_reference(state[:reaper_ref]),
-      do: RuntimeProcessReaper.release(state.reaper_ref)
+      do: settle_custody(state.reaper_ref, stop_result, :unload_unconfirmed)
 
     final_result = pick_unload_result(unload_result, stop_result, socket_result)
     duration_ms = System.monotonic_time(:millisecond) - start_time
@@ -476,6 +499,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          prefix_cache_max_bytes: prefix_cache_max_bytes,
          generation_mode: generation_mode,
          max_concurrent_generations: max_concurrent_generations,
+         auto_max_concurrent_generations: auto_max_concurrent_generations,
          memory_budget_mode: memory_budget_mode,
          memory_budget_utilization: memory_budget_utilization,
          memory_budget_overhead_bytes: memory_budget_overhead_bytes
@@ -487,6 +511,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         prefix_cache_max_bytes: prefix_cache_max_bytes,
         generation_mode: generation_mode,
         max_concurrent_generations: max_concurrent_generations,
+        auto_max_concurrent_generations: auto_max_concurrent_generations,
         memory_budget_mode: memory_budget_mode,
         memory_budget_utilization: memory_budget_utilization,
         memory_budget_overhead_bytes: memory_budget_overhead_bytes
@@ -594,6 +619,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp load_model_or_cleanup(channel, port, os_pid, reaper_ref, params) do
     case load_model_rpc(channel, params.model_ref, params.model_path, params.load_timeout_ms) do
       :ok ->
+        RuntimeProcessReaper.mark_phase(reaper_ref, :loaded)
+
         {:ok,
          %{
            backend: params.backend,
@@ -1024,6 +1051,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp handle_stream_item({:ok, proto_event}, stream_result, owner, generation_ref) do
     case InferenceEventMapper.from_proto(proto_event) do
       {:ok, event} ->
+        event = runtime_endpoint_event(event)
         send(owner, {:runtime_adapter_event, generation_ref, event})
 
         if InferenceEvent.terminal?(event) do
@@ -1102,6 +1130,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     send(owner, {:runtime_adapter_done, generation_ref, reason})
   end
 
+  # A Worker that quarantines itself stays alive but serves nothing until it is
+  # replaced. The Runtime Endpoint reports that with the stable code for an
+  # unavailable Worker, not the Worker-private code. Execution did not settle
+  # safely, so the failure stays non-retryable.
+  defp runtime_endpoint_event(%InferenceEvent{
+         event: %InferenceEvent.Failed{code: "runtime_quarantined", message: message}
+       }) do
+    InferenceEvent.failed("worker_unavailable", message, false)
+  end
+
+  defp runtime_endpoint_event(event), do: event
+
   defp emit_runtime_failure(owner, generation_ref, code, message) do
     send(
       owner,
@@ -1147,10 +1187,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     term_deadline = kill_deadline - min(@kill_confirm_ms, div(timeout_ms, 2))
     signal_result = WorkerProcessLifecycle.signal_owned_process(os_pid, os_identity, "-TERM")
 
-    if WorkerProcessLifecycle.custody_refused?(signal_result) do
-      :ok
-    else
-      confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline)
+    case signal_result do
+      {:error, :identity_mismatch} -> :ok
+      {:error, :identity_unavailable} -> {:error, :worker_custody_unconfirmed}
+      _sent -> confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline)
     end
   end
 
@@ -1163,7 +1203,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          ) do
       :ok -> :ok
       {:error, :timeout} -> {:error, :worker_shutdown_timeout}
-      {:error, _custody_refusal} -> :ok
+      # The PID now belongs to another process, so ours has exited.
+      {:error, :identity_mismatch} -> :ok
+      {:error, :identity_unavailable} -> {:error, :worker_custody_unconfirmed}
     end
   end
 
@@ -1233,12 +1275,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          socket_path: socket_path
        }) do
     if is_reference(reaper_ref), do: RuntimeProcessReaper.reap(reaper_ref, :cleanup_failed)
-    _ = stop_runtime(port, os_pid, os_identity, shutdown_timeout_ms)
+    stop_result = stop_runtime(port, os_pid, os_identity, shutdown_timeout_ms)
     _ = disconnect_channel(channel)
     _ = WorkerProcessLifecycle.remove_owned_socket(socket_path)
-    if is_reference(reaper_ref), do: RuntimeProcessReaper.release(reaper_ref)
+    if is_reference(reaper_ref), do: settle_custody(reaper_ref, stop_result, :cleanup_failed)
     :ok
   end
+
+  # Custody ends only when the stop confirmed the process exited. Otherwise the
+  # reaper keeps the lease and finishes stopping it, so the Node cannot start a
+  # replacement or treat the slot as free while the old process may still run.
+  defp settle_custody(reaper_ref, :ok, _reason), do: RuntimeProcessReaper.release(reaper_ref)
+
+  defp settle_custody(reaper_ref, _unconfirmed, reason),
+    do: RuntimeProcessReaper.reap(reaper_ref, reason)
 
   defp disconnect_channel(nil), do: :ok
 

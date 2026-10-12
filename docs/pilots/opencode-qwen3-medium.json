@@ -1,0 +1,92 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": [
+    "orchard"
+  ],
+  "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+  "small_model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+  "autoupdate": false,
+  "share": "disabled",
+  "compaction": {
+    "auto": false,
+    "prune": false
+  },
+  "provider": {
+    "orchard": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Orchard source pilot",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "{env:ORCHARD_API_KEY}",
+        "timeout": false,
+        "chunkTimeout": 1800000,
+        "headerTimeout": 1800000,
+        "includeUsage": true
+      },
+      "models": {
+        "orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573": {
+          "name": "Qwen3.8 27B MLX 8bit",
+          "tool_call": true,
+          "reasoning": false,
+          "temperature": true,
+          "attachment": false,
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "plan": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "general": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "explore": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "title": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "summary": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    },
+    "compaction": {
+      "model": "orchard/orchard-local/Qwen3.8-27B-8bit-qwen3-coder-tools@b4e71565ae0f4b842188640b0d479ba0da1635a96297934e8bb6a57a0e1b8573",
+      "temperature": 1,
+      "top_p": 0.95
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "deny"
+  }
+}

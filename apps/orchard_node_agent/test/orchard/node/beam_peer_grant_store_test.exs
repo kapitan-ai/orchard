@@ -1,7 +1,7 @@
 defmodule Orchard.Node.BeamPeerGrantStoreTest do
   use ExUnit.Case, async: true
 
-  @moduletag :macos
+  @moduletag if(:os.type() == {:unix, :darwin}, do: :macos, else: :portable)
 
   import Bitwise, only: [band: 2]
 
@@ -157,7 +157,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       """
       #!/bin/sh
       : > "#{marker_path}"
-      exec /usr/bin/lockf "$@"
+      exec #{lock_command()} "$@"
       """
     )
 
@@ -638,7 +638,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # `install/5` spawns the lock OS process before it reaches `remove_file`,
     # so the default 100ms `assert_receive` window is too tight under load.
     assert_receive {:publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
@@ -690,7 +690,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # `install/5` spawns the lock OS process before it reaches `remove_file`,
     # so the default 100ms `assert_receive` window is too tight under load.
     assert_receive {:child_test_publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
@@ -756,6 +756,79 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert {:ok, ^delivery} = Task.await(install, 1_000)
     assert File.exists?(lock_path)
     assert private_mode(lock_path) == 0o600
+  end
+
+  @tag timeout: 30_000
+  test "SPEC.md §7.5.0 contention times out before store creation and releases after owner death" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-lock-timeout-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    parent = self()
+
+    {holder, monitor} =
+      spawn_monitor(fn ->
+        BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name,
+          after_store_directory_created: fn store_root ->
+            File.rmdir!(store_root)
+            send(parent, {:store_lock_held, self()})
+
+            receive do
+              :never_release -> :ok
+            end
+          end
+        )
+      end)
+
+    on_exit(fn -> Process.exit(holder, :kill) end)
+    assert_receive {:store_lock_held, ^holder}, 5_000
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert elapsed >= 4_500
+    assert elapsed < 7_000
+    refute File.exists?(Path.join(root, "beam-peer-grants"))
+
+    Process.exit(holder, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^holder, :killed}
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    assert {:ok, ^delivery} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+  end
+
+  test "SPEC.md §7.5.0 missing native lock command refuses without creating grant custody" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-missing-lock-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name,
+               lock_command: Path.join(root, "absent-lock-command")
+             )
+
+    refute File.exists?(Path.join(root, "beam-peer-grants"))
+    refute File.exists?(Path.join(root, ".beam-peer-grants.install.lock"))
   end
 
   test "SPEC.md §7.5.0 install rejects non-regular parent lock candidates before store creation" do
@@ -831,7 +904,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert private_mode(store_root) == 0o700
   end
 
-  test "SPEC.md §7.5.0 install uses baseline macOS lockf arguments" do
+  test "SPEC.md §7.5.0 install uses bounded host-native lock arguments" do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -855,7 +928,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
           exit 64
         fi
       done
-      exec /usr/bin/lockf "$@"
+      exec #{lock_command()} "$@"
       """
     )
 
@@ -875,14 +948,22 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     arguments = args_path |> File.read!() |> String.split("\n", trim: true)
     refute "-w" in arguments
 
-    assert arguments == [
-             "-k",
-             "-s",
-             "-t",
-             "5",
-             Path.join(root, ".beam-peer-grants.install.lock"),
-             "/bin/cat"
-           ]
+    lock_path = Path.join(root, ".beam-peer-grants.install.lock")
+
+    case :os.type() do
+      {:unix, :darwin} ->
+        assert arguments == ["-k", "-s", "-t", "5", lock_path, "/bin/cat"]
+
+      {:unix, :linux} ->
+        assert arguments == [
+                 "--exclusive",
+                 "--timeout",
+                 "5",
+                 "--no-fork",
+                 lock_path,
+                 "/bin/cat"
+               ]
+    end
   end
 
   test "SPEC.md §7.5.0 install fails closed when the lock process exits before teardown" do
@@ -1406,6 +1487,13 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
   defp private_mode(path) do
     {:ok, stat} = File.stat(path)
     band(stat.mode, 0o777)
+  end
+
+  defp lock_command do
+    case :os.type() do
+      {:unix, :darwin} -> "/usr/bin/lockf"
+      {:unix, :linux} -> "/usr/bin/flock"
+    end
   end
 
   defp child_elixir_args(payload) do

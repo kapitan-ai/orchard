@@ -15,6 +15,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   }
 
   alias Orchard.Cluster.V1.Completed, as: ProtoCompleted
+  alias Orchard.Cluster.V1.Failed, as: ProtoFailed
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
   alias Orchard.Cluster.V1.TokenDelta, as: ProtoTokenDelta
 
@@ -30,10 +31,24 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   }
 
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
-  alias Orchard.InferenceEvent.{Completed, OutputTextDelta, TokenDelta}
+  alias Orchard.InferenceEvent.{Completed, Failed, OutputTextDelta, TokenDelta}
   alias Orchard.Node.WorkerRuntimeAdapter
 
   @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
+
+  defmodule TensorFoldOfferService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream) do
+      offer = Application.get_env(:orchard_node_agent, :test_tensorfold_offer, "")
+      %WorkerStatusResponse{ready: true, loaded: true, tensorfold_profile_admission_json: offer}
+    end
+  end
+
+  defmodule TensorFoldOfferEndpoint do
+    use GRPC.Endpoint
+    run(TensorFoldOfferService)
+  end
 
   defmodule OpenUnavailableWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
@@ -78,7 +93,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     run(MidStreamUnavailableWorkerService)
   end
 
-  defmodule TokenDeltaWorkerService do
+  defmodule FailingWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
     def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
@@ -87,12 +102,49 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
 
     def generate(%ExecuteInferenceRequest{}, stream) do
+      code = Application.fetch_env!(:orchard_node_agent, :test_worker_failure_code)
+
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{
+          event: {:failed, %ProtoFailed{code: code, message: "worker failed", retryable: false}}
+        }
+      )
+    end
+  end
+
+  defmodule FailingEndpoint do
+    use GRPC.Endpoint
+
+    run(FailingWorkerService)
+  end
+
+  defmodule TokenDeltaWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    def generate(%ExecuteInferenceRequest{} = request, stream) do
       GRPC.Server.send_reply(
         stream,
         %InferenceEvent{
           event: {:token_delta, %ProtoTokenDelta{token_ids: [17], logprobs: [-0.25]}}
         }
       )
+
+      if request.tensorfold_history_projection_json != "" do
+        GRPC.Server.send_reply(
+          stream,
+          %InferenceEvent{
+            event:
+              {:output_text_delta,
+               %ProtoOutputTextDelta{delta: request.tensorfold_history_projection_json}}
+          }
+        )
+      end
 
       GRPC.Server.send_reply(
         stream,
@@ -380,6 +432,70 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                      memory_budget_overhead_bytes: 0
                    )
                  end
+  end
+
+  # Mirrors native/orchard_tensorfold_http/tests/test_cli.py, which proves the
+  # bridge accepts exactly this argument list.
+  test "SPEC.md §7.2.9 TensorFold Worker settings serialize to the bridge's accepted arguments" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "tensorfold",
+        log_path: "/tmp/worker.log",
+        prefix_cache_mode: "disabled",
+        prefix_cache_max_entries: 8,
+        prefix_cache_max_bytes: 0,
+        generation_mode: "stream",
+        max_concurrent_generations: 1,
+        auto_max_concurrent_generations: 1,
+        memory_budget_mode: "disabled",
+        memory_budget_utilization: 0.9,
+        memory_budget_overhead_bytes: 0
+      )
+
+    assert args == [
+             "--socket-path",
+             "/tmp/worker.sock",
+             "--backend",
+             "tensorfold",
+             "--log-file",
+             "/tmp/worker.log",
+             "--prefix-cache-mode",
+             "disabled",
+             "--prefix-cache-max-entries",
+             "8",
+             "--prefix-cache-max-bytes",
+             "0",
+             "--generation-mode",
+             "stream",
+             "--max-concurrent-generations",
+             "1",
+             "--auto-max-concurrent-generations",
+             "1",
+             "--memory-budget-mode",
+             "disabled",
+             "--memory-budget-utilization",
+             "0.9",
+             "--memory-budget-overhead-bytes",
+             "0"
+           ]
+  end
+
+  test "SPEC.md §7.2.9 load_model forwards configured auto concurrency to the launched Worker" do
+    for {extra, expected} <- [
+          {[
+             generation_mode: "stream",
+             max_concurrent_generations: 1,
+             auto_max_concurrent_generations: 1,
+             memory_budget_mode: "disabled",
+             memory_budget_utilization: 0.9,
+             memory_budget_overhead_bytes: 0
+           ], "1"},
+          {[generation_mode: "batch", auto_max_concurrent_generations: 5], "5"}
+        ] do
+      args = launched_worker_args(extra)
+      assert flag_value(args, "--auto-max-concurrent-generations") == expected
+    end
   end
 
   test "get_status maps prompt token id support from worker status proto" do
@@ -713,6 +829,33 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     assert response.score_tier == "unknown"
   end
 
+  for {worker_code, endpoint_code} <- [
+        {"runtime_quarantined", "worker_unavailable"},
+        {"backend_crash", "backend_crash"}
+      ] do
+    @worker_code worker_code
+    @endpoint_code endpoint_code
+    test "SPEC.md §5.9 a Worker #{@worker_code} terminal reaches the Runtime Endpoint as #{@endpoint_code}" do
+      Application.put_env(:orchard_node_agent, :test_worker_failure_code, @worker_code)
+      on_exit(fn -> Application.delete_env(:orchard_node_agent, :test_worker_failure_code) end)
+
+      with_worker_runtime_server(FailingEndpoint, fn channel ->
+        state = adapter_stream_state(channel)
+        request = execute_request("req-#{@worker_code}")
+
+        {:ok, generation_ref, _adapter_state} =
+          WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+        assert_receive {:runtime_adapter_event, ^generation_ref,
+                        %DomainInferenceEvent{event: %Failed{} = failed}},
+                       1_000
+
+        assert failed.code == @endpoint_code
+        assert failed.retryable == false
+      end)
+    end
+  end
+
   test "start_generation sends runtime_adapter_done when stream open returns worker_unavailable" do
     with_worker_runtime_server(OpenUnavailableEndpoint, fn channel ->
       state = adapter_stream_state(channel)
@@ -787,6 +930,39 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     end)
   end
 
+  @tag :tensorfold_transport
+  test "start_generation forwards internal history bytes to the selected Worker" do
+    with_worker_runtime_server(TokenDeltaEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      projection = ~s({"schema_version":1,"messages":[{"content":"opaque\\ntext"}]})
+
+      request = %{
+        execute_request("req-projection")
+        | tensorfold_history_projection_json: projection
+      }
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %OutputTextDelta{delta: ^projection}}
+                     },
+                     1_000
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %Completed{}}
+                     },
+                     1_000
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
   test "start_generation sends generation_task_failed when the stream task crashes unexpectedly" do
     state = adapter_stream_state(:invalid_channel)
     request = execute_request("req-task-crash")
@@ -802,6 +978,115 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
     refute Map.has_key?(cleaned_state.generations, generation_ref)
+  end
+
+  describe "SPEC Node-owned experiment preparation" do
+    setup do
+      old_profile = Application.get_env(:orchard_node_agent, :tensorfold_experiment_profile)
+      old_offer = Application.get_env(:orchard_node_agent, :test_tensorfold_offer)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_node_agent, :tensorfold_experiment_profile, old_profile)
+        Application.put_env(:orchard_node_agent, :test_tensorfold_offer, old_offer)
+      end)
+
+      binding = %{
+        "schema_version" => 1,
+        "profile_id" => "frozen-qwen",
+        "model_id" => "qwen",
+        "version" => String.duplicate("a", 64),
+        "artifact_sha256" => String.duplicate("b", 64),
+        "template_sha256" => String.duplicate("c", 64),
+        "tokenizer_config_sha256" => String.duplicate("d", 64),
+        "enable_thinking" => true,
+        "reasoning_effort" => "medium",
+        "output_projection" => "legacy_blended"
+      }
+
+      config = Map.put(binding, "max_projection_bytes", 8_192)
+      Application.put_env(:orchard_node_agent, :tensorfold_experiment_profile, config)
+      offer = Map.put(binding, "incarnation", "00000000000040008000000000000001")
+      Application.put_env(:orchard_node_agent, :test_tensorfold_offer, Jason.encode!(offer))
+
+      request = %ExecuteInferenceRequest{
+        request_id: "chatcmpl-00000000-0000-4000-8000-000000000002",
+        model_id: binding["model_id"],
+        version: binding["version"],
+        deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+        tensorfold_history_projection_json:
+          Jason.encode!(
+            Map.merge(binding, %{
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "tools" => []
+            })
+          )
+      }
+
+      %{request: request, offer: offer}
+    end
+
+    test "fresh same-channel offer binds each preparation and never appears in generic status",
+         ctx do
+      with_worker_runtime_server(TensorFoldOfferEndpoint, fn channel ->
+        state = %{
+          channel: channel,
+          model_ref: %ModelRef{model_id: ctx.request.model_id, version: ctx.request.version}
+        }
+
+        assert {:ok, first} = WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+
+        assert Jason.decode!(first.tensorfold_history_projection_json)["incarnation"] ==
+                 ctx.offer["incarnation"]
+
+        next_incarnation = "00000000000040008000000000000003"
+
+        Application.put_env(
+          :orchard_node_agent,
+          :test_tensorfold_offer,
+          Jason.encode!(Map.put(ctx.offer, "incarnation", next_incarnation))
+        )
+
+        assert {:ok, second} = WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+
+        assert Jason.decode!(second.tensorfold_history_projection_json)["incarnation"] ==
+                 next_incarnation
+
+        assert {:ok, status} = WorkerRuntimeAdapter.get_status(state, [])
+        refute Map.has_key?(status, :tensorfold_profile_admission_json)
+      end)
+    end
+
+    test "baseline old Worker, mismatched offer, expired deadline and disabled profile refuse",
+         ctx do
+      with_worker_runtime_server(TensorFoldOfferEndpoint, fn channel ->
+        state = %{
+          channel: channel,
+          model_ref: %ModelRef{model_id: ctx.request.model_id, version: ctx.request.version}
+        }
+
+        for offer <- [
+              "",
+              String.duplicate("x", 4_097),
+              Jason.encode!(Map.put(ctx.offer, "artifact_sha256", String.duplicate("e", 64)))
+            ] do
+          Application.put_env(:orchard_node_agent, :test_tensorfold_offer, offer)
+
+          assert {:error, :tensorfold_projection_rejected} =
+                   WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+        end
+
+        Application.put_env(:orchard_node_agent, :test_tensorfold_offer, Jason.encode!(ctx.offer))
+        expired = %{ctx.request | deadline_unix_ms: System.system_time(:millisecond) - 1}
+
+        assert {:error, :tensorfold_projection_rejected} =
+                 WorkerRuntimeAdapter.prepare_request(state, expired, [])
+
+        Application.delete_env(:orchard_node_agent, :tensorfold_experiment_profile)
+
+        assert {:error, :tensorfold_projection_rejected} =
+                 WorkerRuntimeAdapter.prepare_request(state, ctx.request, [])
+      end)
+    end
   end
 
   defp with_worker_runtime_server(endpoint, fun)
@@ -922,6 +1207,33 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
       deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
+  end
+
+  # Launches a fake Worker through the real load_model path; it records its
+  # arguments and exits, so loading fails after the arguments are captured.
+  defp launched_worker_args(extra_opts) do
+    root = Path.join("/tmp", "ofw-#{System.unique_integer([:positive])}")
+    capture = Path.join(root, "args")
+    executable = Path.join(root, "worker")
+    File.mkdir_p!(Path.join([root, "models", "test", "model", "v1"]))
+    File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"#{capture}\"\n")
+    File.chmod!(executable, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert {:error, _reason} =
+             WorkerRuntimeAdapter.load_model(
+               %ModelRef{model_id: "test/model", version: "v1"},
+               [
+                 executable: executable,
+                 backend: "stub",
+                 models_root: Path.join(root, "models"),
+                 socket_path: Path.join(root, "w.sock"),
+                 log_path: Path.join(root, "worker.log"),
+                 ready_timeout_ms: 2_000
+               ] ++ extra_opts
+             )
+
+    capture |> File.read!() |> String.split("\n", trim: true)
   end
 
   defp flag_value(args, flag) do

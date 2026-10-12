@@ -271,6 +271,165 @@ defmodule Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.DelayedCompletionClient do
+  @moduledoc false
+
+  # Accepts, stays silent like a long prefill, then streams a reply. It reports
+  # when it sent the terminal and waits before closing the stream, so a test can
+  # check that no keepalive probe follows the terminal. The silence lasts 80 ms,
+  # or, after `release_on_signal/0`, until the test sends `:release` to the
+  # stream, so a test can observe probes without depending on timing.
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.InferenceEvent.Usage
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def release_on_signal, do: Process.put({__MODULE__, :release}, :signal)
+
+  def release, do: send(Process.get({__MODULE__, :stream}), :release)
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    id = request.request_id
+    release = Process.get({__MODULE__, :release}, :timer)
+
+    stream =
+      spawn(fn ->
+        send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.accepted(0)})
+        await_release(release)
+        send(owner, {:runtime_endpoint_event, ref, id, InferenceEvent.output_text_delta("hi")})
+
+        completed =
+          InferenceEvent.completed(
+            :finish_reason_stop,
+            %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}
+          )
+
+        send(owner, {:runtime_endpoint_event, ref, id, completed})
+        send(owner, {:terminal_sent_at, System.monotonic_time(:millisecond)})
+        Process.sleep(150)
+        send(owner, {:runtime_endpoint_done, ref, :ok})
+      end)
+
+    Process.put({__MODULE__, :stream}, stream)
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+
+  defp await_release(:timer), do: Process.sleep(80)
+
+  defp await_release(:signal) do
+    receive do
+      :release -> :ok
+    after
+      5_000 -> :ok
+    end
+  end
+end
+
+defmodule Orchard.Dispatch.DispatchTest.ProgressBacklogClient do
+  @moduledoc false
+
+  # Accepts, then queues a large backlog of progress events that write nothing
+  # to the client, and holds the stream open.
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  @backlog 5_000
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def backlog, do: @backlog
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+
+    for n <- 1..@backlog do
+      progress = InferenceEvent.progress("prefill", "chunk #{n}")
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, progress})
+    end
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+end
+
+defmodule Orchard.Dispatch.DispatchTest.BufferedCompletionClient do
+  @moduledoc false
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.InferenceEvent.Usage
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    Process.put({__MODULE__, :stream}, {owner, ref, request.request_id})
+
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request.request_id,
+       InferenceEvent.usage_update(%Usage{input_tokens: 1, output_tokens: 5, total_tokens: 6})}
+    )
+
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request.request_id,
+       InferenceEvent.output_text_delta("streaming")}
+    )
+
+    if request.request_id == "req-dispatch-completed-stream-error" do
+      emit_completion(owner, ref, request.request_id)
+      send(owner, {:runtime_endpoint_done, ref, {:error, :stream_failed}})
+    end
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []) do
+    {owner, ref, request_id} = Process.get({__MODULE__, :stream})
+    emit_completion(owner, ref, request_id)
+    :ok
+  end
+
+  defp emit_completion(owner, ref, request_id) do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    send(owner, {:runtime_endpoint_event, ref, request_id, completed})
+  end
+end
+
 defmodule Orchard.Dispatch.DispatchTest.DeadlineCapturingClient do
   @moduledoc false
 
@@ -312,6 +471,8 @@ defmodule Orchard.Dispatch.DispatchTest do
   import Orchard.TestSupport.SentryContextHelpers
 
   alias Orchard.ArtifactBundle
+  alias Orchard.Dispatch.DispatchTest.DelayedCompletionClient
+  alias Orchard.Dispatch.DispatchTest.ProgressBacklogClient
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
@@ -327,6 +488,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.Inference
+  alias Orchard.Inference.EventUsage
 
   alias Orchard.InferenceEvent
   alias Orchard.Node
@@ -621,6 +783,58 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       assert Process.get({Orchard.Dispatch.DispatchTest.TerminalContractClient, :late_refusal}) ==
                nil
+    end
+
+    test "SPEC.md §12.4 (#329): an open drain cannot prove buffered completion usage", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-open-drain-completion"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.BufferedCompletionClient,
+          cancel_drain_timeout_ms: 20,
+          event_handler: fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} -> :cancel
+            _request_id, _event -> :ok
+          end
+        )
+
+      assert outcome.attempt_outcome == :cancelled
+      assert outcome.terminal_usage == nil
+      assert outcome.output_committed
+
+      assert EventUsage.terminal(outcome.events) == %{
+               input_tokens: 1,
+               output_tokens: 5,
+               output_usage_status: "lower_bound"
+             }
+    end
+
+    test "SPEC.md §12.4 (#329): completion followed by stream error keeps exact usage", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-completed-stream-error"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.BufferedCompletionClient
+        )
+
+      assert outcome.attempt_outcome == :failed
+      assert outcome.failure["failure_code"] == "internal_error"
+
+      assert outcome.terminal_usage == %{
+               input_tokens: 1,
+               output_tokens: 7,
+               output_usage_status: "exact"
+             }
     end
 
     @tag :pre_acceptance_refusal
@@ -1198,6 +1412,178 @@ defmodule Orchard.Dispatch.DispatchTest do
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)
     end
 
+    test "SPEC.md §5.9 a failed keepalive probe in a silent accepted execution is a caller disconnect",
+         %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-accepted"
+      probes = :counters.new(1, [])
+
+      keepalive = fn ->
+        :counters.add(probes, 1, 1)
+        if :counters.get(probes, 1) >= 2, do: :cancel, else: :ok
+      end
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: keepalive,
+          keepalive_interval_ms: 10
+        )
+
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               accepted: true,
+               output_committed: false,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } = outcome
+
+      assert :counters.get(probes, 1) == 2
+      assert Enum.count(outcome.events, &InferenceEvent.terminal?/1) == 1
+    end
+
+    test "SPEC.md §5.9 a failed keepalive probe before acceptance is a caller disconnect", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-keepalive-unaccepted"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: fn -> :cancel end,
+          keepalive_interval_ms: 10
+        )
+
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } = outcome
+    end
+
+    test "successful keepalive probes change no attempt evidence and stop at the terminal", %{
+      bundle: bundle
+    } do
+      baseline = dispatch_delayed_completion(bundle, "req-dispatch-keepalive-baseline", [])
+      _ = drain_keepalive_messages()
+
+      test_pid = self()
+      probe_count = :counters.new(1, [])
+
+      # The stream stays silent until three probes have run, then replies.
+      DelayedCompletionClient.release_on_signal()
+
+      probed =
+        dispatch_delayed_completion(bundle, "req-dispatch-keepalive-probed",
+          keepalive_handler: fn ->
+            send(test_pid, {:probe_at, System.monotonic_time(:millisecond)})
+            :counters.add(probe_count, 1, 1)
+            if :counters.get(probe_count, 1) == 3, do: DelayedCompletionClient.release()
+            :ok
+          end,
+          keepalive_interval_ms: 10
+        )
+
+      %{terminal_at: terminal_at, probes: probes} = drain_keepalive_messages()
+
+      assert probed.attempt_outcome == baseline.attempt_outcome
+
+      assert Enum.map(probed.events, &InferenceEvent.kind/1) ==
+               Enum.map(baseline.events, &InferenceEvent.kind/1)
+
+      assert probed.delivered_event_count == baseline.delivered_event_count
+      assert probed.output_committed == baseline.output_committed
+      assert probed.terminal_usage == baseline.terminal_usage
+
+      # Three probes run before the reply. After the terminal arrives the stream
+      # stays open for 150 ms; at most one probe can race the terminal message,
+      # never a stream of them.
+      assert length(probes) >= 3
+      assert Enum.count(probes, &(&1 > terminal_at)) <= 1
+    end
+
+    test "a backlog of runtime messages that write nothing cannot postpone a due keepalive probe",
+         %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-backlog"
+      test_pid = self()
+
+      # The first probe cancels and reports how many messages were still queued.
+      keepalive = fn ->
+        {:message_queue_len, queued} = Process.info(self(), :message_queue_len)
+        send(test_pid, {:queued_at_probe, queued})
+        :cancel
+      end
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.ProgressBacklogClient,
+          cancel_drain_timeout_ms: 20,
+          keepalive_handler: keepalive,
+          keepalive_interval_ms: 1
+        )
+
+      assert outcome.attempt_outcome == :cancelled
+      assert outcome.failure["failure_code"] == "request_caller_disconnect"
+
+      assert_received {:queued_at_probe, queued}
+      backlog = ProgressBacklogClient.backlog()
+      assert queued > div(backlog, 2), "probe waited for the backlog: #{queued} still queued"
+    end
+
+    test "a keepalive probe that raises stops probing and never fails the attempt", %{
+      bundle: bundle
+    } do
+      baseline = dispatch_delayed_completion(bundle, "req-dispatch-keepalive-raise-base", [])
+      calls = :counters.new(1, [])
+
+      outcome =
+        dispatch_delayed_completion(bundle, "req-dispatch-keepalive-raise",
+          keepalive_handler: fn ->
+            :counters.add(calls, 1, 1)
+            raise "probe failed"
+          end,
+          keepalive_interval_ms: 10
+        )
+
+      assert outcome.attempt_outcome == baseline.attempt_outcome
+      assert outcome.failure == baseline.failure
+      assert :counters.get(calls, 1) == 1
+    end
+
+    test "a keepalive handler without a positive interval is refused", %{bundle: bundle} do
+      request_id = "req-dispatch-keepalive-invalid"
+
+      for opts <- [
+            [keepalive_handler: fn -> :ok end],
+            [keepalive_handler: fn -> :ok end, keepalive_interval_ms: 0],
+            [keepalive_handler: fn _arg -> :ok end, keepalive_interval_ms: 10]
+          ] do
+        assert_raise ArgumentError, fn ->
+          RequestDispatcher.dispatch(
+            build_schedule(request_id),
+            execute_request(request_id),
+            model_load_request(bundle),
+            [client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient] ++ opts
+          )
+        end
+      end
+    end
+
     test "SPEC.md §7.2.7 dispatch-capacity caller-down is cancellation", %{bundle: bundle} do
       caller = spawn(fn -> Process.sleep(:infinity) end)
       Process.exit(caller, :kill)
@@ -1347,6 +1733,24 @@ defmodule Orchard.Dispatch.DispatchTest do
   end
 
   # -- Helpers ---------------------------------------------------------------
+
+  defp dispatch_delayed_completion(bundle, request_id, opts) do
+    RequestDispatcher.dispatch(
+      build_schedule(request_id),
+      execute_request(request_id),
+      model_load_request(bundle),
+      [client_impl: Orchard.Dispatch.DispatchTest.DelayedCompletionClient] ++ opts
+    )
+  end
+
+  defp drain_keepalive_messages(acc \\ %{terminal_at: nil, probes: []}) do
+    receive do
+      {:terminal_sent_at, at} -> drain_keepalive_messages(%{acc | terminal_at: at})
+      {:probe_at, at} -> drain_keepalive_messages(%{acc | probes: [at | acc.probes]})
+    after
+      0 -> acc
+    end
+  end
 
   defp model_load_request(bundle) do
     %EnsureModelLoadedRequest{

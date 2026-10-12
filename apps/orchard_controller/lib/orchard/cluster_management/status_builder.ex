@@ -132,6 +132,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       compatibility: runtime_compatibility(target),
       scheduling: %{eligible: false, reason_codes: []},
       dispatch_capacity: nil,
+      diagnostics: Map.get(target, :diagnostics),
       warnings: runtime_warnings(target)
     })
   end

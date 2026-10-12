@@ -40,7 +40,10 @@ DISCOVERED="$GENERATED_ROOT/discovered.txt"
 {
   printf '%s\n' \
     apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex \
-    proto/orchard/worker/v1/worker_runtime.descriptor.pb
+    proto/orchard/worker/v1/worker_runtime.descriptor.pb \
+    proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb
+  find "$COMMITTED_ROOT/apps/orchard_shared/lib/cluster/v1" -type f -name '*.pb.ex' -print \
+    | sed "s#^$COMMITTED_ROOT/##"
   find "$COMMITTED_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated" \
     -type f \( -name '*_pb2.py' -o -name '*_pb2_grpc.py' \) -print \
     | sed "s#^$COMMITTED_ROOT/##"
@@ -72,4 +75,4 @@ if [[ "$drift" == "true" ]]; then
   exit 1
 fi
 
-printf 'committed Worker Runtime bindings match the canonical schema\n'
+printf 'committed shared Elixir, Worker Runtime Elixir and Python bindings, descriptor golden, and preparation fixture match the canonical schema\n'

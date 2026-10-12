@@ -118,7 +118,7 @@ def _qualify(bundle: Path) -> None:
     direct_url = json.loads(importlib.metadata.distribution("mlx-lm").read_text("direct_url.json"))
     assert direct_url["vcs_info"]["commit_id"] == _MLX_LM_REVISION
     assert importlib.metadata.version("mlx") == "0.32.2"
-    assert importlib.metadata.version("transformers") == "5.12.1"
+    assert importlib.metadata.version("transformers") == "5.14.1"
     manifest = load_manifest(bundle)
     backend = MLXBackend(
         generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),

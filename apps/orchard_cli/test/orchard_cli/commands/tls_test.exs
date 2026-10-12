@@ -597,6 +597,50 @@ defmodule OrchardCLI.Commands.TLSTest do
     assert message =~ "must not contain null"
   end
 
+  @tag :integration
+  test "init with a staging parent generates there and never stages inside the output dir" do
+    dir = make_tmp_dir()
+    output_dir = Path.join(dir, "tls")
+    staging_parent = Path.join(dir, "private-stage")
+    File.mkdir!(staging_parent)
+    File.chmod!(staging_parent, 0o700)
+    test_pid = self()
+
+    cmd = fn executable, args, opts ->
+      send(test_pid, {:cmd, opts[:cd], File.ls(output_dir)})
+      real_cmd(executable, args, opts)
+    end
+
+    assert {:ok, _message} =
+             TLS.run(
+               ["init", "--no-trust", "--output-dir", output_dir],
+               real_runtime(%{cmd: cmd, staging_parent: staging_parent})
+             )
+
+    observations = collect_cmd_observations([])
+    staged = for {cd, _listing} <- observations, cd != nil, do: cd
+    assert staged != []
+    assert Enum.all?(staged, &(Path.dirname(&1) == staging_parent))
+
+    for {_cd, {:ok, listing}} <- observations do
+      refute Enum.any?(listing, &String.starts_with?(&1, ".staging-"))
+    end
+
+    assert File.ls!(staging_parent) == []
+    assert file_mode(output_dir) == 0o750
+    assert file_mode(Path.join(output_dir, "ca.key")) == 0o600
+    assert file_mode(Path.join(output_dir, "controller.key")) == 0o600
+    assert File.regular?(Path.join(output_dir, ".orchard-tls-meta.json"))
+  end
+
+  defp collect_cmd_observations(acc) do
+    receive do
+      {:cmd, cd, listing} -> collect_cmd_observations([{cd, listing} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   # ── Helpers ───────────────────────────────────────────────────────────
 
   defp make_tmp_dir do

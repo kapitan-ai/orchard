@@ -432,7 +432,7 @@ defmodule Orchard.Portal.KeysLive do
           </p>
         </div>
 
-        <form phx-change="acknowledge_secret" class="mt-6">
+        <form phx-change="acknowledge_secret" phx-auto-recover="ignore" class="mt-6">
           <label class="flex items-start gap-2 text-sm text-slate-200">
             <input type="checkbox" name="ack" value="true" checked={@stored_ack} class="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700" />
             I've stored this key. Orchard will not show it again.
@@ -462,6 +462,7 @@ defmodule Orchard.Portal.KeysLive do
     >
       <form
         phx-change="update_revoke_confirmation"
+        phx-auto-recover="ignore"
         phx-submit="revoke_key"
         class="w-full max-w-md rounded-lg border border-slate-600 bg-slate-700 p-6"
       >
