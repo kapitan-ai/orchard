@@ -8,6 +8,7 @@ import gc
 import logging
 import threading
 import weakref
+from types import SimpleNamespace
 
 import pytest
 from test_tensorfold_driver import (
@@ -46,7 +47,7 @@ class Recorder:
             raise RuntimeError("observer failed")
 
 
-def make_driver(bounds, receipt, observer, engine=None):
+def make_driver(bounds, receipt, observer, engine=None, scheduler=Scheduler):
     def quarantine():
         receipt.quarantines += 1
 
@@ -60,7 +61,7 @@ def make_driver(bounds, receipt, observer, engine=None):
 
     driver = TensorFoldDriver(
         Engine() if engine is None else engine,
-        scheduler_factory=Scheduler,
+        scheduler_factory=scheduler,
         job_factory=job_factory,
         checkpoint_factory=Checkpoints,
         cancellation_factory=Cancellation,
@@ -238,3 +239,76 @@ def test_a_snapshot_the_store_rejects_is_unreachable_at_the_after_release_sample
     assert run(driver) == [[6, 7]]
     assert not driver.checkpoints._entries
     assert live == [0]
+
+
+class RequestError(ValueError):
+    """errors.py:1-2 at cb2ebf05."""
+
+
+class PrefillFailure(Scheduler):
+    """A prefill that fails after a stored-prefix hit, as TensorFold 0.6.6 reports it.
+
+    ``_start_fill`` hands the borrowed copy to the engine's prefill steps
+    (family_prefill.py:148-197), whose frame keeps it as the working cache. A
+    generic failure there reaches ``_end_fill`` (prompt_fill.py:195-226), which
+    stores it on the job with its traceback; only ``RequestError`` loses its
+    frames. A failed prefill leaves the stream's finish reason empty.
+    """
+
+    finish_reason = ""
+
+    def submit(self, job):
+        if self.behavior != "prefill_error":
+            return super().submit(job)
+        self.jobs.append(job)
+        self.active = self.engine.active_count = 1
+        _, cache, _ = self.checkpoints.match(job.prompt_ids)
+        job.stream = SimpleNamespace(finish_reason=self.finish_reason, history_checkpoints=[])
+        steps = self._prefill_steps(cache)
+        del cache
+        try:
+            next(steps)
+        except Exception as exc:
+            self._end_fill(job, exc)
+
+    @staticmethod
+    def _prefill_steps(cache):
+        try:
+            cache[0].pop("missing")
+        except KeyError:
+            # Chained, so the context's traceback holds this frame too.
+            raise RuntimeError("prefill failed")  # noqa: B904
+        yield
+
+    def _end_fill(self, job, error):
+        try:
+            raise error
+        except Exception as exc:
+            job.error = exc.with_traceback(None) if isinstance(exc, RequestError) else exc
+            job.chunks.put(None)
+            self.active = self.engine.active_count = 0
+            job.done.set()
+
+
+@pytest.mark.parametrize(
+    "finish_reason,failure",
+    [("", "finish metadata is unsupported"), ("stop", "failed after native settlement")],
+)
+def test_a_failed_prefill_error_keeps_no_released_borrowed_copy_reachable(
+    bounds, receipt, finish_reason, failure
+):
+    driver = make_driver(bounds, receipt, None, TrackingEngine(), PrefillFailure)
+    assert run(driver) == [[6, 7]]
+    driver.scheduler.behavior = "prefill_error"
+    driver.scheduler.finish_reason = finish_reason
+    copies = len(driver.engine.layers)
+    with pytest.raises(DriverError, match=failure):
+        run(driver, prompt=[1, 2, 3, 4], history=3)
+    [borrowed] = driver.engine.layers[copies:]
+    job = driver.scheduler.jobs[-1]
+    # Settlement released the borrowed lease; the job still holds its error.
+    assert driver._custody.snapshot().leases == len(driver.checkpoints._entries) == 1
+    gc.collect()
+    assert borrowed() is None
+    assert type(job.error) is RuntimeError and str(job.error) == "prefill failed"
+    assert job.error.__traceback__ is job.error.__context__ is None

@@ -1998,6 +1998,7 @@ Breaker eligibility over the closed §3.7.1 `failure_class` vocabulary is:
 * an unsuccessful attempt SHALL contribute to at most one breaker
 
 The failure SHALL be attributed to the Node or `(node, model)` placement that produced it.
+An attempt whose producing Node has no Node inventory row runs on the unmanaged compatibility path, which the scheduler does not suppress, and SHALL NOT contribute to either breaker; it is recorded as not eligible rather than failing the Request.
 Attempt 1 breaker effects SHALL be durable before attempt 2's fresh scheduler decision, and that decision SHALL respect any resulting suppression.
 The retry decision and a declined retry SHALL NOT add a breaker event.
 This attempt accounting SHALL NOT change breaker thresholds, windows, suppression durations, or the Operator clear path.
@@ -2804,8 +2805,11 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
 * `499` caller cancelled or disconnected when a response remains deliverable
-* `503` cluster busy / model busy / no eligible node
+* `503` cluster busy / model busy / no eligible node / Worker lost during the Request
 * `504` request timeout
+
+A non-streaming Request that fails because its Worker was lost SHALL return `503 server_error` with the stable Runtime Endpoint code `worker_down` or `worker_unavailable`, the same code that a streaming Request reports in its terminal error event.
+The status and code do not change retry behavior; §5.8 and §5.9 still decide whether the Controller retries.
 
 Reasoning-control failures use this closed mapping:
 

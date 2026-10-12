@@ -212,6 +212,30 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 
+  test "SPEC.md §4.9 a runtime that exits within its TERM grace frees custody before the grace ends" do
+    root = unique_root("grace-exit")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, ref} =
+      watch(os_pid,
+        shutdown_timeout_ms: 30_000,
+        model_ref: %{model_id: "model/grace", version: "v1"}
+      )
+
+    RuntimeProcessReaper.reap(ref, :custody_test)
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    CustodyTestHelpers.assert_reaper_empty!(2_000)
+    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
+  end
+
   test "requested reap records resistant TERM before bounded KILL escalation" do
     root = unique_root("resistant")
     marker_path = Path.join(root, "events.log")
@@ -411,7 +435,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
-  test "owner-down reaping without launch identity cleans socket and lease without signaling" do
+  test "owner-down reaping without launch identity keeps the lease without signaling until the PID exits" do
     root = unique_root("owner-down-no-identity")
     socket_path = Path.join(root, "worker.sock")
     File.mkdir_p!(root)
@@ -440,10 +464,105 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
              })
 
     Process.exit(owner_pid, :kill)
-    CustodyTestHelpers.assert_reaper_empty!(1_000)
 
+    # Without a launch identity the reaper cannot prove a live PID is still ours,
+    # so it never signals it, and it cannot prove exit either: it keeps custody.
+    Process.sleep(300)
+    assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
     refute File.exists?(socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    CustodyTestHelpers.stop_child(control_port, control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(5_000)
+  end
+
+  test "an unreadable identity keeps custody and reports the model until exit is confirmed" do
+    root = unique_root("unreadable-identity")
+    fake_bin = Path.join(root, "fake-bin")
+    File.mkdir_p!(fake_bin)
+    File.write!(Path.join(fake_bin, "ps"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(fake_bin, "ps"), 0o755)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    {:ok, identity} = WorkerProcessLifecycle.process_identity(control_pid)
+    previous_path = System.fetch_env!("PATH")
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} =
+             RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+               shutdown_timeout_ms: @short_timeout_ms,
+               model_ref: %{model_id: "model/custody", version: "v1"},
+               os_identity: identity,
+               phase: :loaded,
+               socket_path: nil
+             })
+
+    # While `ps` fails the reaper cannot prove the PID is still ours: it must not
+    # signal it, must not drop the lease, and must report the model as pending.
+    System.put_env("PATH", fake_bin <> ":" <> previous_path)
+    Process.exit(owner_pid, :kill)
+    Process.sleep(600)
+
+    assert map_size(:sys.get_state(RuntimeProcessReaper).leases) == 1
+
+    assert RuntimeProcessReaper.custody_model_keys() ==
+             {:ok, MapSet.new([{"model/custody", "v1"}])}
+
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    # Once identity is readable again the reaper kills its own process, confirms
+    # the exit, and only then releases the lease.
+    System.put_env("PATH", previous_path)
+    CustodyTestHelpers.assert_reaper_empty!(10_000)
+    refute WorkerProcessLifecycle.os_process_alive?(control_pid)
+    assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
+  end
+
+  test "SPEC.md §4.9 a runtime still gets TERM and its grace after a transient identity failure" do
+    root = unique_root("identity-recovers")
+    marker_path = Path.join(root, "events.log")
+    fake_bin = Path.join(root, "fake-bin")
+    File.mkdir_p!(fake_bin)
+    File.write!(Path.join(fake_bin, "ps"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(fake_bin, "ps"), 0o755)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+    {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+    previous_path = System.fetch_env!("PATH")
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} =
+             RuntimeProcessReaper.watch(owner_pid, os_pid, %{
+               shutdown_timeout_ms: 30_000,
+               model_ref: nil,
+               os_identity: identity,
+               phase: :loaded,
+               socket_path: nil
+             })
+
+    System.put_env("PATH", fake_bin <> ":" <> previous_path)
+    Process.exit(owner_pid, :kill)
+    Process.sleep(300)
+    System.put_env("PATH", previous_path)
+
+    # A KILL would end the child without the cooperative TERM handler running.
+    assert CustodyTestHelpers.wait_until(
+             fn -> event_logged?(marker_path, "term_received mode=cooperative") end,
+             5_000
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 5_000)
+    CustodyTestHelpers.assert_reaper_empty!(5_000)
   end
 
   test "shutdown sweep without launch identity cleans socket without signaling" do

@@ -1629,8 +1629,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
             assert error["error"]["code"] == "worker_down"
           else
-            assert conn.status == 500
-            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+            assert conn.status == 503
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
           end
 
           request = latest_request!("#{model_id}@v1", stream?)
@@ -1674,8 +1674,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
             assert error["error"]["code"] == "worker_down"
           else
-            assert conn.status == 500
-            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+            assert conn.status == 503
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "worker_down"
           end
 
           request = latest_request!("#{model_id}@v1", stream?)

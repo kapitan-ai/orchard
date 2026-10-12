@@ -15,6 +15,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
   alias Orchard.DispatchCapacity.ConformanceFixture
   alias Orchard.Node.ModelManager
   alias Orchard.Node.Status, as: NodeStatus
+  alias Orchard.Node.WorkerProcessLifecycle
 
   alias Orchard.TestSupport.{
     AgenticExecutionClient,
@@ -356,6 +357,72 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
       assert first.affinity_key == second.affinity_key == (bound == 1)
       assert first.affinity_key == affinity(first.rendered_prompt, bound)
       assert second.affinity_key == affinity(second.rendered_prompt, bound)
+    end
+  end
+
+  # The unmanaged rows run without a Node inventory row, as source dev does.
+  for {mode, inventory} <-
+        Enum.map(~w(chat_stream responses_stream chat_sync responses_sync), &{&1, :managed}) ++
+          [{"chat_stream", :unmanaged}, {"responses_sync", :unmanaged}] do
+    @mode mode
+    @inventory inventory
+    test "SPEC.md §12.2 a Worker killed during prefill fails the Request with worker_down #{@mode} #{@inventory}",
+         %{token: token} do
+      if @inventory == :unmanaged do
+        node_id = Application.fetch_env!(:orchard_node_agent, :runtime)[:node_id]
+        Repo.delete!(Repo.get!(Orchard.Nodes.Node, node_id))
+      end
+
+      script = System.fetch_env!("ORCHARD_AGENTIC_SCRIPT")
+      root = Path.rootname(script)
+      Enum.each([".request", ".cancelled", ".release", ".drained"], &File.rm(root <> &1))
+      File.write!(script, Jason.encode!(%{events: [%{wait_for_cancel: true}]}))
+
+      Application.put_env(:orchard_controller, :agentic_execution_fixture, %{
+        owner: self(),
+        events: [],
+        fault: nil
+      })
+
+      before_ids = MapSet.new(Repo.all(Requests.Request), & &1.id)
+      chat? = String.starts_with?(@mode, "chat")
+      stream? = String.ends_with?(@mode, "stream")
+      path = if chat?, do: "/v1/chat/completions", else: "/v1/responses"
+      params = public_request(%{"request" => %{}}, chat?, stream?)
+      accept = if stream?, do: "text/event-stream", else: "application/json"
+
+      task =
+        Task.async(fn ->
+          build_conn()
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> put_req_header("accept", accept)
+          |> post(path, params)
+        end)
+
+      assert_receive {:agentic_execution_started, _request}, 5_000
+      assert wait_until(fn -> File.exists?(root <> ".request") end)
+      os_pid = loaded_worker_os_pid()
+      _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
+      assert wait_until(fn -> not WorkerProcessLifecycle.os_process_alive?(os_pid) end)
+
+      conn = Task.await(task, 15_000)
+      assert_receive {:agentic_runtime_trace, events}, 2_000
+      [request] = Enum.reject(Repo.all(Requests.Request), &MapSet.member?(before_ids, &1.id))
+      terminal = List.last(Requests.list_request_step_events(request))
+
+      assert %Orchard.InferenceEvent.Failed{code: "worker_down", retryable: false} =
+               List.last(events).event
+
+      assert request.state == :failed
+      assert request.error_code == "worker_down"
+      assert request.http_status == 503
+      assert terminal.result["failure_class"] == "worker_or_node_loss"
+      assert terminal.result["failure_code"] == "worker_down"
+      assert terminal.result["retry_decision"] == "not_retryable"
+      assert conn.status == if(stream?, do: 200, else: 503)
+      assert Repo.exists?(Orchard.CircuitBreakers.Breaker) == (@inventory == :managed)
+      assert conn.resp_body =~ ~s("code":"worker_down")
+      refute conn.resp_body =~ ~s("code":"internal_error")
     end
   end
 
@@ -798,6 +865,11 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
       reraise error, __STACKTRACE__
   end
 
+  defp loaded_worker_os_pid do
+    [%{pid: worker_pid}] = Map.values(:sys.get_state(ModelManager).workers)
+    :sys.get_state(worker_pid).adapter_state.os_pid
+  end
+
   defp replay(scenario, mode, token) do
     script = System.fetch_env!("ORCHARD_AGENTIC_SCRIPT")
     File.rm(Path.rootname(script) <> ".request")
@@ -1041,9 +1113,13 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     terminal["response"]["error"]
   end
 
+  # SPEC.md §7.2.7: a lost Worker is unavailable capacity (503); every other
+  # sync failure here is a 500.
   defp public_error(conn, _sync) do
-    assert conn.status == 500
-    Jason.decode!(conn.resp_body)["error"]
+    error = Jason.decode!(conn.resp_body)["error"]
+    worker_lost? = error["code"] in ["worker_down", "worker_unavailable"]
+    assert conn.status == if(worker_lost?, do: 503, else: 500)
+    error
   end
 
   defp continue(%{"continuation" => continuation} = scenario, calls, effects, mode, token) do
