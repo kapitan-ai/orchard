@@ -506,8 +506,9 @@ def test_failed_copy_keeps_its_reservation_as_uncertain() -> None:
     stats = store.stats()
     assert (stats.uncertain, stats.retained, stats.reserved_bytes) == (1, 0, SLOT_BYTES)
     assert stats.copy_failures == 1
-    # The uncertain slot is not reusable, so the next capture finds no slot.
-    assert store.capture(TURN_2[:8], _cache_for(TURN_2[:8])).status == CAPTURE_SKIPPED_NO_SLOT
+    # The uncertain slot is not reusable, so a capture of another key finds no slot.
+    other_key = [5, 6, 7, 8]
+    assert store.capture(other_key, _cache_for(other_key)).status == CAPTURE_SKIPPED_NO_SLOT
     assert store.lookup(TURN_2).status == LOOKUP_MISS
 
     store.clear()
@@ -617,6 +618,20 @@ def test_recapturing_a_held_key_keeps_the_existing_checkpoint() -> None:
     stats = store.stats()
     assert (stats.retained, stats.uncertain, stats.evictions, stats.stores) == (1, 0, 0, 1)
     assert store.lookup(TURN_2).status == LOOKUP_HIT
+
+
+def test_a_key_with_an_uncertain_copy_is_not_captured_again() -> None:
+    """Repeated failures of one key must not fill every slot or evict a healthy one."""
+    store = _store(slots=2)
+    store.capture(TURN_2[:16], _cache_for(TURN_2[:16]))
+    assert store.capture(TURN_1[:8], [_Uncopyable()]).status == CAPTURE_COPY_FAILED
+
+    outcome = store.capture(TURN_1[:8], [_Uncopyable()])
+
+    assert outcome.status == "skipped_already_held"
+    stats = store.stats()
+    assert (stats.retained, stats.uncertain, stats.evictions) == (1, 1, 0)
+    assert store.lookup([*TURN_2, 1]).status == LOOKUP_HIT
 
 
 def test_restore_failure_after_the_slot_was_cleared_is_still_a_miss() -> None:

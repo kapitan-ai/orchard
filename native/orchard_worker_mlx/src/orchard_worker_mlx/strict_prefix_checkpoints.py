@@ -361,11 +361,10 @@ class StrictPrefixCheckpointStore:
 
         with self._lock:
             # A held checkpoint for the same key is already exact, so keep it
-            # rather than drop it before a copy that might fail.
-            if any(
-                slot.key == frozen_key and slot.state in (_STAGED, _RETAINED)
-                for slot in self._slots
-            ):
+            # rather than drop it before a copy that might fail.  An uncertain
+            # copy of the key also counts, so repeated failures of one prefix
+            # hold at most one slot and cannot evict healthy checkpoints.
+            if any(slot.key == frozen_key for slot in self._slots):
                 return CaptureOutcome(CAPTURE_SKIPPED_ALREADY_HELD, snapshot_bytes)
             if snapshot_bytes > self._slot_bytes:
                 self._skipped_oversize += 1
