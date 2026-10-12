@@ -7,6 +7,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   requests do not remain active without a runtime owner.
   """
 
+  alias Orchard.Inference.TensorFoldProjection
+
   alias Orchard.CanonicalRequest
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
@@ -169,15 +171,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp dispatch_persisted_request(db_request, canonical, model, opts) do
-    event_handler = Keyword.get(opts, :event_handler)
-    caller = Keyword.get(opts, :caller, self())
-    success_persistence = Keyword.get(opts, :success_persistence)
-
-    step_event_appender =
-      Keyword.get(opts, :step_event_appender, &Requests.append_request_step_events/2)
-
-    terminal_persister =
-      Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
+    execution_opts = %{
+      caller: Keyword.get(opts, :caller, self()),
+      event_handler: Keyword.get(opts, :event_handler),
+      keepalive_handler: Keyword.get(opts, :keepalive_handler),
+      keepalive_interval_ms: Keyword.get(opts, :keepalive_interval_ms),
+      success_persistence: Keyword.get(opts, :success_persistence),
+      step_event_appender:
+        Keyword.get(opts, :step_event_appender, &Requests.append_request_step_events/2),
+      terminal_persister:
+        Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
+    }
 
     put_request_persisted_context(db_request, canonical)
 
@@ -187,43 +191,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
       canonical.input_token_count
     )
 
-    start_and_dispatch(
-      db_request,
-      canonical,
-      model,
-      caller,
-      event_handler,
-      success_persistence,
-      step_event_appender,
-      terminal_persister
-    )
+    start_and_dispatch(db_request, canonical, model, execution_opts)
   end
 
-  defp start_and_dispatch(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp start_and_dispatch(db_request, canonical, model, execution_opts) do
     case start_fsm(db_request) do
       {:ok, _pid} ->
-        run_dispatch_pipeline(
-          db_request,
-          canonical,
-          model,
-          caller,
-          event_handler,
-          success_persistence,
-          step_event_appender,
-          terminal_persister
-        )
+        run_dispatch_pipeline(db_request, canonical, model, execution_opts)
 
       {:error, reason} ->
-        handle_start_failure(db_request, reason, terminal_persister)
+        handle_start_failure(db_request, reason, execution_opts.terminal_persister)
     end
   end
 
@@ -239,85 +216,23 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp run_dispatch_pipeline(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp run_dispatch_pipeline(db_request, canonical, model, execution_opts) do
     db_request
-    |> dispatch_pipeline_result(
-      canonical,
-      model,
-      caller,
-      event_handler,
-      success_persistence,
-      step_event_appender,
-      terminal_persister
-    )
-    |> handle_dispatch_pipeline_result(db_request, terminal_persister)
+    |> dispatch_pipeline_result(canonical, model, execution_opts)
+    |> handle_dispatch_pipeline_result(db_request, execution_opts.terminal_persister)
   end
 
-  defp dispatch_pipeline_result(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp dispatch_pipeline_result(db_request, canonical, model, execution_opts) do
     with :ok <- advance_fsm(db_request.id, :validated) do
-      dispatch_after_validation(
-        db_request,
-        canonical,
-        model,
-        caller,
-        event_handler,
-        success_persistence,
-        step_event_appender,
-        terminal_persister
-      )
+      dispatch_after_validation(db_request, canonical, model, execution_opts)
     end
   end
 
-  defp dispatch_after_validation(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp dispatch_after_validation(db_request, canonical, model, execution_opts) do
     if Inference.queue_admission_enabled?() do
-      run_queue_dispatch_pipeline(
-        db_request,
-        canonical,
-        model,
-        caller,
-        event_handler,
-        success_persistence,
-        step_event_appender,
-        terminal_persister
-      )
+      run_queue_dispatch_pipeline(db_request, canonical, model, execution_opts)
     else
-      run_legacy_dispatch_pipeline(
-        db_request,
-        canonical,
-        model,
-        caller,
-        event_handler,
-        success_persistence,
-        step_event_appender,
-        terminal_persister
-      )
+      run_legacy_dispatch_pipeline(db_request, canonical, model, execution_opts)
     end
   end
 
@@ -369,51 +284,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp run_legacy_dispatch_pipeline(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp run_legacy_dispatch_pipeline(db_request, canonical, model, execution_opts) do
     with {:ok, schedule} <- schedule_request(db_request, canonical),
          {:ok, _} <-
            record_scheduler_decision(db_request, scheduler_persistence_metadata(schedule)),
          :ok <- put_request_scheduled_context(schedule),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
-      execute_inference_turn(db_request, canonical, model, schedule, %{
-        caller: caller,
-        event_handler: event_handler,
-        success_persistence: success_persistence,
-        step_event_appender: step_event_appender,
-        terminal_persister: terminal_persister
-      })
+      execute_inference_turn(db_request, canonical, model, schedule, execution_opts)
     end
   end
 
-  defp run_queue_dispatch_pipeline(
-         db_request,
-         canonical,
-         model,
-         caller,
-         event_handler,
-         success_persistence,
-         step_event_appender,
-         terminal_persister
-       ) do
+  defp run_queue_dispatch_pipeline(db_request, canonical, model, execution_opts) do
     with :ok <- advance_fsm(db_request.id, :admitted),
-         {:ok, grant} <- acquire_queue_grant(db_request, canonical, caller) do
-      dispatch_if_queue_request_live(db_request, canonical, model, grant, %{
-        caller: caller,
-        event_handler: event_handler,
-        success_persistence: success_persistence,
-        step_event_appender: step_event_appender,
-        terminal_persister: terminal_persister
-      })
+         {:ok, grant} <- acquire_queue_grant(db_request, canonical, execution_opts.caller) do
+      dispatch_if_queue_request_live(db_request, canonical, model, grant, execution_opts)
     end
   end
 
@@ -713,15 +598,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          execution_opts,
          %AttemptContext{} = context
        ) do
-    case dispatch(
-           db_request,
-           canonical,
-           model,
-           schedule,
-           execution_opts.caller,
-           execution_opts.event_handler,
-           Map.get(execution_opts, :queue_grant)
-         ) do
+    case dispatch(db_request, canonical, model, schedule, execution_opts) do
       %AttemptOutcome{} = pending_outcome ->
         case record_attempt_breaker_failure(db_request, model, context, pending_outcome) do
           :ok ->
@@ -756,10 +633,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
            Map.get(model, :id),
            outcome
          ) do
-      {:ok, _decision} -> :ok
-      {:error, reason} -> {:error, {:breaker_attribution_failed, reason}}
+      {:ok, _decision} ->
+        :ok
+
+      {:error, reason} ->
+        log_warn("breaker attribution failed: #{breaker_failure_reason(reason)}")
+        {:error, {:breaker_attribution_failed, reason}}
     end
   end
+
+  defp breaker_failure_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp breaker_failure_reason(%Ecto.Changeset{errors: errors}),
+    do: "invalid_changeset fields=#{errors |> Keyword.keys() |> Enum.join(",")}"
+
+  defp breaker_failure_reason(_reason), do: "unexpected_reason"
 
   defp continue_after_breaker(
          db_request,
@@ -1256,7 +1144,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
        ) do
     cond do
       outcome.delivery_state == :failed ->
-        {:error, public_dispatch_reason(outcome),
+        {:error, public_dispatch_reason(outcome, canonical),
          terminal_evidence(context, outcome, retry_decision)}
 
       Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
@@ -1270,7 +1158,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
         )
 
       true ->
-        {:error, public_dispatch_reason(outcome),
+        {:error, public_dispatch_reason(outcome, canonical),
          terminal_evidence(context, outcome, retry_decision)}
     end
   end
@@ -2060,39 +1948,41 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp memory_admission_metadata_key?(_key), do: false
 
-  defp dispatch(db_request, canonical, model, schedule, caller, event_handler, queue_grant) do
-    execute_request = build_execute_request(canonical, schedule)
-    model_load_request = build_model_load_request(model, schedule)
-    on_accepted = build_accepted_callback(queue_grant)
+  defp dispatch(db_request, canonical, model, schedule, execution_opts) do
+    case TensorFoldProjection.issue(canonical, model, schedule) do
+      {:ok, projection} ->
+        execute_request = %{
+          build_execute_request(canonical, schedule)
+          | tensorfold_history_projection_json: projection
+        }
 
-    maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
+        model_load_request = build_model_load_request(model, schedule)
+        queue_grant = Map.get(execution_opts, :queue_grant)
 
-    dispatch_request(
-      schedule,
-      execute_request,
-      model_load_request,
-      caller,
-      event_handler,
-      on_accepted,
-      db_request.id,
-      queue_grant
-    )
+        maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
+
+        dispatch_request(
+          schedule,
+          execute_request,
+          model_load_request,
+          db_request.id,
+          execution_opts
+        )
+
+      {:error, _reason} ->
+        {:error, {:dispatch_failed, :runtime_incompatible}}
+    end
   end
 
-  defp dispatch_request(
-         schedule,
-         execute_request,
-         model_load_request,
-         caller,
-         event_handler,
-         on_accepted,
-         request_id,
-         queue_grant
-       ) do
+  defp dispatch_request(schedule, execute_request, model_load_request, request_id, execution_opts) do
+    queue_grant = Map.get(execution_opts, :queue_grant)
+
     opts = [
-      caller: caller,
-      event_handler: event_handler,
-      on_accepted: on_accepted,
+      caller: execution_opts.caller,
+      event_handler: execution_opts.event_handler,
+      keepalive_handler: Map.get(execution_opts, :keepalive_handler),
+      keepalive_interval_ms: Map.get(execution_opts, :keepalive_interval_ms),
+      on_accepted: build_accepted_callback(queue_grant),
       on_node_resolved: build_node_resolved_callback(request_id, queue_grant)
     ]
 
@@ -2111,6 +2001,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     _kind, _reason ->
       log_warn("dispatch threw")
       {:error, orchestration_crash(:dispatch, :throw)}
+  end
+
+  defp public_dispatch_reason(%AttemptOutcome{} = outcome, canonical) do
+    if TensorFoldProjection.refused_before_acceptance?(canonical, outcome),
+      do: {:dispatch_failed, :runtime_incompatible},
+      else: public_dispatch_reason(outcome)
   end
 
   defp public_dispatch_reason(%AttemptOutcome{

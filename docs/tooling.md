@@ -56,8 +56,8 @@ The pinned toolchain currently covers:
 | Tool | Pin | Purpose |
 |------|-----|---------|
 | Erlang/OTP | `29.1.1` | BEAM runtime, compiler, Dialyzer PLTs, releases |
-| Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
-| Python | `3.11.15` | Native tokenizer and MLX worker packages |
+| Elixir | `1.20.4-otp-29` | Mix, umbrella compilation, tests, releases |
+| Python | `3.11.16` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
 | Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
 | npm | `11.13.0` | Package manager for root tool and asset pins |

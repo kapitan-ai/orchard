@@ -1,7 +1,10 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.ModelManager
+  alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerSupervisor
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
@@ -42,6 +45,191 @@ defmodule Orchard.Node.ModelManagerTest do
 
     assert worker_pid == fixture.worker_pid
     assert Process.alive?(worker_pid)
+  end
+
+  describe "SPEC.md §4.9 runtime custody" do
+    setup do
+      :ok = ModelManager.reset()
+      :ok
+    end
+
+    test "no replacement starts after the owner dies while the old runtime may still run" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/custody", "v1")
+
+      # The BEAM owner is gone, but its OS runtime is not confirmed stopped.
+      Process.exit(owner_pid, :kill)
+
+      assert ensure("model/custody", "v1").failure_code == "model_capacity_exhausted"
+      assert :sys.get_state(ModelManager).inflight_loads == %{}
+
+      release.()
+    end
+
+    test "reset returns only after the runtimes under custody have exited" do
+      %{owner_pid: owner_pid, stop_runtime: stop_runtime} = hold_custody("model/reset", "v1")
+      Process.exit(owner_pid, :kill)
+
+      stopper =
+        Task.async(fn ->
+          Process.sleep(300)
+          stop_runtime.()
+        end)
+
+      assert :ok = ModelManager.reset()
+      assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
+      Task.await(stopper)
+    end
+
+    test "reset stays within its wait budget when the reaper stops answering" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-stuck", "v1")
+      Process.exit(owner_pid, :kill)
+
+      suspender =
+        Task.async(fn ->
+          Process.sleep(2_500)
+          :sys.suspend(RuntimeProcessReaper)
+        end)
+
+      started = System.monotonic_time(:millisecond)
+
+      try do
+        assert :ok = ModelManager.reset()
+        assert System.monotonic_time(:millisecond) - started < 4_000
+      after
+        Task.await(suspender)
+        :sys.resume(RuntimeProcessReaper)
+      end
+
+      release.()
+    end
+
+    test "an unanswered custody query refuses the load instead of assuming nothing runs" do
+      :sys.suspend(RuntimeProcessReaper)
+
+      try do
+        assert ensure("model/unanswered", "v1").failure_code == "model_capacity_exhausted"
+      after
+        :sys.resume(RuntimeProcessReaper)
+      end
+
+      assert :sys.get_state(ModelManager).inflight_loads == %{}
+    end
+
+    test "a runtime under custody for another model still takes the only slot" do
+      previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(previous_runtime, :max_loaded_models, 1)
+      )
+
+      %{release: release} = hold_custody("model/other", "v1")
+
+      try do
+        assert ensure("model/new", "v1").failure_code == "model_capacity_exhausted"
+        assert :sys.get_state(ModelManager).inflight_loads == %{}
+      after
+        Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+        release.()
+      end
+    end
+
+    test "a restarted load for remaining waiters does not launch over an unconfirmed runtime" do
+      key = {"model/restart", "v1"}
+      %{release: release} = hold_custody("model/restart", "v1")
+      task_pid = spawn(fn -> Process.sleep(:infinity) end)
+      task_ref = Process.monitor(task_pid)
+      now_ms = System.system_time(:millisecond)
+      leader = waiter(now_ms - 1)
+      follower = waiter(now_ms + 60_000)
+
+      inflight = %{
+        request: %{deadline_unix_ms: leader.deadline_unix_ms},
+        request_fingerprint: {"fingerprint", nil},
+        waiters: [leader, follower],
+        replied_waiter_count: 0,
+        total_waiter_count: 2,
+        preload: false,
+        worker_pid: nil,
+        task_pid: task_pid,
+        task_ref: task_ref,
+        leader_waiter_id: leader.id,
+        started_monotonic_ms: System.monotonic_time(:millisecond),
+        source_scheme: nil,
+        backend: "test"
+      }
+
+      state = %{
+        :sys.get_state(ModelManager)
+        | inflight_loads: %{key => inflight},
+          load_refs: %{task_ref => key}
+      }
+
+      # The leader's deadline passes, so the attempt is aborted and restarted for
+      # the follower; the aborted attempt's runtime may still run.
+      assert {:noreply, next_state} =
+               ModelManager.handle_info(
+                 {:inflight_waiter_timeout, key, task_ref, leader.id},
+                 state
+               )
+
+      assert next_state.inflight_loads == %{}
+      assert_receive {_ref, %{failure_code: "deadline_exceeded"}}, 1_000
+      assert_receive {_ref, %{failure_code: "model_capacity_exhausted"}}, 1_000
+
+      Process.exit(task_pid, :kill)
+      release.()
+    end
+  end
+
+  # Holds reaper custody of a live OS process for the model, as a launched
+  # runtime would. Without a launch identity its exit can only be confirmed by
+  # the process actually exiting.
+  defp hold_custody(model_id, version) do
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    owner_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    {:ok, _ref} =
+      RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+        shutdown_timeout_ms: 200,
+        model_ref: %{model_id: model_id, version: version},
+        os_identity: nil,
+        phase: :loaded,
+        socket_path: nil
+      })
+
+    release = fn ->
+      Process.exit(owner_pid, :kill)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      CustodyTestHelpers.assert_reaper_empty!(10_000)
+    end
+
+    stop_runtime = fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end
+
+    on_exit(stop_runtime)
+    %{owner_pid: owner_pid, release: release, stop_runtime: stop_runtime}
+  end
+
+  defp ensure(model_id, version) do
+    ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: model_id,
+      version: version,
+      artifact_sha256: String.duplicate("0", 64),
+      preload: true,
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: "file:///nonexistent"
+    })
+  end
+
+  defp waiter(deadline_unix_ms) do
+    %{
+      id: make_ref(),
+      from: {self(), make_ref()},
+      deadline_unix_ms: deadline_unix_ms,
+      timer_ref: nil
+    }
   end
 
   defp completion_fixture(opts) do

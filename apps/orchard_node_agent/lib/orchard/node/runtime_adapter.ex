@@ -49,6 +49,10 @@ defmodule Orchard.Node.RuntimeAdapter do
   @callback start_generation(adapter_state(), ExecuteInferenceRequest.t(), keyword()) ::
               {:ok, generation_ref(), adapter_state()} | {:error, term()}
 
+  @callback prepare_request(adapter_state(), ExecuteInferenceRequest.t(), keyword()) ::
+              {:ok, ExecuteInferenceRequest.t()} | {:error, term()}
+  @optional_callbacks prepare_request: 3
+
   @callback cancel_generation(adapter_state(), generation_ref(), keyword()) ::
               {:ok, adapter_state()} | {:error, term()}
 

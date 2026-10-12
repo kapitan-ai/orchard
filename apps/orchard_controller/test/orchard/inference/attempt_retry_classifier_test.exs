@@ -111,6 +111,33 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     end
   end
 
+  test "SPEC.md §5.9 worker or node loss retries only for its closed stable codes" do
+    for failure_code <- ~w(worker_down worker_unavailable node_unavailable node_timeout) do
+      assert classify(%{
+               failure_class: "worker_or_node_loss",
+               failure_code: failure_code,
+               runtime_retryable: false
+             }) == {:declined, :not_retryable}
+
+      for runtime_retryable <- [nil, true] do
+        assert classify(%{
+                 failure_class: "worker_or_node_loss",
+                 failure_code: failure_code,
+                 runtime_retryable: runtime_retryable
+               }) == :eligible_for_alternate
+      end
+    end
+
+    for failure_code <- ~w(internal_error runtime_quarantined runtime_stream_error timeout),
+        runtime_retryable <- [nil, true, false] do
+      assert classify(%{
+               failure_class: "worker_or_node_loss",
+               failure_code: failure_code,
+               runtime_retryable: runtime_retryable
+             }) == {:declined, :not_retryable}
+    end
+  end
+
   test "SPEC.md §5.8 fails closed for deterministic and unknown taxonomy rows" do
     cases = [
       {"model_load_failure", "model_invalid", :model_invalid},
