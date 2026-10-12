@@ -1998,6 +1998,7 @@ Breaker eligibility over the closed §3.7.1 `failure_class` vocabulary is:
 * an unsuccessful attempt SHALL contribute to at most one breaker
 
 The failure SHALL be attributed to the Node or `(node, model)` placement that produced it.
+An attempt whose producing Node has no Node inventory row runs on the unmanaged compatibility path, which the scheduler does not suppress, and SHALL NOT contribute to either breaker; it is recorded as not eligible rather than failing the Request.
 Attempt 1 breaker effects SHALL be durable before attempt 2's fresh scheduler decision, and that decision SHALL respect any resulting suppression.
 The retry decision and a declined retry SHALL NOT add a breaker event.
 This attempt accounting SHALL NOT change breaker thresholds, windows, suppression durations, or the Operator clear path.
