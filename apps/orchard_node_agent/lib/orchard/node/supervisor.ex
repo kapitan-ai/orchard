@@ -15,6 +15,7 @@ defmodule Orchard.Node.Supervisor do
     ModelManager,
     RuntimeProcessReaper,
     RuntimeTLS,
+    WorkerRecoveryControlListener,
     WorkerSupervisor
   }
 
@@ -35,6 +36,7 @@ defmodule Orchard.Node.Supervisor do
         {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
       ]
       |> maybe_add_runtime_grpc_listener()
+      |> maybe_add_worker_recovery_control_listener()
       |> maybe_add_host_inventory()
 
     Supervisor.init(children, strategy: :rest_for_one)
@@ -42,7 +44,9 @@ defmodule Orchard.Node.Supervisor do
 
   def grpc_server_id, do: @grpc_server_id
 
-  def grpc_server_opts do
+  def grpc_server_opts, do: runtime_grpc_server_opts()
+
+  defp runtime_grpc_server_opts do
     listen_address = Orchard.Node.listen_address()
 
     [
@@ -62,8 +66,17 @@ defmodule Orchard.Node.Supervisor do
     end
   end
 
-  # Last under :rest_for_one, so an inventory restart never restarts runtime
-  # custody or the listener.
+  defp maybe_add_worker_recovery_control_listener(children) do
+    if WorkerRecoveryControlListener.enabled?() and
+         not Orchard.Node.runtime_grpc_listener_enabled?() do
+      children ++ [{WorkerRecoveryControlListener, []}]
+    else
+      children
+    end
+  end
+
+  # Last under :rest_for_one, after both listeners, so an inventory restart never
+  # restarts runtime custody or a listener.
   defp maybe_add_host_inventory(children) do
     case Orchard.Node.host_inventory_options() do
       nil -> children
@@ -74,11 +87,13 @@ defmodule Orchard.Node.Supervisor do
   defp grpc_adapter_opts(listen_address) do
     opts = [ip: listen_ip(listen_address[:host])]
 
-    case RuntimeTLS.server_credential() do
+    case grpc_credential() do
       :plaintext_compatibility -> opts
       {:ok, credential} -> Keyword.put(opts, :cred, credential)
     end
   end
+
+  defp grpc_credential, do: RuntimeTLS.server_credential()
 
   defp listen_ip({_, _, _, _} = ip), do: ip
   defp listen_ip({_, _, _, _, _, _, _, _} = ip), do: ip

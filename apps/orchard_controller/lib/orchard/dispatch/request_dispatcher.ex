@@ -62,6 +62,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   }
 
   alias Orchard.Requests.InferenceAttemptFailure
+  alias Orchard.Scheduler.WorkerRecoveryEligibility
   alias Orchard.SentryContext
   alias Orchard.Tokenizer.Telemetry
 
@@ -562,6 +563,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             ],
        do: %{category: :terminal_conformance, code: code}
 
+  defp failure_source(:worker_recovery_refused),
+    do: %{category: :capacity, code: :model_busy}
+
   defp failure_source(reason)
        when reason in [
               :dispatch_capacity_unavailable,
@@ -1045,6 +1049,23 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp handle_ensure_result({:error, {:worker_recovery_refused, _reason}}, context, _ensure_start) do
+    cond do
+      deadline_expired?(context) ->
+        dispatch_timeout_result(context)
+
+      caller_disconnected?(context.caller_ref) ->
+        handle_dispatch_result(
+          {:error, {:dispatch_failed, :caller_disconnect}},
+          context.metrics,
+          context.target
+        )
+
+      true ->
+        handle_dispatch_result(recovery_refusal_result(), context.metrics, context.target)
+    end
+  end
+
   defp handle_ensure_result({:error, reason}, context, ensure_start) do
     ensure_end = System.monotonic_time(:millisecond)
 
@@ -1439,8 +1460,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:error, reason} ->
-        mark_transport_failure(target, reason)
-        {:error, ModelLoadFailure.from_transport_reason(reason)}
+        if WorkerRecoveryEligibility.refusal?(reason) do
+          {:error, reason}
+        else
+          mark_transport_failure(target, reason)
+          {:error, ModelLoadFailure.from_transport_reason(reason)}
+        end
     end
   end
 
@@ -1617,6 +1642,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       cleanup_timer(timer_ref)
     end
   end
+
+  defp recovery_refusal_result,
+    do: {:error, {:dispatch_failed, :worker_recovery_refused}}
 
   defp caller_disconnected?(caller_ref) do
     receive do

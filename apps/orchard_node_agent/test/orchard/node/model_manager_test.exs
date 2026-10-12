@@ -1,11 +1,9 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest}
   alias Orchard.Node.CustodyTestHelpers
-  alias Orchard.Node.ModelManager
-  alias Orchard.Node.RuntimeProcessReaper
-  alias Orchard.Node.WorkerSupervisor
+  alias Orchard.Node.{ModelManager, RuntimeProcessReaper, WorkerRecoveryState, WorkerSupervisor}
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
     reply_ref = make_ref()
@@ -27,9 +25,10 @@ defmodule Orchard.Node.ModelManagerTest do
 
     assert_receive {^reply_ref, %{failure_code: "deadline_exceeded"}}, 1_000
 
-    assert_receive {:DOWN, worker_monitor, :process, worker_pid, _reason}, 1_000
-    assert worker_monitor == fixture.worker_test_monitor
-    assert worker_pid == fixture.worker_pid
+    worker_monitor = fixture.worker_test_monitor
+    worker_pid = fixture.worker_pid
+
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker_pid, _reason}, 1_000
   end
 
   test "issue #222 explicit preload remains a valid residency owner" do
@@ -181,6 +180,70 @@ defmodule Orchard.Node.ModelManagerTest do
       Process.exit(task_pid, :kill)
       release.()
     end
+
+    # SPEC.md §4.9 custody and SPEC §12.2 recovery share one slot model: a
+    # recovery record cannot resolve cleanup while the reaper still holds a
+    # runtime for the same model, even without a recorded last Worker.
+    test "SPEC §12.2 recovery cleanup stays unresolved while the reaper holds the model's runtime" do
+      key = {"model/recovery-custody", "v1"}
+      %{release: release} = hold_custody("model/recovery-custody", "v1")
+      base = :sys.get_state(ModelManager)
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> put_in([:ownership, "phase"], "cleanup")
+
+      state = %{base | recovery: Map.put(base.recovery, key, entry)}
+      cleanup = {:recovery_cleanup, state.recovery_epoch, key}
+
+      assert {:noreply, held} = ModelManager.handle_info(cleanup, state)
+      assert held.recovery[key].ownership["phase"] == "cleanup"
+
+      release.()
+
+      assert {:noreply, cleared} = ModelManager.handle_info(cleanup, state)
+      assert cleared.recovery[key].ownership["phase"] == "resolved"
+    end
+
+    test "a finished eviction whose runtime is still under custody refuses instead of evicting again" do
+      previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(previous_runtime, :max_loaded_models, 1)
+      )
+
+      %{release: release} = hold_custody("model/evicted", "v1")
+      eviction_ref = make_ref()
+      reply_ref = make_ref()
+
+      continuation = %{
+        request: ensure_request("model/incoming", "v1"),
+        from: {self(), reply_ref},
+        meta: %{max_loaded_models: 1, incoming_model_id: "model/incoming"},
+        started: System.monotonic_time(:millisecond)
+      }
+
+      state = %{
+        :sys.get_state(ModelManager)
+        | eviction_continuations: %{eviction_ref => continuation}
+      }
+
+      try do
+        assert {:noreply, next_state} =
+                 ModelManager.handle_info({eviction_ref, %Ack{ok: true}}, state)
+
+        assert_receive {^reply_ref, %{failure_code: "model_capacity_exhausted"}}, 1_000
+        assert next_state.inflight_loads == %{}
+        assert next_state.eviction_continuations == %{}
+      after
+        Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+        release.()
+      end
+    end
   end
 
   # Holds reaper custody of a live OS process for the model, as a launched
@@ -211,8 +274,11 @@ defmodule Orchard.Node.ModelManagerTest do
     %{owner_pid: owner_pid, release: release, stop_runtime: stop_runtime}
   end
 
-  defp ensure(model_id, version) do
-    ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+  defp ensure(model_id, version),
+    do: ModelManager.ensure_model_loaded(ensure_request(model_id, version))
+
+  defp ensure_request(model_id, version) do
+    %EnsureModelLoadedRequest{
       node_id: "node-local",
       model_id: model_id,
       version: version,
@@ -220,7 +286,7 @@ defmodule Orchard.Node.ModelManagerTest do
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       artifact_source_uri: "file:///nonexistent"
-    })
+    }
   end
 
   defp waiter(deadline_unix_ms) do
@@ -256,6 +322,23 @@ defmodule Orchard.Node.ModelManagerTest do
       end
     end)
 
+    recovery_epoch = "model-manager-test-epoch"
+    recovery_incarnation = "model-manager-test-worker"
+
+    recovery =
+      recovery_epoch
+      |> WorkerRecoveryState.new()
+      |> WorkerRecoveryState.hydrate(:absent)
+      |> Map.put(:owner_epoch, recovery_epoch)
+      |> Map.put(:revision, 1)
+      |> Map.put(:last_worker_pid, worker_pid)
+      |> put_in([:policy, :incarnation], recovery_incarnation)
+      |> put_in([:ownership], %{
+        "phase" => "loading",
+        "incarnation" => recovery_incarnation,
+        "custody" => "test-custody"
+      })
+
     inflight = %{
       request: %{},
       request_fingerprint: {"fingerprint", nil},
@@ -269,13 +352,18 @@ defmodule Orchard.Node.ModelManagerTest do
       leader_waiter_id: waiters |> List.first() |> waiter_id(),
       started_monotonic_ms: System.monotonic_time(:millisecond),
       source_scheme: nil,
-      backend: "test"
+      backend: "test",
+      recovery_owner: false,
+      recovery_incarnation: recovery_incarnation
     }
 
     state = %{
       active_requests: %{},
       inflight_loads: %{key => inflight},
       load_refs: %{task_ref => key},
+      recovery: %{key => recovery},
+      recovery_epoch: recovery_epoch,
+      recovery_io_refs: %{},
       subscriber_refs: %{},
       worker_crash_counter_version: "",
       worker_crashes: %{},
@@ -303,10 +391,26 @@ defmodule Orchard.Node.ModelManagerTest do
   end
 
   defp complete_load(fixture) do
-    assert {:noreply, next_state} =
+    assert {:noreply, pending_state} =
              ModelManager.handle_info(
                {:model_load_finished, fixture.key, fixture.task_pid, {:ok, fixture.worker_pid}},
                fixture.state
+             )
+
+    pending = pending_state.recovery[fixture.key].pending
+
+    checkpoint = %{
+      epoch: pending.record["epoch"],
+      revision: pending.revision + 1,
+      transition_id: pending.id,
+      record: pending.record
+    }
+
+    assert {:noreply, next_state} =
+             ModelManager.handle_info(
+               {:recovery_checkpoint_result, fixture.state.recovery_epoch, fixture.key,
+                pending.id, {:ok, checkpoint}},
+               pending_state
              )
 
     next_state

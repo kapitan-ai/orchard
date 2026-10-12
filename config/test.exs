@@ -70,6 +70,8 @@ config :orchard_node_agent,
       worker_ready_timeout_ms: 5_000,
       worker_load_timeout_ms: 5_000,
       worker_shutdown_timeout_ms: 1_000,
+      worker_recovery_checkpoint_client: Orchard.Node.TestWorkerRecoveryCheckpointClient,
+      worker_recovery_custody: Orchard.Node.TestWorkerRecoveryCustody,
       fake_runtime?: true
     )
 

@@ -2,7 +2,7 @@ defmodule Orchard.Node.TensorFoldPreparationTest do
   use ExUnit.Case, async: false
 
   alias Orchard.Cluster.V1.{ExecuteInferenceRequest, ModelRef}
-  alias Orchard.Node.{ModelManager, RuntimeServer, WorkerProcess}
+  alias Orchard.Node.{ModelManager, RuntimeServer, WorkerProcess, WorkerRecoveryState}
 
   defmodule BindingAdapter do
     def prepare_request(%{observer: observer}, request, []) do
@@ -50,6 +50,15 @@ defmodule Orchard.Node.TensorFoldPreparationTest do
     state = %{
       active_requests: %{},
       subscriber_refs: %{},
+      # SPEC §12.2 admission reads a hydrated recovery record for the placement.
+      stopping?: false,
+      resetting?: false,
+      recovery: %{
+        {"qwen", "v1"} =>
+          "tensorfold-test-epoch"
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+      },
       workers: %{
         {"qwen", "v1"} => %{
           pid: worker,

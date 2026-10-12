@@ -12,10 +12,17 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.InferenceEvent
   alias Orchard.Node
-  alias Orchard.Node.RuntimeAdapter
+
+  alias Orchard.Node.{
+    FakeRuntimeAdapter,
+    ModelManager,
+    RuntimeAdapter,
+    RuntimeProcessReaper,
+    TensorFoldProjection,
+    WorkerCapabilityEvidence
+  }
+
   alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
-  alias Orchard.Node.TensorFoldProjection
-  alias Orchard.Node.WorkerCapabilityEvidence
 
   require Logger
 
@@ -125,10 +132,15 @@ defmodule Orchard.Node.WorkerProcess do
     manager = Keyword.fetch!(opts, :manager)
 
     worker_model = "#{model_ref.model_id}@#{model_ref.version}"
+    adapter = RuntimeAdapter.impl()
+
+    if adapter == FakeRuntimeAdapter do
+      :ok = RuntimeProcessReaper.watch_beam_only(self(), model_ref)
+    end
 
     {:ok,
      %{
-       adapter: RuntimeAdapter.impl(),
+       adapter: adapter,
        adapter_state: nil,
        capability_snapshot: nil,
        loaded?: false,
@@ -156,10 +168,14 @@ defmodule Orchard.Node.WorkerProcess do
 
     case state.adapter.load_model(state.model_ref,
            owner: self(),
+           on_runtime_custody: fn -> checkpoint_runtime_custody(state) end,
            load_timeout_ms: load_timeout_ms
          ) do
       {:ok, adapter_state} ->
         {:reply, :loaded, %{state | loaded?: true, adapter_state: adapter_state}}
+
+      {:error, {:worker_exited, _status} = reason} ->
+        {:stop, :runtime_worker_exited, {:error, reason}, state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -280,6 +296,14 @@ defmodule Orchard.Node.WorkerProcess do
     {:reply, response, state}
   end
 
+  defp checkpoint_runtime_custody(state) do
+    ModelManager.checkpoint_runtime_custody(
+      state.manager,
+      state.model_ref,
+      self()
+    )
+  end
+
   @impl true
   def handle_info({:runtime_adapter_event, generation_ref, %InferenceEvent{} = event}, state) do
     case fetch_request_by_generation_ref(state.requests, generation_ref) do
@@ -299,8 +323,11 @@ defmodule Orchard.Node.WorkerProcess do
     end
   end
 
-  def handle_info({:runtime_adapter_done, _generation_ref, :worker_unavailable}, state) do
-    {:stop, worker_unavailable_exit_reason(state), state}
+  def handle_info({:runtime_adapter_done, generation_ref, :worker_unavailable}, state) do
+    case fetch_request_by_generation_ref(state.requests, generation_ref) do
+      {:ok, _request} -> {:stop, worker_unavailable_exit_reason(state), state}
+      :error -> {:noreply, state}
+    end
   end
 
   def handle_info(
@@ -377,9 +404,15 @@ defmodule Orchard.Node.WorkerProcess do
     {:noreply, state}
   end
 
-  def handle_info({:gun_down, _conn_pid, _protocol, _reason, _streams}, state) do
+  def handle_info(
+        {:gun_down, conn_pid, _protocol, _reason, _streams},
+        %{adapter_state: %{channel: %{adapter_payload: %{conn_pid: conn_pid}}}} = state
+      ) do
     {:stop, :runtime_worker_exited, invalidate_capability_snapshot(state)}
   end
+
+  def handle_info({:gun_down, _conn_pid, _protocol, _reason, _streams}, state),
+    do: {:noreply, state}
 
   @impl true
   def terminate(reason, state) do

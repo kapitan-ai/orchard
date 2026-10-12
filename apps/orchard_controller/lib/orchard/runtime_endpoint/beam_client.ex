@@ -13,7 +13,14 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   alias Orchard.BeamPeerGrants
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{BeamConfig, HostInventory, Operation, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    BeamConfig,
+    HostInventory,
+    Operation,
+    Target,
+    WorkerRecoveryClient
+  }
 
   defstruct [:authenticated_peer, :node, :target, :server_module]
 
@@ -118,6 +125,26 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
       {:ok,
        response |> Map.put(:observed_at, observed_at) |> Map.put(:host_inventory, host_inventory)}
     end
+  end
+
+  @impl true
+  def inspect_worker_recovery(%__MODULE__{target: target}, model_ref, opts \\ []) do
+    WorkerRecoveryClient.call(
+      target,
+      :inspect_worker_recovery_placement,
+      model_ref,
+      opts
+    )
+  end
+
+  @impl true
+  def recover_worker_placement(%__MODULE__{target: target}, command, opts \\ []) do
+    WorkerRecoveryClient.call(
+      target,
+      :recover_worker_placement,
+      command,
+      opts
+    )
   end
 
   @impl true

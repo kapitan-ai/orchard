@@ -139,6 +139,8 @@ message RuntimeModelPlacement {
   ModelRef model_ref = 1;
   uint32 active_request_count = 2;
   uint32 max_concurrency = 3;
+  // Bounded exact-key SPEC §12.2 evidence, retained without a live worker.
+  string worker_recovery_json = 4;
 }
 
 // Bounded process-lifetime monotonic crash count for one model identifier.
@@ -309,6 +311,7 @@ message StatusResponse {
   // Additive observation-only host evidence. Absence means not observed and
   // creates no readiness, scheduling, allocation, provider, or custody fact.
   HostInventoryObservation host_inventory = 15;
+  string worker_recovery_epoch = 16;
 }
 
 message EnsureModelLoadedRequest {
@@ -334,6 +337,8 @@ message EnsureModelLoadedResponse {
 
   bool worker_supports_prompt_token_ids = 6;
   optional RuntimeModelPlacement placement_capacity = 7;
+  // SPEC §12.2 proven no-runtime-load admission refusal; not a ModelLoadFailure.
+  string recovery_refusal = 8;
 }
 
 message UnloadModelRequest {

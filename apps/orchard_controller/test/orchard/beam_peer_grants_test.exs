@@ -34,6 +34,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     Target
   }
 
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
   alias Orchard.TransportTLS.{CertificateIdentity, PeerVerifier}
 
   defmodule AuthenticatedStatusServer do
@@ -2063,6 +2064,7 @@ defmodule Orchard.BeamPeerGrantsTest do
       authenticated_status(node,
         active_request_count: 0,
         max_concurrency: 1,
+        loaded_models: [%{model_id: model_id, version: "v1"}],
         runtime_model_placements: [
           %{
             model_ref: %{model_id: model_id, version: "v1"},
@@ -2071,6 +2073,7 @@ defmodule Orchard.BeamPeerGrantsTest do
           }
         ]
       )
+      |> WorkerRecoveryFixtures.status()
 
     assert {:ok, _active} =
              Nodes.observe_authenticated_status(

@@ -33,7 +33,7 @@ LEGACY_PROTO = (
 # real schema revision rather than the current bindings.
 N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
 N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
-EXPECTED_DESCRIPTOR_SET_SHA256 = "44e5b8e359730a95b343a78077b86b628b8690d012c21f19f070502958c52ca4"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "da50c261217fdd52bd71e4594d72c2c5a52e24e9f08ca729d8b29e6d7ab162f2"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",

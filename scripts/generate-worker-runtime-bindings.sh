@@ -7,7 +7,7 @@ OUTPUT_ROOT="$REPO_ROOT"
 PYTHON_TOOLING_ROOT="$REPO_ROOT/proto/orchard/worker/tooling"
 PROTOC_GEN_ELIXIR_VERSION="0.16.0"
 
-SHARED_PROTOS=(common events peer_grant reasoning runtime)
+SHARED_PROTOS=(common events peer_grant reasoning runtime worker_recovery)
 
 generated_output_paths() {
   for proto in "${SHARED_PROTOS[@]}"; do

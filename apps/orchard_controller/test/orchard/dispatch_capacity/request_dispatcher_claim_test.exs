@@ -766,6 +766,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CompatibilitySingl
 
   alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   def configure(test_pid, response, load_result) do
     :persistent_term.put({__MODULE__, :test_pid}, test_pid)
@@ -784,7 +785,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CompatibilitySingl
 
   def status(_channel, _opts) do
     send(:persistent_term.get({__MODULE__, :test_pid}), :compatibility_status_called)
-    {:ok, :persistent_term.get({__MODULE__, :response})}
+
+    {:ok, WorkerRecoveryFixtures.status(:persistent_term.get({__MODULE__, :response}))}
   end
 
   def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts) do
@@ -851,6 +853,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Placement, PlacementCapacity, Target}
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   alias __MODULE__.{
     CancellableStreamClient,
@@ -901,6 +904,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     insert_canonical_model!()
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
     @client.configure(self())
     @gate_client.configure(self())
     @cancellable_stream_client.configure(self())
@@ -911,6 +915,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
+
       @client.clear()
       @compatibility_single_wave_client.clear()
       @gate_client.clear()
@@ -2442,6 +2447,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
           max_concurrency: 2
         }
       ])
+      |> WorkerRecoveryFixtures.status()
 
     @production_fresh_status_client.configure(self(), loaded_status, loaded_status)
     loaded_input = schedule.dispatch_capacity_acquisition_input_provider.()
@@ -3704,9 +3710,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         runtime_concurrency_limit: max_concurrency,
         validity: :valid
       },
-      placements: Keyword.get(opts, :placements, []),
+      placements: WorkerRecoveryFixtures.placements(Keyword.get(opts, :placements, []), node.id),
       runtime_memory_budgets: [],
       runtime_prefix_cache_statuses: [],
+      worker_recovery_epoch: WorkerRecoveryFixtures.epoch(),
       supports_prompt_token_ids: true,
       candidate_source: "monitor_snapshot"
     }
@@ -3886,7 +3893,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       loaded_models: loaded_models,
       active_request_count: 0,
       max_concurrency: 2,
-      runtime_model_placements: []
+      runtime_model_placements: [],
+      worker_recovery_epoch: WorkerRecoveryFixtures.epoch()
     }
   end
 
