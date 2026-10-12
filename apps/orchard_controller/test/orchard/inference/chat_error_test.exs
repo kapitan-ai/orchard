@@ -145,6 +145,19 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.9 a dispatch-time runtime_incompatible terminalizes as a classified 503" do
+    error = ChatError.from_execute_error({:dispatch_failed, :runtime_incompatible})
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 503,
+             error_code: "runtime_incompatible",
+             error_message: "Runtime is incompatible"
+           }
+
+    assert ChatError.api_mapping(error).code == "runtime_incompatible"
+  end
+
   test "tokenization internal mapping preserves controller-owned internal_error response" do
     mapping =
       {:tokenization, {:boom, "tokenizer crashed"}}
@@ -223,6 +236,38 @@ defmodule Orchard.Inference.ChatErrorTest do
              error_code: "request_caller_disconnect",
              error_message: "caller exited"
            }
+  end
+
+  test "SPEC.md §7.2.7 a lost Worker returns 503 with its stable code on sync and stream" do
+    for code <- ["worker_down", "worker_unavailable"] do
+      error =
+        code
+        |> InferenceEvent.failed("worker process exited unexpectedly", false)
+        |> ChatError.from_failed_event()
+
+      assert ChatError.api_mapping(error) == %{
+               status: :service_unavailable,
+               type: "server_error",
+               code: code,
+               message: "Inference failed: worker process exited unexpectedly",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error).code == code
+
+      assert %{state: :failed, http_status: 503, error_code: ^code} =
+               ChatError.terminal_attrs(error)
+    end
+
+    other =
+      "runtime_stream_error"
+      |> InferenceEvent.failed("worker stream failed", false)
+      |> ChatError.from_failed_event()
+
+    assert %{status: :internal_server_error, code: "internal_error"} =
+             ChatError.api_mapping(other)
+
+    assert %{http_status: 500} = ChatError.terminal_attrs(other)
   end
 
   test "terminal conformance failures stay generic publicly and specific durably" do

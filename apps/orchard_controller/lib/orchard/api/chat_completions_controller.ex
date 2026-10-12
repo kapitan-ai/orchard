@@ -131,6 +131,7 @@ defmodule Orchard.API.ChatCompletionsController do
       errored: false,
       serializer_failed: false,
       role_sent: false,
+      terminal_sent: false,
       usage: nil
     })
 
@@ -139,9 +140,11 @@ defmodule Orchard.API.ChatCompletionsController do
     end
 
     result =
-      orchestrator_impl().execute(canonical, model,
-        event_handler: handler,
-        idempotency: idempotency
+      orchestrator_impl().execute(
+        canonical,
+        model,
+        [event_handler: handler, idempotency: idempotency] ++
+          InferenceControllerSupport.stream_keepalive_opts(state_key)
       )
 
     state = Process.get(state_key)
@@ -181,6 +184,7 @@ defmodule Orchard.API.ChatCompletionsController do
 
       :completed ->
         state
+        |> Map.put(:terminal_sent, true)
         |> maybe_emit_role_chunk(public_id, model_display, created)
         |> emit_finish_chunk(event, public_id, model_display, created)
         |> store_usage(event)

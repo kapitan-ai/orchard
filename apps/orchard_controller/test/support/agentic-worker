@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+exec uv run --directory "$ROOT/native/orchard_worker_mlx" python "$ROOT/native/orchard_worker_mlx/tests/agentic_worker.py" "$@"

@@ -1,6 +1,8 @@
 defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
+  alias Orchard.Inference.TensorFoldProjection
+
   alias Orchard.CanonicalRequest
 
   alias Orchard.Inference.{
@@ -35,7 +37,8 @@ defmodule Orchard.Inference.RequestPreparation do
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model, params),
          :ok <- enforce_context_window(canonical, model),
-         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted) do
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted),
+         :ok <- TensorFoldProjection.validate(canonical) do
       {:ok, canonical, model}
     end
   end
@@ -174,9 +177,10 @@ defmodule Orchard.Inference.RequestPreparation do
     end
   end
 
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
-       when is_integer(n) and n > 0,
-       do: n
+  @spec effective_max_output_tokens(CanonicalRequest.Sampling.t()) :: pos_integer()
+  def effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
+      when is_integer(n) and n > 0,
+      do: n
 
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{}), do: @default_max_output_tokens
+  def effective_max_output_tokens(%CanonicalRequest.Sampling{}), do: @default_max_output_tokens
 end

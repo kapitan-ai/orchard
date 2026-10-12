@@ -173,9 +173,11 @@ defmodule Orchard.API.ResponsesController do
     end
 
     result =
-      orchestrator_impl().execute(canonical, model,
-        event_handler: handler,
-        idempotency: idempotency
+      orchestrator_impl().execute(
+        canonical,
+        model,
+        [event_handler: handler, idempotency: idempotency] ++
+          InferenceControllerSupport.stream_keepalive_opts(state_key)
       )
 
     state = Process.get(state_key)

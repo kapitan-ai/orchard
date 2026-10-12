@@ -4,11 +4,30 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     EnsureModelLoadedResponse,
+    ExecuteInferenceRequest,
     GenerationParams,
     UnloadModelRequest
   }
 
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
+
+  @spec execute_request_to_proto(Operation.ExecuteRequest.t()) :: ExecuteInferenceRequest.t()
+  def execute_request_to_proto(%Operation.ExecuteRequest{} = request) do
+    %ExecuteInferenceRequest{
+      request_id: request.request_id,
+      controller_session_id: request.controller_session_id,
+      model_id: request.model_ref.model_id,
+      version: request.model_ref.version,
+      rendered_prompt_utf8: request.rendered_prompt_utf8,
+      input_tokens: request.input_tokens,
+      params: generation_params_to_proto(request.params),
+      deadline_unix_ms: request.deadline_unix_ms || 0,
+      metadata_json: request.metadata_json || "{}",
+      cache_affinity_fingerprint: request.cache_affinity_fingerprint || "",
+      prompt_token_ids: request.prompt_token_ids || [],
+      tensorfold_history_projection_json: request.tensorfold_history_projection_json || ""
+    }
+  end
 
   @spec ensure_model_loaded_request_to_proto(Operation.EnsureModelLoadedRequest.t()) ::
           EnsureModelLoadedRequest.t()
