@@ -4,12 +4,55 @@ import argparse
 import logging
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from orchard_worker_mlx import __version__
 from orchard_worker_mlx.service import serve
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    DEFAULT_REPLY_MARKER,
+    StrictPrefixCheckpointConfig,
+)
 
 _LOG_FORMAT = "[%(levelname)s] %(name)s %(message)s"
+
+STRICT_PREFIX_ENV = "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS"
+STRICT_PREFIX_SLOTS_ENV = "ORCHARD_WORKER_STRICT_PREFIX_SLOTS"
+STRICT_PREFIX_SLOT_BYTES_ENV = "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES"
+STRICT_PREFIX_BUDGET_BYTES_ENV = "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES"
+STRICT_PREFIX_REPLY_MARKER_ENV = "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER"
+
+
+def _env_int(environ: Mapping[str, str], name: str, default: int | None = None) -> int:
+    raw = environ.get(name)
+    if raw is None or raw == "":
+        if default is None:
+            raise ValueError(f"{name} is required when {STRICT_PREFIX_ENV}=enabled")
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def strict_prefix_config_from_env(
+    environ: Mapping[str, str],
+) -> StrictPrefixCheckpointConfig | None:
+    """Read the default-off strict-prefix checkpoint settings.
+
+    The Worker inherits these from the node-agent environment.  Unset or
+    ``disabled`` keeps current behavior.
+    """
+    mode = environ.get(STRICT_PREFIX_ENV, "disabled") or "disabled"
+    if mode == "disabled":
+        return None
+    if mode != "enabled":
+        raise ValueError(f"{STRICT_PREFIX_ENV} must be disabled|enabled, got {mode!r}")
+    return StrictPrefixCheckpointConfig(
+        slots=_env_int(environ, STRICT_PREFIX_SLOTS_ENV, default=1),
+        slot_bytes=_env_int(environ, STRICT_PREFIX_SLOT_BYTES_ENV),
+        budget_bytes=_env_int(environ, STRICT_PREFIX_BUDGET_BYTES_ENV),
+        reply_marker=environ.get(STRICT_PREFIX_REPLY_MARKER_ENV) or DEFAULT_REPLY_MARKER,
+    )
 
 
 def _positive_int_or_auto(value: str) -> int | str:
@@ -161,11 +204,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
+        strict_prefix = strict_prefix_config_from_env(os.environ)
+        if strict_prefix is not None:
+            if args.backend != "mlx":
+                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --backend=mlx")
+            if args.prefix_cache_mode != "disabled":
+                raise ValueError(
+                    f"{STRICT_PREFIX_ENV}=enabled requires --prefix-cache-mode disabled "
+                    "(ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled)"
+                )
+            if args.generation_mode != "stream":
+                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --generation-mode=stream")
+            if args.memory_budget_mode == "enforce":
+                raise ValueError(
+                    f"{STRICT_PREFIX_ENV}=enabled requires --memory-budget-mode disabled or observe"
+                )
         prefix_cache_config = PrefixCacheLoadConfig(
             mode=args.prefix_cache_mode,
             max_entries=args.prefix_cache_max_entries,
             max_bytes=args.prefix_cache_max_bytes,
             max_fingerprint_buffer_size=args.max_fingerprint_buffer_size,
+            strict_prefix=strict_prefix,
         )
         generation_config = GenerationRuntimeConfig(
             mode=args.generation_mode,

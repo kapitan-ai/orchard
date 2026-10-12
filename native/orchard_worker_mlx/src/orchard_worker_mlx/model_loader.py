@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.metadata
 import json
 import logging
 import math
@@ -18,8 +19,18 @@ from orchard_worker_mlx.prefix_cache import (
     PrefixCache,
     TriePrefixCache,
 )
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    SUPPORTED_LAYER_TYPES,
+    SUPPORTED_MLX_LM_COMMIT,
+    SUPPORTED_MLX_LM_VERSION,
+    CheckpointIdentity,
+    StrictPrefixCheckpointConfig,
+    StrictPrefixCheckpointStore,
+)
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PREFILL_STEP_SIZE = 2048
 
 
 # ---------------------------------------------------------------------------
@@ -38,18 +49,31 @@ class PrefixCacheLoadConfig:
     Carried from CLI -> service -> backend -> loader.  The loader uses
     this together with manifest metadata to decide which cache
     implementation to provision.
+
+    ``strict_prefix`` is ``None`` by default.  When set, the loader provisions
+    strict-prefix checkpoints instead of a trim-based cache, so ``mode`` must
+    be ``"disabled"``.
     """
 
     mode: str = "kv"
     max_entries: int = 8
     max_bytes: int = 0
     max_fingerprint_buffer_size: int = 8
+    strict_prefix: StrictPrefixCheckpointConfig | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in _VALID_PREFIX_CACHE_MODES:
             raise ValueError(
                 f"mode must be one of {sorted(_VALID_PREFIX_CACHE_MODES)}, got {self.mode!r}"
             )
+        if self.strict_prefix is not None:
+            if not isinstance(self.strict_prefix, StrictPrefixCheckpointConfig):
+                raise ValueError(
+                    "strict_prefix must be StrictPrefixCheckpointConfig or None, got "
+                    f"{type(self.strict_prefix).__name__}"
+                )
+            if self.mode != "disabled":
+                raise ValueError(f"strict_prefix requires mode 'disabled', got {self.mode!r}")
         if not isinstance(self.max_entries, int) or isinstance(self.max_entries, bool):
             raise ValueError(f"max_entries must be int, got {type(self.max_entries).__name__}")
         if self.max_entries < 1:
@@ -537,6 +561,17 @@ class MLXDeps:
     make_prompt_cache: Callable[[Any], Any] | None = None
     can_trim_prompt_cache: Callable[[Any], bool] | None = None
     make_sampler: Callable[..., Any] | None = None
+    runtime_versions: Callable[[], Mapping[str, str]] | None = None
+
+
+def _installed_vcs_commit(distribution_name: str) -> str:
+    """Return the git commit a distribution was installed from, or ``""``."""
+    try:
+        raw = importlib.metadata.distribution(distribution_name).read_text("direct_url.json")
+        commit = json.loads(raw or "{}").get("vcs_info", {}).get("commit_id", "")
+    except (importlib.metadata.PackageNotFoundError, ValueError, AttributeError):
+        return ""
+    return commit if isinstance(commit, str) else ""
 
 
 def _import_required_mlx_runtime_modules() -> tuple:
@@ -640,6 +675,15 @@ def _default_mlx_deps() -> MLXDeps:
             pass
         return mlx_lm_load_tokenizer(tokenizer_dir)
 
+    def _runtime_versions() -> Mapping[str, str]:
+        import mlx_lm
+
+        return {
+            "mlx": str(getattr(mx, "__version__", "")),
+            "mlx_lm": str(getattr(mlx_lm, "__version__", "")),
+            "mlx_lm_commit": _installed_vcs_commit("mlx-lm"),
+        }
+
     return MLXDeps(
         load_model=_load_model,
         load_tokenizer=_load_tokenizer,
@@ -651,6 +695,7 @@ def _default_mlx_deps() -> MLXDeps:
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
         make_sampler=_make_sampler,
+        runtime_versions=_runtime_versions,
     )
 
 
@@ -758,9 +803,10 @@ class LoadedModelSession:
     eos_token_ids: tuple[int, ...] = ()
     clear_cache: Callable[[], None] | None = None
     decode_cancel_stride: int = 1
-    prefill_step_size: int = 2048
+    prefill_step_size: int = DEFAULT_PREFILL_STEP_SIZE
     prefix_cache: PrefixCache | None = None
     prefix_cache_fingerprints: list[str] = dataclass_field(default_factory=list)
+    strict_prefix_checkpoints: StrictPrefixCheckpointStore | None = None
     generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
@@ -1318,6 +1364,129 @@ def _build_prefix_cache(
     )
 
 
+def _refuse_strict_prefix(message: str) -> ModelLoaderError:
+    return ModelLoaderError("strict_prefix_checkpoint_unsupported", message)
+
+
+def _check_strict_prefix_runtime(
+    *,
+    deps: MLXDeps,
+    prefix_cache_config: PrefixCacheLoadConfig,
+    generation_config: GenerationRuntimeConfig,
+    memory_budget_config: MemoryBudgetConfig,
+) -> dict[str, str]:
+    """Refuse an unusable strict-prefix runtime before any weights load.
+
+    Returns the runtime versions, or an empty mapping when the setting is off.
+    Retained checkpoints sit outside the memory-budget working-set target, so
+    enforce mode would abort generations for memory the budget never planned.
+    """
+    if prefix_cache_config.strict_prefix is None:
+        return {}
+
+    if generation_config.mode != "stream":
+        raise _refuse_strict_prefix(
+            f"strict-prefix checkpoints require generation mode 'stream', "
+            f"got {generation_config.mode!r}"
+        )
+    if memory_budget_config.mode == "enforce":
+        raise _refuse_strict_prefix(
+            "strict-prefix checkpoints require memory-budget mode 'disabled' or 'observe'"
+        )
+
+    try:
+        versions = dict(deps.runtime_versions()) if deps.runtime_versions is not None else {}
+    except Exception as exc:
+        raise _refuse_strict_prefix(f"strict-prefix runtime version probe failed: {exc}") from exc
+    mlx_lm_version = versions.get("mlx_lm", "")
+    mlx_lm_commit = versions.get("mlx_lm_commit", "")
+    if mlx_lm_version != SUPPORTED_MLX_LM_VERSION or mlx_lm_commit != SUPPORTED_MLX_LM_COMMIT:
+        raise _refuse_strict_prefix(
+            f"strict-prefix checkpoints support only mlx-lm {SUPPORTED_MLX_LM_VERSION} at "
+            f"{SUPPORTED_MLX_LM_COMMIT[:8]}, got {mlx_lm_version!r} at {mlx_lm_commit[:8]!r}"
+        )
+    return versions
+
+
+def _build_strict_prefix_checkpoints(
+    model: Any,
+    tokenizer: Any,
+    manifest: BundleManifest,
+    *,
+    deps: MLXDeps,
+    prefix_cache_config: PrefixCacheLoadConfig,
+    runtime_versions: Mapping[str, str],
+    memory_budget_status: MemoryBudgetStatus,
+) -> StrictPrefixCheckpointStore | None:
+    """Build the strict-prefix checkpoint store, or refuse the load.
+
+    Returns ``None`` when the setting is off.  When it is on, the load fails
+    unless the model's prompt cache uses only supported layer types, the
+    reply marker tokenizes, and the memory headroom, when known, holds the
+    budget.  ``_check_strict_prefix_runtime`` has already checked the mode
+    and the mlx-lm pin before the weights loaded.
+    """
+    config = prefix_cache_config.strict_prefix
+    if config is None:
+        return None
+
+    if deps.make_prompt_cache is None:
+        raise _refuse_strict_prefix("strict-prefix checkpoints need make_prompt_cache")
+    try:
+        layer_types = tuple(type(layer).__name__ for layer in deps.make_prompt_cache(model))
+        marker_ids = list(tokenizer.encode(config.reply_marker, add_special_tokens=False))
+    except Exception as exc:
+        raise _refuse_strict_prefix(f"strict-prefix probe failed: {exc}") from exc
+    unsupported = sorted(set(layer_types) - SUPPORTED_LAYER_TYPES)
+    if not layer_types or unsupported:
+        raise _refuse_strict_prefix(
+            "strict-prefix checkpoints support only "
+            f"{sorted(SUPPORTED_LAYER_TYPES)} cache layers, got {unsupported or 'none'}"
+        )
+
+    if not marker_ids:
+        raise _refuse_strict_prefix("strict-prefix reply marker tokenizes to no tokens")
+
+    if (
+        memory_budget_status.headroom_available
+        and memory_budget_status.estimated_headroom_bytes < config.budget_bytes
+    ):
+        raise _refuse_strict_prefix(
+            f"strict-prefix budget {config.budget_bytes} bytes exceeds estimated headroom "
+            f"{memory_budget_status.estimated_headroom_bytes} bytes"
+        )
+
+    identity = CheckpointIdentity(
+        model_id=manifest.model_id,
+        model_version=manifest.version,
+        artifact_sha256=manifest.sha256,
+        mlx_version=runtime_versions.get("mlx", ""),
+        mlx_lm_version=runtime_versions.get("mlx_lm", ""),
+        mlx_lm_commit=runtime_versions.get("mlx_lm_commit", ""),
+        prefill_step_size=DEFAULT_PREFILL_STEP_SIZE,
+        layer_types=layer_types,
+    )
+    logger.info(
+        "strict_prefix_checkpoint enabled slots=%d slot_bytes=%d budget_bytes=%d "
+        "layers=%d kv_layers=%d mlx=%s mlx_lm=%s mlx_lm_commit=%s",
+        config.slots,
+        config.slot_bytes,
+        config.budget_bytes,
+        len(layer_types),
+        layer_types.count("KVCache"),
+        identity.mlx_version,
+        identity.mlx_lm_version,
+        identity.mlx_lm_commit[:12],
+    )
+    return StrictPrefixCheckpointStore(
+        identity=identity,
+        slots=config.slots,
+        slot_bytes=config.slot_bytes,
+        reply_marker_ids=marker_ids,
+        materialize=deps.eval_fn,
+    )
+
+
 def load_session(
     *,
     model_id: str,
@@ -1399,6 +1568,16 @@ def load_session(
     if deps is None:
         deps = _default_mlx_deps()
 
+    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
+    effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
+    runtime_versions = _check_strict_prefix_runtime(
+        deps=deps,
+        prefix_cache_config=effective_config,
+        generation_config=effective_generation_config,
+        memory_budget_config=effective_memory_budget_config,
+    )
+
     model = None
     tokenizer = None
     model_config = None
@@ -1452,9 +1631,6 @@ def load_session(
     _safe_clear_cache(deps.clear_cache)
 
     # --- prefix cache eligibility probe (fail-open) ---
-    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
-    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
-    effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status = _compute_memory_budget_status(
         manifest,
         deps,
@@ -1466,6 +1642,23 @@ def load_session(
         deps=deps,
         prefix_cache_config=effective_config,
     )
+    try:
+        strict_prefix_checkpoints = _build_strict_prefix_checkpoints(
+            model,
+            tokenizer,
+            manifest,
+            deps=deps,
+            prefix_cache_config=effective_config,
+            runtime_versions=runtime_versions,
+            memory_budget_status=memory_budget_status,
+        )
+    except ModelLoaderError:
+        model = None
+        tokenizer = None
+        prefix_cache = None
+        _safe_clear_cache(deps.clear_cache)
+        gc.collect()
+        raise
 
     logger.info(
         "load_session memory_budget mode=%s status=%s budget_available=%s "
@@ -1490,6 +1683,7 @@ def load_session(
         clear_cache=deps.clear_cache,
         decode_cancel_stride=decode_cancel_stride,
         prefix_cache=prefix_cache,
+        strict_prefix_checkpoints=strict_prefix_checkpoints,
         generation_config=effective_generation_config,
         memory_budget_config=effective_memory_budget_config,
         memory_budget_status=memory_budget_status,
@@ -1519,6 +1713,10 @@ def unload_session(
     session.model_config = None
     session.prefix_cache = None
     session.prefix_cache_fingerprints.clear()
+    strict_prefix_checkpoints = getattr(session, "strict_prefix_checkpoints", None)
+    if isinstance(strict_prefix_checkpoints, StrictPrefixCheckpointStore):
+        strict_prefix_checkpoints.clear()
+    session.strict_prefix_checkpoints = None
     session.clear_cache = None
 
     try:
