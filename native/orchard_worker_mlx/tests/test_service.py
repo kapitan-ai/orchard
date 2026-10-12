@@ -1260,8 +1260,14 @@ def test_generate_closes_backend_iterator_after_terminal_break() -> None:
 
 
 def test_generate_terminal_yield_precedes_iterator_cleanup() -> None:
+    """Characterize current behavior for issue #417; this is not a contract.
+
+    `Generate` yields the terminal event before it closes the backend iterator,
+    releases the active count, and drops the cancel entry. If #417 leads to an
+    accepted drain or release contract that reorders this cleanup, update this
+    test deliberately instead of treating the failure as a regression.
+    """
     backend = TerminalBreakCloseBackend()
-    backend._loaded = True
     servicer = _make_servicer(backend)
     request_id = "req-delayed-terminal-cleanup"
     stream = servicer.Generate(_make_request(request_id), MagicMock())
@@ -1290,6 +1296,14 @@ def test_generate_terminal_yield_precedes_iterator_cleanup() -> None:
 
 
 def test_generate_stalled_terminal_cleanup_does_not_block_peer_release() -> None:
+    """Characterize current behavior for issue #417; this is not a contract.
+
+    Request A holds its stream open after its terminal event, so its cleanup has
+    not run. Peer B still streams, completes, and releases its own capacity. If
+    #417 leads to an accepted drain or release contract that changes this
+    ordering, update this test deliberately instead of treating the failure as a
+    regression.
+    """
     backend = ConcurrentGenerateBackend()
     servicer = _make_servicer(backend)
     a_terminal_seen = threading.Event()
