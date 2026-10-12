@@ -1,7 +1,7 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest}
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.{ModelManager, RuntimeProcessReaper, WorkerRecoveryState, WorkerSupervisor}
 
@@ -180,6 +180,70 @@ defmodule Orchard.Node.ModelManagerTest do
       Process.exit(task_pid, :kill)
       release.()
     end
+
+    # SPEC.md §4.9 custody and SPEC §12.2 recovery share one slot model: a
+    # recovery record cannot resolve cleanup while the reaper still holds a
+    # runtime for the same model, even without a recorded last Worker.
+    test "SPEC §12.2 recovery cleanup stays unresolved while the reaper holds the model's runtime" do
+      key = {"model/recovery-custody", "v1"}
+      %{release: release} = hold_custody("model/recovery-custody", "v1")
+      base = :sys.get_state(ModelManager)
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> put_in([:ownership, "phase"], "cleanup")
+
+      state = %{base | recovery: Map.put(base.recovery, key, entry)}
+      cleanup = {:recovery_cleanup, state.recovery_epoch, key}
+
+      assert {:noreply, held} = ModelManager.handle_info(cleanup, state)
+      assert held.recovery[key].ownership["phase"] == "cleanup"
+
+      release.()
+
+      assert {:noreply, cleared} = ModelManager.handle_info(cleanup, state)
+      assert cleared.recovery[key].ownership["phase"] == "resolved"
+    end
+
+    test "a finished eviction whose runtime is still under custody refuses instead of evicting again" do
+      previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(previous_runtime, :max_loaded_models, 1)
+      )
+
+      %{release: release} = hold_custody("model/evicted", "v1")
+      eviction_ref = make_ref()
+      reply_ref = make_ref()
+
+      continuation = %{
+        request: ensure_request("model/incoming", "v1"),
+        from: {self(), reply_ref},
+        meta: %{max_loaded_models: 1, incoming_model_id: "model/incoming"},
+        started: System.monotonic_time(:millisecond)
+      }
+
+      state = %{
+        :sys.get_state(ModelManager)
+        | eviction_continuations: %{eviction_ref => continuation}
+      }
+
+      try do
+        assert {:noreply, next_state} =
+                 ModelManager.handle_info({eviction_ref, %Ack{ok: true}}, state)
+
+        assert_receive {^reply_ref, %{failure_code: "model_capacity_exhausted"}}, 1_000
+        assert next_state.inflight_loads == %{}
+        assert next_state.eviction_continuations == %{}
+      after
+        Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+        release.()
+      end
+    end
   end
 
   # Holds reaper custody of a live OS process for the model, as a launched
@@ -210,8 +274,11 @@ defmodule Orchard.Node.ModelManagerTest do
     %{owner_pid: owner_pid, release: release, stop_runtime: stop_runtime}
   end
 
-  defp ensure(model_id, version) do
-    ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+  defp ensure(model_id, version),
+    do: ModelManager.ensure_model_loaded(ensure_request(model_id, version))
+
+  defp ensure_request(model_id, version) do
+    %EnsureModelLoadedRequest{
       node_id: "node-local",
       model_id: model_id,
       version: version,
@@ -219,7 +286,7 @@ defmodule Orchard.Node.ModelManagerTest do
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       artifact_source_uri: "file:///nonexistent"
-    })
+    }
   end
 
   defp waiter(deadline_unix_ms) do
