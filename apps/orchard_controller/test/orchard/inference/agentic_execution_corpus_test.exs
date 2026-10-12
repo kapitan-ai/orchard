@@ -66,7 +66,10 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
 
     File.mkdir_p!(script_root)
     System.put_env("ORCHARD_AGENTIC_SCRIPT", Path.join(script_root, "script.json"))
+    # SPEC §12.2 keeps an unsettled Worker loss through reset, and every case
+    # shares one model key, so each case starts from a fresh recovery epoch.
     ModelManager.reset()
+    restart_model_manager!()
     File.mkdir_p!(path)
     :ok = ArtifactBundle.copy_directory(fixture_bundle_path(), path)
     tokenizer = Path.expand("../../fixtures/tokenizer/safe_hf/tokenizer.json", __DIR__)
@@ -422,6 +425,12 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     test "SPEC 7.2.9 public disconnect native drain #{@mode}/#{@drain}", %{token: token} do
       assert_native_drain(@mode, @drain, token)
     end
+  end
+
+  defp restart_model_manager! do
+    :ok = Supervisor.terminate_child(Node.Supervisor, ModelManager)
+    {:ok, _pid} = Supervisor.restart_child(Node.Supervisor, ModelManager)
+    :ok
   end
 
   defp assert_native_drain(mode, drain, token) do
