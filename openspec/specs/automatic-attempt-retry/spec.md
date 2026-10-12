@@ -216,6 +216,7 @@ This requirement traces to `SPEC.md` §5.9, §12.7, and `docs/decisions/0019-one
 
 ### Requirement: Per-attempt breakers and bounded metrics
 Each actual breaker-eligible failed attempt SHALL contribute independently to the existing breaker for the Node or placement that produced it.
+An attempt whose producing Node has no Node inventory row MUST NOT contribute to either breaker and MUST be recorded as not eligible rather than failing the Request.
 The Node-level breaker SHALL count an attempt failure only when its `failure_class` is `pre_acceptance_unavailable` or `worker_or_node_loss`, and the placement-level breaker only when it is `model_load_failure`.
 `capacity_rejection`, `runtime_failure`, `terminal_conformance`, `cancellation`, `deadline`, `controller_failure`, `occupancy_unresolved`, and `identity_unresolved` MUST NOT contribute to either breaker, and an unsuccessful attempt MUST contribute to at most one breaker.
 Attempt 1 breaker effects MUST be durable and visible before the fresh alternate scheduler decision.
@@ -231,6 +232,11 @@ This requirement traces to `SPEC.md` §5.10, §9.1, and `docs/decisions/0019-one
 - **WHEN** three attempts on a healthy Node fail after `request_step.started` with `capacity_rejection`
 - **THEN** neither the Node-level nor the placement-level breaker counts those failures
 - **AND** the Node remains eligible for later scheduling decisions
+
+#### Scenario: A Node without inventory does not record breaker evidence
+- **WHEN** an attempt on a Node that has no Node inventory row fails with `worker_or_node_loss`, `pre_acceptance_unavailable` or `model_load_failure`
+- **THEN** neither breaker records the failure
+- **AND** the Request keeps the attempt's stable failure code instead of `orchestration_error`
 
 #### Scenario: Attempt 1 breaker effect precedes alternate selection
 - **WHEN** attempt 1 produces a breaker-eligible failure and qualifies for retry

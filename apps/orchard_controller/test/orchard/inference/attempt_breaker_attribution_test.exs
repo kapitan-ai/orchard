@@ -50,7 +50,11 @@ defmodule Orchard.Inference.AttemptBreakerAttributionTest do
     test "SPEC.md §5.10 a Node without an inventory row is not eligible for attribution" do
       model = insert_model!()
 
-      for failure_class <- ["worker_or_node_loss", "pre_acceptance_unavailable"] do
+      for failure_class <- [
+            "worker_or_node_loss",
+            "pre_acceptance_unavailable",
+            "model_load_failure"
+          ] do
         assert {:ok, :not_eligible} =
                  AttemptBreakerAttribution.record(
                    Ecto.UUID.generate(),
