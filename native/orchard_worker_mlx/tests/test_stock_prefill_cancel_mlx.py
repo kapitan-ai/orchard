@@ -11,6 +11,7 @@ extra::
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import threading
 from collections.abc import Iterator
@@ -111,11 +112,7 @@ def _deps_cancelling_at(cancel: threading.Event, processed_at: int, seen: list[i
         kwargs["prompt_progress_callback"] = observe
         yield from real_stream(model, tokenizer, prompt_ids, **kwargs)
 
-    return type(deps)(**{**_fields(deps), "stream_generate": stream})
-
-
-def _fields(deps: Any) -> dict[str, Any]:
-    return {name: getattr(deps, name) for name in deps.__dataclass_fields__}
+    return dataclasses.replace(deps, stream_generate=stream)
 
 
 def test_real_prefill_stops_at_the_next_chunk_boundary_and_the_model_still_generates() -> None:

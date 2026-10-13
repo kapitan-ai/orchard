@@ -2544,7 +2544,10 @@ def generate_events(
             lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
             request_prompt_cache = lookup_result.prompt_cache
             stream_prompt_ids = lookup_result.stream_prompt_ids
-        if not deps.uses_shared_batch_runtime:
+        # The guard and the loop wrapper below go together: the wrapper turns the
+        # guard's exception into the end of the stream.
+        stops_prefill_on_cancel = not deps.uses_shared_batch_runtime
+        if stops_prefill_on_cancel:
             stream_progress_callback = _PrefillCancelGuard(cancel_event, stream_progress_callback)
 
         stream_kwargs: dict[str, Any] = {
@@ -2611,9 +2614,7 @@ def generate_events(
 
             # A cancelled prefill ends the loop early; the end-of-stream path
             # below then sees the cancel and emits the cancelled terminal.
-            responses = (
-                stream if deps.uses_shared_batch_runtime else _until_prefill_cancelled(stream)
-            )
+            responses = _until_prefill_cancelled(stream) if stops_prefill_on_cancel else stream
             for response in responses:
                 drained_prefill = bool(progress_queue)
                 yield from _drain_prefill_progress(
@@ -2779,7 +2780,9 @@ def generate_events(
                 progress_queue,
                 last_processed_tokens_out=last_prefill_processed_tokens,
             )
-            finalize_prefill_probe_if_needed(drained_prefill)
+            # A cancelled prefill is partial, so its memory sample is not a
+            # prefill-workspace measurement.
+            finalize_prefill_probe_if_needed(drained_prefill and not cancel_event.is_set())
             if tool_context is None or not tool_context.stop_buffer_disabled:
                 flush_text = buf.flush()
                 if flush_text:

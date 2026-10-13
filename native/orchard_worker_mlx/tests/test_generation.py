@@ -7835,6 +7835,44 @@ def test_prefill_cancel_does_not_swallow_other_stream_errors() -> None:
         _collect_events(_make_fake_session(), _make_fake_request(), deps)
 
 
+def test_prefill_cancel_does_not_update_the_prefill_workspace_estimate() -> None:
+    """A partial prefill's memory sample must not raise the high-water estimate."""
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    memory_samples = iter([1_000, 900_000])
+    cancel = threading.Event()
+    deps = GenerationDeps(
+        stream_generate=_chunked_prefill_stream(
+            chunks=5, cancel=cancel, record=[], cancel_after_chunk=1
+        ),
+        make_sampler=lambda **_kwargs: MagicMock(),
+        current_memory_bytes=lambda: next(memory_samples),
+    )
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(
+            mode="observe",
+            budget_available=True,
+            headroom_available=True,
+            status_code="ok",
+            status_message="",
+            source="seed",
+            max_recommended_working_set_size_bytes=8_000_000_000,
+            utilization=0.75,
+            target_working_set_bytes=6_000_000_000,
+            overhead_bytes=268_435_456,
+            resident_memory_bytes=2_048_000,
+            estimated_headroom_bytes=5_731_516_544,
+            kv_cache_bytes_per_token=16_384,
+            prefill_workspace_bytes_per_token=0,
+        )
+    )
+
+    events = _collect_events(session, _make_fake_request(), deps, cancel)
+
+    assert events[-1]["code"] == "cancelled"
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 0
+
+
 def test_prefill_cancel_still_clears_the_session_cache() -> None:
     clear_mock = MagicMock(name="clear_cache")
     cancel = threading.Event()
