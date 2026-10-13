@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -1273,7 +1274,11 @@ def test_token_id_prompt_still_requires_exact_provider_usage(tmp_path: Path) -> 
 
 
 def test_grpc_cancel_reports_unconfirmed_cessation_and_denies_reuse(tmp_path: Path) -> None:
-    with _FakeVLLM(_provider_events(["answer"])) as provider:
+    # macOS Unix sockets have a 104-byte path limit; pytest's temp root can exceed it.
+    with (
+        _FakeVLLM(_provider_events(["answer"])) as provider,
+        tempfile.TemporaryDirectory(prefix="o", dir="/tmp") as socket_dir,
+    ):
         gate = threading.Event()
         provider.gates[1] = gate
         backend = _loaded_backend(provider, tmp_path)
@@ -1282,7 +1287,7 @@ def test_grpc_cancel_reports_unconfirmed_cessation_and_denies_reuse(tmp_path: Pa
             backend_factory=lambda *_args, **_kwargs: backend,
             generation_config=GenerationRuntimeConfig(mode="stream"),
         )
-        target = f"unix://{tmp_path / 'worker.sock'}"
+        target = f"unix://{socket_dir}/worker.sock"
         assert server.add_insecure_port(target) != 0
         server.start()
         try:
