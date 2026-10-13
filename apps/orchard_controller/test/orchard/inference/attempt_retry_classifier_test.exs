@@ -1,8 +1,9 @@
 defmodule Orchard.Inference.AttemptRetryClassifierTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Dispatch.AttemptOutcome
-  alias Orchard.Inference.AttemptRetryClassifier
+  alias Orchard.Inference.{AttemptRetryClassifier, ModelLoadFailure}
   alias Orchard.Requests.InferenceAttemptResult
 
   @runtime_codes ~w(
@@ -43,6 +44,35 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
 
       assert AttemptRetryClassifier.finalize_alternate(boundary, :identity_unresolved) ==
                :identity_unresolved
+    end
+  end
+
+  test "SPEC.md §5.8 retries strict-prefix and memory load refusals on another node" do
+    for {code, node_category} <- [
+          {"strict_prefix_runtime_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"strict_prefix_model_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"strict_prefix_checkpoint_unsupported",
+           :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"insufficient_memory", :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED}
+        ] do
+      failure =
+        ModelLoadFailure.from_response(%EnsureModelLoadedResponse{
+          failure_category: node_category,
+          failure_code: code,
+          failure_message: "node message"
+        })
+
+      assert failure.code == code
+
+      boundary =
+        boundary(%{
+          failure_class: "model_load_failure",
+          failure_code: failure.code,
+          model_load_category: failure.category,
+          runtime_retryable: nil
+        })
+
+      assert AttemptRetryClassifier.pre_schedule(boundary) == :eligible_for_alternate
     end
   end
 

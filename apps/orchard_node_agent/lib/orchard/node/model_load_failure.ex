@@ -39,12 +39,22 @@ defmodule Orchard.Node.ModelLoadFailure do
                               ])
 
   # Worker error codes indicating the runtime environment is unavailable.
+  # Strict-prefix refusals are node configuration problems, not artifact
+  # problems: another node without the setting can still load the model, so
+  # they stay retryable instead of MODEL_INVALID.
+  # `strict_prefix_checkpoint_unsupported` is the code older Workers emit.
   @worker_runtime_unavailable_codes MapSet.new([
                                       "mlx_backend_unavailable",
                                       "mlx_probe_failed",
                                       "metal_unavailable",
-                                      "batch_runtime_unavailable"
+                                      "batch_runtime_unavailable",
+                                      "strict_prefix_runtime_unsupported",
+                                      "strict_prefix_model_unsupported",
+                                      "strict_prefix_checkpoint_unsupported"
                                     ])
+
+  # Worker error codes indicating the node lacks memory for the configuration.
+  @worker_resource_exhausted_codes MapSet.new(["insufficient_memory"])
 
   @worker_model_invalid_messages %{
     "manifest_not_found" => "model manifest is missing",
@@ -66,7 +76,17 @@ defmodule Orchard.Node.ModelLoadFailure do
     "mlx_backend_unavailable" => "MLX backend is unavailable on this node",
     "mlx_probe_failed" => "MLX backend probe failed on this node",
     "metal_unavailable" => "Metal is unavailable on this node",
-    "batch_runtime_unavailable" => "MLX batch runtime is unavailable on this node"
+    "batch_runtime_unavailable" => "MLX batch runtime is unavailable on this node",
+    "strict_prefix_runtime_unsupported" =>
+      "installed runtime does not support strict-prefix checkpoints on this node",
+    "strict_prefix_model_unsupported" =>
+      "model cache layout does not support strict-prefix checkpoints on this node",
+    "strict_prefix_checkpoint_unsupported" =>
+      "strict-prefix checkpoints are not supported for this model on this node"
+  }
+
+  @worker_resource_exhausted_messages %{
+    "insufficient_memory" => "node does not have enough memory headroom for this model"
   }
 
   @doc """
@@ -455,6 +475,10 @@ defmodule Orchard.Node.ModelLoadFailure do
       MapSet.member?(@worker_runtime_unavailable_codes, code) ->
         message = Map.fetch!(@worker_runtime_unavailable_messages, code)
         new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, code, message)
+
+      MapSet.member?(@worker_resource_exhausted_codes, code) ->
+        message = Map.fetch!(@worker_resource_exhausted_messages, code)
+        new(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED, code, message)
 
       true ->
         new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, code, "model runtime failed to load the model")
