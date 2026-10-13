@@ -582,6 +582,31 @@ def test_committed_python_fixture_is_produced_by_the_generated_binding() -> None
     )
 
 
+def _python_worker_status_checkpoints_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
+    response = _python_worker_status_fixture()
+    response.prefix_cache.implementation = "strict_prefix"
+    response.prefix_cache.checkpoint_uncertain_count = 1
+    response.prefix_cache.checkpoint_retained_bytes = 3_000
+    return response
+
+
+def test_committed_python_checkpoints_fixture_is_produced_by_the_generated_binding() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response_checkpoints.pb"
+
+    assert fixture.read_bytes() == _python_worker_status_checkpoints_fixture().SerializeToString(
+        deterministic=True
+    )
+
+
+def test_previous_revision_python_fixture_decodes_with_zero_checkpoint_counters() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
+
+    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes())
+
+    assert decoded.prefix_cache.checkpoint_uncertain_count == 0
+    assert decoded.prefix_cache.checkpoint_retained_bytes == 0
+
+
 def test_previous_revision_python_fixture_decodes_with_capabilities_absent() -> None:
     fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
 
