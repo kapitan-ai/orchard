@@ -32,11 +32,25 @@ uses Orchard's already rendered prompt on loopback HTTP `/v1/completions`, port
 58080, with logical load/unload and concurrency one. Add no Controller, shared
 request or tokenizer registration contract.
 
-Require the rendered prompt suffix `<think>\n` and sampling temperature `1.0`
+Accept rendered prompt suffix `<think>\n` or the exact thinking-disabled suffix
+`<think>\n\n</think>\n\n`, and require sampling temperature `1.0`
 and top-p `0.95`; the pinned remaining sampler is top-k `20`, min-p `0`, presence
-penalty `0`, repetition penalty `1`. Reject token-ID input and logprobs rather
-than approximating them. Bound total decoded output, including reasoning, not
-just the final suffix.
+penalty `0`, repetition penalty `1`. Reject token-ID output and logprobs rather
+than approximating them. When authoritative `prompt_token_ids` are present,
+send that flat integer list as `prompt`; require nonnegative IDs and a length
+equal to `input_tokens`. Use the rendered string only when IDs are absent.
+Keep the exact provider usage equality check for both paths. vLLM 0.27.1's
+[CompletionRequest schema](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/openai/completion/protocol.py)
+accepts a flat list of nonnegative integers and a caller-supplied `request_id`.
+Bound total decoded output, including reasoning, not just the final suffix.
+
+The disabled suffix comes from the registered Qwen template fixture at
+`apps/orchard_controller/test/fixtures/tokenizer/qwen3_8_effort/chat_template.jinja`.
+The tokenizer's `effort_profiles.json` currently registers only enabled thinking;
+accepting these already-rendered legacy bytes does not advertise a disabled
+effort mapping or negotiated reasoning capability. For this suffix, the whole
+generated output is eligible for tool parsing unless generated reasoning markers
+make framing ambiguous. Reject all other prompt suffixes.
 
 Preserve generated reasoning bytes as legacy-blended text under main KAP-49.
 Stateful framing begins inside the prompt-opened reasoning frame and identifies
@@ -44,7 +58,9 @@ an unambiguous final suffix after its matching streamed close. Framing is only a
 tool-parsing locator, not negotiated-mode fail-closed reasoning validation or a
 `final_only` projection. Raw `legacy_blended` output passes through even when
 thinking ends at length or reasoning framing is malformed; without an
-unambiguous final suffix, do not parse tools. Parse Qwen XML tools only in that
+unambiguous final suffix, do not parse tools. A required or named tool choice
+instead fails with `tool_choice_not_satisfied`; raw bytes cannot satisfy it.
+Parse Qwen XML tools only in that
 suffix, never tool-like reasoning. Preserve a text prefix exactly, then emit
 complete requested tool calls in source order with UUID call IDs under KAP-116.
 Only whitespace may separate or follow tool blocks. Fail closed on complete or
@@ -62,11 +78,59 @@ reasoning and framing; pass-through does not discard bytes to fit the bound.
 Deterministic coverage must split control markers across chunks and cover these
 stop/length distinctions and bounded-output failures.
 
+Emit reasoning/raw deltas immediately. After the reasoning close, retain only
+the suffix that could begin a tool control marker until it resolves. Once a
+complete control marker appears, retain its output until terminal parsing and
+validation; do not leak tool blocks as ordinary text. Preserve raw passthrough
+if later reasoning framing becomes malformed. Terminal parsing emits only text
+not already delivered and complete tool calls. The Controller's existing
+`first_token_at` therefore follows the first emitted legacy text delta, not the
+provider's terminal. No Worker timing or public event schema is added.
+
 Tool structure uses monotonic delimiter scanning, not backtracking regexes.
 HTTP identity checks have a wall-clock deadline. Cancellation shuts down the
 retained transport socket even when the response owns it; an unsettled reader
 makes the Worker unhealthy and blocks further local admission until replacement.
-That local safeguard proves no provider-native cessation or capacity release.
+Each attempt has its own transport and random provider request ID. Validate
+response IDs when supplied. Cancellation closes only that request's socket.
+
+### Concurrency above one is deferred
+
+`SPEC.md` §7.5.3 requires stream generation mode to report concurrency one at
+both Node and placement levels. The Node consumes a positive Worker capacity
+without a stream-mode clamp. Advertising N slots here would therefore change
+that contract. Retain the single-slot gate and supervisor `--max-num-seqs 1`.
+The options are to defer N-slot admission or separately approve a SPEC amendment
+for provider-independent stream concurrency, followed by implementation and
+qualification. This slice selects deferral and does not change SPEC.md.
+
+### Native cessation remains unconfirmed
+
+vLLM disconnect cancellation sends an asynchronous engine abort, not an
+engine-origin cessation receipt. The pinned
+[AsyncLLM implementation](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/async_llm.py)
+and [metrics logger](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/metrics/loggers.py)
+expose no request-scoped read-only cessation query through completions HTTP.
+`num_requests_running` and `num_requests_waiting` are model/engine snapshots;
+scraping does not refresh the scheduler. A zero can predate admission, and a
+count drop under concurrency cannot identify which request stopped. Repeated
+zero samples cannot establish freshness or fence already-issued native work.
+
+Do not implement an affirmative confirmation path using these metrics. The
+cancelled terminal retains code `cancelled` and reports `native cessation
+unconfirmed` in its message. A stream closed before `[DONE]` also logs that
+outcome with the adapter-owned request ID. Unconfirmed cessation sets a sticky
+unhealthy latch and denies new local admission, including after logical reload;
+no provider-wide abort is sent. Local reader settlement is bounded at two
+seconds and remains separate from remote cessation. Cancel acceptance still
+means only acceptance. Neither terminal nor telemetry proves resource release.
+
+Confirmed, delayed-confirmed and never-confirmed provider polling remains
+blocked: stock 0.27.1 has no trustworthy signal to test against. Future options
+are retaining this conservative Worker/provider replacement requirement or a
+separately approved provider extension with a request-specific, engine-origin
+acknowledgment and execution fence. Changing the pin or claiming confirmation
+from aggregate metrics is not part of this slice.
 
 ### Historical reference, not a support tuple
 
@@ -114,9 +178,9 @@ OpenCode tools remain client-owned, not Orchard execution or confinement.
 Deterministic implementation evidence can protect the seam without activating a
 GPU, downloading a model or asserting current real API/OpenCode success.
 
-The remaining live risk is exact `prompt_tokens == request.input_tokens`
-validation: it may fail if Controller and vLLM tokenization diverge. This is not
-current live evidence or permission to change the tokenizer contract.
+The string fallback retains the live risk of Controller/provider tokenization
+divergence. Authoritative IDs avoid provider retokenization, but do not establish
+live compatibility, tokenizer registration authority or a new supported tuple.
 
 ## SPEC.md impact
 

@@ -12,9 +12,26 @@ Selection is explicit and default-off. Existing local gRPC remains the Worker
 surface; only the adapter calls loopback HTTP `/v1/completions` on port 58080.
 Load/unload is logical and concurrency is one. No Controller/shared request or
 tokenizer registration changes are needed. The Worker consumes already rendered
-prompt bytes, rejects token IDs/logprobs and unsupported controls, requires
-`<think>\n` at the prompt end and temperature `1.0`/top-p `0.95`, and pins top-k
+prompt bytes for framing, sends authoritative prompt IDs when supplied and the
+rendered string otherwise, and rejects token-ID output/logprobs and unsupported
+controls. It accepts `<think>\n` or `<think>\n\n</think>\n\n` at the prompt end,
+requires temperature `1.0`/top-p `0.95`, and pins top-k
 `20`, min-p `0`, presence penalty `0` and repetition penalty `1`.
+
+The closed-empty-think suffix is the disabled branch of the source-owned Qwen
+effort template fixture. The tokenizer effort registry still enables thinking;
+this adapter does not advertise a disabled effort mapping or negotiated mode.
+vLLM 0.27.1 accepts nonnegative flat integer prompt lists. Require ID count equal
+to `input_tokens`, retain strict provider usage equality and reject other framing.
+
+Each attempt owns a socket and random provider request ID; response IDs, when
+present, must match. No shared stream or cross-request cancellation is introduced.
+
+N-slot admission and a matching supervisor change are deferred. `SPEC.md` §7.5.3
+requires stream-mode Node and placement concurrency one, and the Node forwards
+positive Worker capacity without clamping it. Keep the existing single-slot gate
+and `--max-num-seqs 1`; a provider-independent stream-concurrency amendment needs
+separate approval. This slice does not change SPEC.md.
 
 ## Stateful output framing
 
@@ -25,7 +42,16 @@ eligible for tool parsing; tool-like bytes inside reasoning are never calls.
 This is not negotiated-mode fail-closed reasoning validation or a `final_only`
 projection. Raw `legacy_blended` output passes through when thinking ends at
 length or reasoning framing is malformed. If framing cannot identify an
-unambiguous suffix, preserve raw output without parsing tools.
+unambiguous suffix, preserve raw output without parsing tools for auto/none;
+required/named choices fail with `tool_choice_not_satisfied`. For the recognized
+disabled prompt, tool parsing starts at output offset zero.
+
+Stream reasoning/raw text immediately. After the reasoning close, retain only
+the minimal possible tool-marker suffix; release it when continuation rules it
+out. A complete tool control marker withholds subsequent output until terminal
+validation. Preserve the same raw bytes if later reasoning markers invalidate
+framing. Terminal delivery excludes already-emitted text. First-token timing
+uses the existing first public legacy-text delta boundary, with no new schema.
 
 Allow exact text followed by complete requested Qwen XML calls in source order.
 Only whitespace may separate or follow calls. In the identified suffix, fail
@@ -46,9 +72,27 @@ limits, cancellation and logical status without real inference.
 
 ## Live risk
 
-Exact `prompt_tokens == request.input_tokens` validation may fail if Controller
-and vLLM tokenization diverge. This remains a live risk, not current live proof
-or a reason to widen the shared request or tokenizer contract.
+String-fallback `prompt_tokens == request.input_tokens` validation may fail if
+Controller and vLLM tokenization diverge. Authoritative IDs avoid retokenization,
+not the strict check or the requirement for separately approved live evidence.
+
+## Cessation evidence limitation
+
+Disconnect remains the cancel mechanism. Pinned vLLM's aggregate running/waiting
+gauges can predate admission and have no request-scoped freshness barrier or
+execution fence. Polling them cannot distinguish a stopped target from stopped
+siblings or certify native cessation. ADR 0037 links the inspected source.
+Do not add a fake affirmative receipt unsupported by that source. Report
+`native cessation unconfirmed` in the cancelled terminal and premature-stream
+cleanup telemetry. Keep local reader settlement bounded at two seconds. An
+unconfirmed result is sticky, denies new admission after logical reload, and
+does not send a provider-wide abort. Cancel acceptance is not native
+cessation, and reader exit is not capacity release.
+
+Confirmed/delayed-confirmed polling is blocked pending a separately approved
+request-specific engine-origin acknowledgment and execution fence. Retaining the
+conservative Worker/provider replacement requirement is the in-scope alternative;
+there is no provider pin change, fabricated confirmation or live claim here.
 
 ## Historical fixture incompatibility and gates
 

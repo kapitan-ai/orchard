@@ -47,7 +47,18 @@ def test_build_backend_stub_returns_backend() -> None:
 def test_build_backend_vllm_poc_returns_backend() -> None:
     backend = build_backend("vllm_poc")
     assert isinstance(backend, Backend)
-    assert backend.status()["supports_prompt_token_ids"] is False
+    assert backend.status()["supports_prompt_token_ids"] is True
+
+
+@pytest.mark.parametrize("configured", ["auto", 1, 3])
+def test_build_backend_vllm_poc_retains_stream_concurrency_one(configured) -> None:
+    backend = build_backend(
+        "vllm_poc",
+        generation_config=GenerationRuntimeConfig(
+            mode="stream", max_concurrent_generations=configured
+        ),
+    )
+    assert backend.status()["max_concurrency"] == 1
 
 
 def test_build_backend_mlx_returns_backend() -> None:
