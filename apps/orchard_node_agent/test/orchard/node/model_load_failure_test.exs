@@ -244,20 +244,17 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.message == "node does not have enough memory headroom for this model"
   end
 
-  test "strict-prefix and memory refusals keep their code and category in the response" do
-    for code <- [
-          "strict_prefix_runtime_unsupported",
-          "strict_prefix_model_unsupported",
-          "strict_prefix_checkpoint_unsupported",
-          "insufficient_memory"
+  test "SPEC.md §12.3 strict-prefix and memory refusals keep their code and category in the response" do
+    for {code, category} <- [
+          {"strict_prefix_runtime_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"strict_prefix_model_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"strict_prefix_checkpoint_unsupported",
+           :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
+          {"insufficient_memory", :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED}
         ] do
       response = ModelLoadFailure.to_response({:worker_load_failed, code, "detail"})
 
-      assert response.failure_category in [
-               :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
-               :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED
-             ]
-
+      assert response.failure_category == category
       assert response.failure_code == code
     end
   end

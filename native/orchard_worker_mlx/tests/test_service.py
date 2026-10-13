@@ -2075,6 +2075,31 @@ def test_get_status_prefix_cache_invalid_checkpoint_field_is_invalid_status(
     assert status.prefix_cache.checkpoint_retained_bytes == 0
 
 
+@pytest.mark.parametrize("implementation", ["kv", "trie"])
+def test_get_status_prefix_cache_ignores_checkpoint_fields_for_other_implementations(
+    implementation: str,
+) -> None:
+    # SPEC.md §7.5.3: other implementations report zero, even with bad or nonzero counters.
+    for counters in (
+        {"checkpoint_uncertain_count": -1, "checkpoint_retained_bytes": "3000"},
+        {"checkpoint_uncertain_count": 2, "checkpoint_retained_bytes": 5},
+    ):
+        servicer = WorkerRuntimeServicer(
+            PrefixCacheStatusBackend(
+                prefix_cache_status=_ok_prefix_cache_status(
+                    implementation=implementation, **counters
+                )
+            )
+        )
+
+        status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+        assert status.prefix_cache.status_code == "ok"
+        assert status.prefix_cache.implementation == implementation
+        assert status.prefix_cache.checkpoint_uncertain_count == 0
+        assert status.prefix_cache.checkpoint_retained_bytes == 0
+
+
 def test_get_status_prefix_cache_backend_exception_returns_error_status() -> None:
     class PrefixCacheRaisesBackend(HappyBackend):
         def prefix_cache_status(self) -> dict[str, Any]:

@@ -132,11 +132,13 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
         )
     }
 
-    if malformed_numeric_payload?(status) or malformed_checkpoint_payload?(implementation, status) do
-      %{normalized | status_code: "invalid_status"}
-    else
-      normalized
-    end
+    malformed? =
+      malformed_numeric_payload?(status) or
+        malformed_checkpoint_payload?(implementation, status)
+
+    normalized
+    |> mark_invalid(malformed?)
+    |> drop_invalid_checkpoint_counters()
   end
 
   def normalize(_status) do
@@ -234,6 +236,16 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     Enum.any?(@uint32_fields, &malformed_uint32?(status, &1)) or
       Enum.any?(@uint64_fields, &malformed_uint64?(status, &1))
   end
+
+  defp mark_invalid(normalized, true), do: %{normalized | status_code: "invalid_status"}
+  defp mark_invalid(normalized, false), do: normalized
+
+  # An invalid status carries no trustworthy counters, including the zeros a
+  # node agent writes when it rejects a malformed Worker status.
+  defp drop_invalid_checkpoint_counters(%{status_code: "invalid_status"} = normalized),
+    do: %{normalized | checkpoint_uncertain_count: nil, checkpoint_retained_bytes: nil}
+
+  defp drop_invalid_checkpoint_counters(normalized), do: normalized
 
   defp malformed_checkpoint_payload?(@checkpoint_implementation, status) do
     Enum.any?(@checkpoint_uint32_fields, &malformed_uint32?(status, &1)) or

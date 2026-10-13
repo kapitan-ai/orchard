@@ -62,7 +62,9 @@ _PREFIX_CACHE_UINT64_FIELDS = (
     "configured_max_bytes",
     "session_started_unix_ms",
 )
-# Strict-prefix checkpoint fields: absent or None means zero, otherwise they must be valid.
+# Strict-prefix checkpoint fields (SPEC.md 7.5.3): checked and sent only for the
+# strict_prefix implementation; absent or None means zero.
+_CHECKPOINT_IMPLEMENTATION = "strict_prefix"
 _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS = ("checkpoint_uncertain_count",)
 _PREFIX_CACHE_OPTIONAL_UINT64_FIELDS = ("checkpoint_retained_bytes",)
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
@@ -441,6 +443,9 @@ def _invalid_prefix_cache_numeric_fields(prefix_cache: dict[str, Any]) -> list[s
         if not _valid_status_uint64(value):
             invalid_fields.append(field)
 
+    if prefix_cache.get("implementation") != _CHECKPOINT_IMPLEMENTATION:
+        return invalid_fields
+
     for field in _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS:
         value = prefix_cache.get(field)
         if value is not None and not _valid_status_uint32(value):
@@ -487,6 +492,7 @@ def _prefix_cache_status_response(
 
     configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
     fingerprints = _prefix_cache_fingerprints(prefix_cache.get("prefix_cache_fingerprints"))
+    checkpoint_counters = implementation == _CHECKPOINT_IMPLEMENTATION
 
     return worker_runtime_pb2.WorkerPrefixCacheStatus(
         implementation=implementation,
@@ -504,8 +510,16 @@ def _prefix_cache_status_response(
         status_message=_status_string(prefix_cache.get("status_message")),
         session_started_unix_ms=_status_uint64(prefix_cache.get("session_started_unix_ms")),
         prefix_cache_fingerprints=fingerprints,
-        checkpoint_uncertain_count=_status_uint32(prefix_cache.get("checkpoint_uncertain_count")),
-        checkpoint_retained_bytes=_status_uint64(prefix_cache.get("checkpoint_retained_bytes")),
+        checkpoint_uncertain_count=(
+            _status_uint32(prefix_cache.get("checkpoint_uncertain_count"))
+            if checkpoint_counters
+            else 0
+        ),
+        checkpoint_retained_bytes=(
+            _status_uint64(prefix_cache.get("checkpoint_retained_bytes"))
+            if checkpoint_counters
+            else 0
+        ),
     )
 
 
