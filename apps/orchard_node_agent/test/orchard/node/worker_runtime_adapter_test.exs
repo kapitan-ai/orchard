@@ -530,6 +530,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     refute "--strict-prefix-reply-marker" in args
   end
 
+  test "a strict-prefix launch writes its flags even when every other setting is a default" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "mlx",
+        log_path: "/tmp/worker.log",
+        prefix_cache_mode: "strict_prefix",
+        strict_prefix_slot_bytes: 1024,
+        strict_prefix_budget_bytes: 1024
+      )
+
+    assert flag_value(args, "--generation-mode") == "batch"
+    assert flag_value(args, "--memory-budget-mode") == "observe"
+    assert flag_value(args, "--strict-prefix-budget-bytes") == "1024"
+  end
+
   test "strict-prefix flags are written only for the strict_prefix mode" do
     args =
       WorkerRuntimeAdapter.worker_cli_args(
