@@ -41,7 +41,10 @@ class _FakeVLLM(ThreadingHTTPServer):
         self.response_status = 200
         self.content_type = "text/event-stream"
         self.stall = False
+        self.stall_bytes: bytes | None = None
+        self.identity_drip = False
         self.request_seen = threading.Event()
+        self.headers_sent = threading.Event()
         self.client_closed = threading.Event()
         self.payload: dict[str, Any] | None = None
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -72,6 +75,15 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        if self.server.identity_drip:
+            try:
+                for byte in body:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError):
+                self.server.client_closed.set()
+            return
         self.wfile.write(body)
 
     def do_POST(self) -> None:
@@ -84,8 +96,19 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         self.send_response(self.server.response_status)
         self.send_header("Content-Type", self.server.content_type)
         self.end_headers()
+        self.server.headers_sent.set()
         if self.server.response_status != 200 or self.server.content_type != "text/event-stream":
             self.wfile.write(b"rejected")
+            return
+        if self.server.stall_bytes is not None:
+            self.wfile.write(self.server.stall_bytes)
+            self.wfile.flush()
+            self.connection.settimeout(3)
+            try:
+                if not self.connection.recv(1):
+                    self.server.client_closed.set()
+            except OSError:
+                pass
             return
         if self.server.stall:
             try:
@@ -364,14 +387,16 @@ def test_tool_ids_are_unique_across_calls_and_requests(tmp_path: Path) -> None:
     assert all(result[0] == {"kind": "output_text_delta", "delta": reasoning} for result in results)
 
 
-def test_public_text_prefix_is_preserved_before_typed_tool_calls(tmp_path: Path) -> None:
+@pytest.mark.parametrize("public_prefix", ["\n\n", " \t", "I’ll inspect the fixture first.\n\n"])
+def test_public_text_prefix_is_preserved_before_typed_tool_calls(
+    tmp_path: Path, public_prefix: str
+) -> None:
     tools = [
         {
             "type": "function",
             "function": {"name": "read", "parameters": {"type": "object"}},
         }
     ]
-    public_prefix = "I’ll inspect the fixture first.\n\n"
     raw = (
         "inspect</think>" + public_prefix + "<tool_call><function=read>"
         "<parameter=path>fixture.txt</parameter></function></tool_call>"
@@ -610,6 +635,116 @@ def test_reasoning_bytes_count_toward_output_bound(tmp_path: Path, monkeypatch) 
         with pytest.raises(BackendError) as exc_info:
             _generate(backend, _request())
     assert exc_info.value.code == "provider_output_too_large"
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "<tool_call>" + " " * 100_000,
+        "<tool_call>" * 10_000,
+        "<tool_call><function=read>" + " " * 100_000 + "</tool_call>",
+        "<tool_call><function=read><parameter=path>" + " " * 100_000 + "</function></tool_call>",
+    ],
+)
+def test_large_malformed_tool_output_fails_closed(tmp_path: Path, malformed: str) -> None:
+    tools = [{"type": "function", "function": {"name": "read"}}]
+    with _FakeVLLM(_provider_events([malformed])) as server:
+        backend = _loaded_backend(server, tmp_path)
+        with pytest.raises(BackendError) as exc_info:
+            _generate(backend, _request(tools=tools))
+    assert exc_info.value.code == "tool_call_parse_failed"
+
+
+def test_identity_has_wall_clock_deadline_under_slow_drip(tmp_path: Path) -> None:
+    with _FakeVLLM() as server:
+        server.identity_drip = True
+        backend = VLLMPocBackend(
+            config=VLLMPocConfig(endpoint=server.endpoint, identity_timeout_s=0.15)
+        )
+        started = time.monotonic()
+        with pytest.raises(BackendError) as exc_info:
+            backend.load_model(model_id=MODEL_ID, version=MODEL_VERSION, model_path=str(tmp_path))
+        assert time.monotonic() - started < 0.6
+        assert exc_info.value.code == "provider_unavailable"
+        assert backend.status()["loaded"] is False
+
+
+@pytest.mark.parametrize("stall_bytes", [b"", b'data: {"choices":'])
+def test_silent_and_midline_cancel_settles_reader_repeatedly(
+    tmp_path: Path, stall_bytes: bytes
+) -> None:
+    baseline = {thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"}
+    with _FakeVLLM() as server:
+        server.stall_bytes = stall_bytes
+        backend = _loaded_backend(server, tmp_path)
+        for _ in range(3):
+            server.headers_sent.clear()
+            server.client_closed.clear()
+            cancel = threading.Event()
+            result = []
+            backend.start_generation()
+            consumer = threading.Thread(
+                target=lambda result=result, cancel=cancel: result.extend(
+                    backend.generate(_request(), cancel)
+                )
+            )
+            consumer.start()
+            assert server.headers_sent.wait(timeout=2)
+            cancel.set()
+            consumer.join(timeout=0.7)
+            assert not consumer.is_alive()
+            backend.finish_generation()
+            assert result[0]["code"] == "cancelled"
+            assert server.client_closed.wait(timeout=1)
+            assert backend.health()["ready"]
+            assert {
+                thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"
+            } == baseline
+
+
+def test_unsettled_connect_blocks_new_admission_even_after_unload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import http.client
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_connect = http.client.HTTPConnection.connect
+
+    def delayed_connect(connection) -> None:
+        entered.set()
+        release.wait(timeout=4)
+        original_connect(connection)
+
+    with _FakeVLLM() as server:
+        backend = _loaded_backend(server, tmp_path)
+        monkeypatch.setattr(http.client.HTTPConnection, "connect", delayed_connect)
+        cancel = threading.Event()
+        result = []
+        backend.start_generation()
+        consumer = threading.Thread(
+            target=lambda: result.extend(backend.generate(_request(), cancel))
+        )
+        try:
+            consumer.start()
+            assert entered.wait(timeout=1)
+            cancel.set()
+            consumer.join(timeout=3)
+            assert not consumer.is_alive()
+            assert result[0]["code"] == "cancelled"
+            backend.finish_generation()
+            backend.unload_model()
+            assert backend.health()["code"] == "provider_reader_unsettled"
+            with pytest.raises(BackendError) as exc_info:
+                backend.start_generation()
+            assert exc_info.value.code == "provider_reader_unsettled"
+        finally:
+            readers = [
+                thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"
+            ]
+            release.set()
+            for reader in readers:
+                reader.join(timeout=1)
 
 
 def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:

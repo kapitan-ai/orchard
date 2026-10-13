@@ -49,10 +49,17 @@ never reinterpret tool-like reasoning as a call. Structural parsing adds no
 JSON Schema validation of model-selected values. Deterministic coverage must
 split control markers across chunks and cover bounded-output failures.
 
+Tool structure uses monotonic delimiter scanning, not backtracking regexes.
+HTTP identity checks have a wall-clock deadline. Cancellation shuts down the
+retained transport socket even when the response owns it; an unsettled reader
+makes the Worker unhealthy and blocks further local admission until replacement.
+That local safeguard proves no provider-native cessation or capacity release.
+
 ### Historical reference, not a support tuple
 
 The historical proven reference is the vLLM 0.27.1 image
 `vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
+and image ID `sha256:e0cfcfcb9b86e2c2d0d52a93689773f20f380cb8e050a24ce550c44f6f55c5eb`
 with `Qwen/Qwen3.8-27B` revision
 `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, BF16 weights/KV cache and concurrency
 one on an H100 NVL. Its selected 32-file snapshot is 55,586,114,863 bytes, not

@@ -64,9 +64,7 @@ _TOOL_CONTROL_MARKERS = (
     "<parameter=",
     "</parameter>",
 )
-_TOOL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
-_FUNCTION_RE = re.compile(r"\s*<function=([A-Za-z0-9_.:-]+)>\s*(.*?)\s*</function>\s*", re.DOTALL)
-_PARAMETER_RE = re.compile(r"\s*<parameter=([A-Za-z0-9_.:-]+)>(.*?)</parameter>\s*", re.DOTALL)
+_NAME_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +96,7 @@ class VLLMPocBackend:
         self._loaded_model: tuple[str, str, str] | None = None
         self._active_request_count = 0
         self._lock = threading.Lock()
+        self._reader_unsettled = False
 
     def status(self) -> BackendStatus:
         with self._lock:
@@ -109,6 +108,13 @@ class VLLMPocBackend:
             )
 
     def health(self) -> BackendHealth:
+        with self._lock:
+            if self._reader_unsettled:
+                return BackendHealth(
+                    ready=False,
+                    code="provider_reader_unsettled",
+                    message="provider reader did not settle; replace the Worker",
+                )
         return BackendHealth(ready=True, code="", message="")
 
     def prefix_cache_status(self) -> BackendPrefixCacheStatus:
@@ -155,6 +161,10 @@ class VLLMPocBackend:
 
     def start_generation(self) -> None:
         with self._lock:
+            if self._reader_unsettled:
+                raise BackendError(
+                    "provider_reader_unsettled", "provider reader did not settle", False
+                )
             if self._loaded_model is None:
                 raise BackendError("model_not_loaded", "model is not loaded", False)
             if self._active_request_count:
@@ -279,15 +289,33 @@ class VLLMPocBackend:
             parsed.port,
             timeout=self._config.identity_timeout_s,
         )
+        deadline = time.monotonic() + self._config.identity_timeout_s
+        timer = None
+        response = None
         try:
+            connection.connect()
+            connection.auto_open = 0
+            timer = threading.Timer(
+                max(0.0, deadline - time.monotonic()),
+                _shutdown_socket,
+                args=(connection.sock,),
+            )
+            timer.start()
             connection.request("GET", "/v1/models", headers={"Accept": "application/json"})
             response = connection.getresponse()
             body = response.read(_MAX_HTTP_BODY_BYTES + 1)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("provider identity deadline exceeded")
         except (OSError, http.client.HTTPException) as exc:
             raise BackendError(
                 "provider_unavailable", "vllm_poc provider identity is unavailable", True
             ) from exc
         finally:
+            if timer is not None:
+                timer.cancel()
+                timer.join()
+            if response is not None:
+                response.close()
             connection.close()
 
         if response.status != 200 or len(body) > _MAX_HTTP_BODY_BYTES:
@@ -425,6 +453,8 @@ class VLLMPocBackend:
         parsed = urlsplit(self._config.endpoint)
         items: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=64)
         stop_reader = threading.Event()
+        transport_lock = threading.Lock()
+        transport_socket: socket.socket | None = None
         connection = http.client.HTTPConnection(
             parsed.hostname,
             parsed.port,
@@ -441,7 +471,16 @@ class VLLMPocBackend:
             return False
 
         def read_stream() -> None:
+            nonlocal transport_socket
+            response = None
             try:
+                connection.connect()
+                connection.auto_open = 0
+                with transport_lock:
+                    transport_socket = connection.sock
+                    if stop_reader.is_set():
+                        _shutdown_socket(transport_socket)
+                        return
                 body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
                 connection.request(
                     "POST",
@@ -492,6 +531,10 @@ class VLLMPocBackend:
                         return
             except (OSError, http.client.HTTPException, ValueError):
                 enqueue("error", "provider stream failed")
+            finally:
+                if response is not None:
+                    response.close()
+                connection.close()
 
         reader = threading.Thread(target=read_stream, name="vllm-poc-reader", daemon=True)
         reader.start()
@@ -519,9 +562,12 @@ class VLLMPocBackend:
                     raise BackendError("provider_protocol_error", str(value), False)
         finally:
             stop_reader.set()
-            _abort_connection(connection)
+            with transport_lock:
+                _shutdown_socket(transport_socket)
             reader.join(timeout=2.0)
             if reader.is_alive():
+                with self._lock:
+                    self._reader_unsettled = True
                 logger.error("vllm_poc provider reader did not stop after connection close")
 
 
@@ -601,7 +647,19 @@ def _parse_final_output(
     text: str, tools: list[Any], tool_choice: Any
 ) -> tuple[list[dict[str, Any]], bool]:
     requires_tool, named_tool, tools_disabled = _tool_choice_policy(tool_choice)
-    blocks = list(_TOOL_BLOCK_RE.finditer(text))
+    blocks: list[tuple[int, int, str]] = []
+    cursor = 0
+    while (start := text.find(_TOOL_START, cursor)) != -1:
+        body_start = start + len(_TOOL_START)
+        end = text.find(_TOOL_END, body_start)
+        if end == -1 or _TOOL_START in text[body_start:end]:
+            raise BackendError(
+                "tool_call_parse_failed",
+                "provider returned an incomplete or nested tool call",
+                False,
+            )
+        cursor = end + len(_TOOL_END)
+        blocks.append((start, cursor, text[body_start:end]))
     has_marker = any(marker in text for marker in _TOOL_CONTROL_MARKERS)
 
     if not blocks:
@@ -623,23 +681,22 @@ def _parse_final_output(
         raise BackendError(
             "tool_call_parse_failed", "provider emitted an unrequested tool call", False
         )
-    public_prefix = text[: blocks[0].start()]
+    public_prefix = text[: blocks[0][0]]
     if (
         (_has_partial_tool_marker(public_prefix) or _has_tool_control_syntax(public_prefix))
         or any(
-            text[blocks[index - 1].end() : blocks[index].start()].strip()
-            for index in range(1, len(blocks))
+            text[blocks[index - 1][1] : blocks[index][0]].strip() for index in range(1, len(blocks))
         )
-        or text[blocks[-1].end() :].strip()
+        or text[blocks[-1][1] :].strip()
     ):
         raise BackendError("tool_call_parse_failed", "provider mixed text with tool calls", False)
 
     requested_names = _requested_tool_names(tools)
     events: list[dict[str, Any]] = (
-        [{"kind": "output_text_delta", "delta": public_prefix}] if public_prefix.strip() else []
+        [{"kind": "output_text_delta", "delta": public_prefix}] if public_prefix else []
     )
     for index, block in enumerate(blocks):
-        name, arguments = _parse_tool_block(block.group(1))
+        name, arguments = _parse_tool_block(block[2])
         if name not in requested_names:
             raise BackendError(
                 "tool_call_parse_failed", "provider emitted an unrequested function", False
@@ -687,30 +744,46 @@ def _has_tool_control_syntax(text: str) -> bool:
 
 
 def _parse_tool_block(body: str) -> tuple[str, dict[str, Any]]:
-    function_match = _FUNCTION_RE.fullmatch(body)
-    if function_match is None:
+    body = body.strip()
+    name_end = body.find(">")
+    if not body.startswith("<function=") or not body.endswith("</function>") or name_end == -1:
         raise BackendError(
             "tool_call_parse_failed", "provider returned an invalid tool call", False
         )
-    name, parameter_body = function_match.groups()
+    name = body[len("<function=") : name_end]
+    if _NAME_RE.fullmatch(name) is None:
+        raise BackendError("tool_call_parse_failed", "provider returned an invalid function", False)
+    parameter_body = body[name_end + 1 : -len("</function>")]
     arguments: dict[str, Any] = {}
     cursor = 0
-    for match in _PARAMETER_RE.finditer(parameter_body):
-        if parameter_body[cursor : match.start()].strip():
+    while cursor < len(parameter_body):
+        if parameter_body[cursor].isspace():
+            cursor += 1
+            continue
+        name_end = parameter_body.find(">", cursor)
+        value_end = parameter_body.find("</parameter>", name_end + 1)
+        if (
+            not parameter_body.startswith("<parameter=", cursor)
+            or name_end == -1
+            or value_end == -1
+        ):
             raise BackendError(
                 "tool_call_parse_failed", "provider returned invalid tool arguments", False
             )
-        key, raw_value = match.groups()
+        key = parameter_body[cursor + len("<parameter=") : name_end]
+        raw_value = parameter_body[name_end + 1 : value_end]
+        if _NAME_RE.fullmatch(key) is None or any(
+            marker in raw_value for marker in _TOOL_CONTROL_MARKERS
+        ):
+            raise BackendError(
+                "tool_call_parse_failed", "provider returned ambiguous tool arguments", False
+            )
         if key in arguments:
             raise BackendError(
                 "tool_call_parse_failed", "provider returned duplicate tool arguments", False
             )
         arguments[key] = _parse_parameter_value(raw_value)
-        cursor = match.end()
-    if parameter_body[cursor:].strip():
-        raise BackendError(
-            "tool_call_parse_failed", "provider returned invalid tool arguments", False
-        )
+        cursor = value_end + len("</parameter>")
     return name, arguments
 
 
@@ -793,11 +866,9 @@ def _normalize_usage(raw_usage: Any, request: Any) -> dict[str, int] | None:
     }
 
 
-def _abort_connection(connection: http.client.HTTPConnection) -> None:
-    sock = connection.sock
+def _shutdown_socket(sock: socket.socket | None) -> None:
     if sock is not None:
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-    connection.close()
