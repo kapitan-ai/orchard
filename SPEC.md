@@ -3636,6 +3636,8 @@ message RuntimePrefixCacheStatus {
   string status_message = 14;
   uint64 session_started_unix_ms = 15;
   repeated string prefix_cache_fingerprints = 16;
+  uint32 checkpoint_uncertain_count = 17;
+  uint64 checkpoint_retained_bytes = 18;
 }
 
 message RuntimeModelPlacement {
@@ -3994,6 +3996,7 @@ Runtime prefix-cache observation semantics:
 * omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure
 * `RuntimePrefixCacheStatus.status_code` values in this slice are: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * `RuntimePrefixCacheStatus.enabled` SHALL represent worker configuration capability, not active cache availability; `enabled=false` is reserved for explicitly disabled cache configuration
+* `RuntimePrefixCacheStatus.checkpoint_uncertain_count` and `checkpoint_retained_bytes` apply only when `implementation = "strict_prefix"`: the count of failed checkpoint copies that stay charged until unload, and the measured bytes of retained checkpoints, which are distinct from the fixed slot charges in `total_bytes` and are not process memory. Other implementations report zero, and the controller SHALL ignore the fields for them
 * public prefix-cache telemetry SHALL NOT expose prompt text, prompt tokens, tenant identifiers, raw prompt fingerprints, raw token sequences, or raw prefix-cache fingerprint sets
 * `ExecuteInferenceRequest.cache_affinity_fingerprint` is an optional controller-derived opaque HMAC fingerprint. The controller SHALL populate it only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`; otherwise it SHALL be omitted or empty.
 * worker `WorkerPrefixCacheStatus.prefix_cache_fingerprints` and node-agent `RuntimePrefixCacheStatus.prefix_cache_fingerprints` SHALL carry only controller-derived `hmac-sha256:<64 lowercase hex>` values. Workers SHALL retain a bounded recent FIFO buffer of these values with default capacity 8 and implementation cap 64. The set is an approximation of recent request locality, not proof of current prefix-cache residency.
