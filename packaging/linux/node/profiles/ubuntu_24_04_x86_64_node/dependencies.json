@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profile": "ubuntu_24_04_x86_64_node",
+  "architecture": "amd64",
+  "host": {
+    "distribution": "ubuntu",
+    "release": "24.04",
+    "kernel": ">= 6.8 (Ubuntu 24.04 line)",
+    "libc": "glibc >= 2.39",
+    "init": "systemd >= 255",
+    "cgroup": "v2"
+  },
+  "commands": {
+    "stat": {"executable": "stat", "package": "coreutils", "implementation": "GNU"},
+    "timeout": {"executable": "timeout", "package": "coreutils", "implementation": "GNU"}
+  },
+  "packages": [
+    {"name": "libc6", "version": ">= 2.39", "reason": "bundled ERTS host ABI"},
+    {"name": "systemd", "version": ">= 255", "reason": "service and cgroup lifecycle"},
+    {"name": "util-linux", "version": ">= 2.39", "reason": "exclusive identity-root flock"},
+    {"name": "coreutils", "version": ">= 9.4", "reason": "GNU stat and bounded host inventory command supervision"},
+    {"name": "adduser", "version": ">= 3.137ubuntu1", "reason": "dedicated system identity"},
+    {"name": "libssl3t64", "version": ">= 3.0.13", "reason": "OTP crypto NIF"},
+    {"name": "libtinfo6", "version": ">= 6.4", "reason": "bundled ERTS terminal ABI"},
+    {"name": "zlib1g", "version": ">= 1:1.3.dfsg", "reason": "bundled ERTS compression ABI"},
+    {"name": "libstdc++6", "version": ">= 14", "reason": "bundled native runtime ABI"},
+    {"name": "libgcc-s1", "version": ">= 14", "reason": "bundled native runtime ABI"}
+  ],
+  "bundled": ["ERTS", "OTP applications", "Orchard Node Agent"],
+  "excluded": ["Erlang", "Elixir", "Controller", "Console", "database", "MLX", "CUDA", "ROCm", "vLLM"]
+}

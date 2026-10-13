@@ -41,6 +41,11 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
       send(self(), :unexpected_grant_retrieval)
       {:error, :beam_peer_grant_control_unavailable}
     end
+
+    def acknowledge_installed(identity, target, request, grant) do
+      send(self(), {:existing_grant_acknowledged, identity, target, request, grant})
+      :ok
+    end
   end
 
   defmodule CookieInstaller do
@@ -150,7 +155,7 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
     assert_received {:cookie_installed, ^grant, ^node_name}
   end
 
-  test "SPEC.md §7.5.0 restart reuses the exact owner-only grant without control delivery" do
+  test "KAP-82 restart reuses the exact owner-only grant and reconciles a lost acknowledgement" do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -207,6 +212,14 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
              )
 
     assert_received {:existing_grant_loaded, ^root, ^identity, ^node_name}
+
+    assert_received {:existing_grant_acknowledged, ^identity, "10.0.0.10:50072",
+                     %RetrieveBeamPeerGrantRequest{
+                       grant_id: ^grant_id,
+                       generation: 1,
+                       controller_id: ^controller_id
+                     }, ^grant}
+
     assert_received {:cookie_installed, ^grant, ^node_name}
     refute_received :unexpected_grant_retrieval
   end
@@ -245,7 +258,8 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
                node_beam_name: node_name,
                identity_loader: StateIdentityLoader,
                grant_store: StateGrantStore,
-               cookie_installer: StateCookieInstaller
+               cookie_installer: StateCookieInstaller,
+               retrieval: :forbid
              )
 
     assert :sys.get_state(pid) == %{

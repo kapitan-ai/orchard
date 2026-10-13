@@ -2,6 +2,7 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
   use ExUnit.Case, async: true
 
   alias Orchard.Cluster.V1.{
+    HostInventoryObservation,
     RuntimeHealth,
     RuntimeModelPlacement,
     RuntimeNodeMetadata,
@@ -18,6 +19,11 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
     target = Target.beam("550e8400-e29b-41d4-a716-446655440000", address: :node_one@localhost)
     model_ref = %RPCModelRef{model_id: "mlx-community/phi-3", version: "main"}
 
+    host_inventory = %HostInventoryObservation{
+      schema_version: 1,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY
+    }
+
     response = %StatusResponse{
       worker_state: :WORKER_STATE_IDLE,
       loaded_models: [model_ref],
@@ -31,6 +37,7 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
       worker_crash_counters: [
         %WorkerCrashCounter{model_id: model_ref.model_id, count: 3, counter_version: "epoch-1"}
       ],
+      host_inventory: host_inventory,
       supports_prompt_token_ids: true
     }
 
@@ -45,6 +52,7 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
     assert observation.aggregate_active_request_count == 1
     assert observation.aggregate_max_concurrency == 2
     assert observation.metadata.node_id == "node-1"
+    assert observation.host_inventory == host_inventory
     assert observation.supports_prompt_token_ids
 
     assert [%WorkerCrashCounter{model_id: "mlx-community/phi-3", count: 3}] =

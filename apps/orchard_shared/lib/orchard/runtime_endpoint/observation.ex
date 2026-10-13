@@ -8,6 +8,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
   defstruct endpoint_id: nil,
             target: nil,
             observed_at: nil,
+            agent_connection_incarnation: nil,
             availability: :unknown,
             worker_state: :unknown,
             aggregate_active_request_count: 0,
@@ -25,6 +26,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             runtime_memory_budgets: [],
             runtime_prefix_cache_statuses: [],
             worker_crash_counters: [],
+            host_inventory: nil,
             supports_prompt_token_ids: false
 
   @type availability :: :unknown | :available | :unavailable | :degraded | atom()
@@ -32,6 +34,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           endpoint_id: String.t() | nil,
           target: Target.t() | nil,
           observed_at: term(),
+          agent_connection_incarnation: String.t() | nil,
           availability: availability(),
           worker_state: term(),
           aggregate_active_request_count: non_neg_integer(),
@@ -49,6 +52,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           runtime_memory_budgets: [term()],
           runtime_prefix_cache_statuses: [term()],
           worker_crash_counters: [term()],
+          host_inventory: term() | nil,
           supports_prompt_token_ids: boolean()
         }
 
@@ -60,6 +64,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       endpoint_id: value(attrs, :endpoint_id),
       target: value(attrs, :target),
       observed_at: value(attrs, :observed_at),
+      agent_connection_incarnation: value(attrs, :agent_connection_incarnation),
       availability: value(attrs, :availability) || :unknown,
       worker_state: value(attrs, :worker_state) || :unknown,
       aggregate_active_request_count: aggregate_active_request_count(attrs),
@@ -73,6 +78,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       runtime_memory_budgets: list_value(attrs, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(attrs, :runtime_prefix_cache_statuses),
       worker_crash_counters: list_value(attrs, :worker_crash_counters),
+      host_inventory: value(attrs, :host_inventory),
       supports_prompt_token_ids: value(attrs, :supports_prompt_token_ids) == true
     }
   end

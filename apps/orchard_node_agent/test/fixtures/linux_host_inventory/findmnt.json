@@ -1,0 +1,5 @@
+{
+  "filesystems": [
+    {"target": "/", "fstype": "ext4", "size": 3170079068160, "avail": 2976488431616}
+  ]
+}

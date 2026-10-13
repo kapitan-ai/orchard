@@ -21,7 +21,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
   def finalize(root, prepared, response) do
     with {:ok, current} <- load_current(root),
          :ok <- ensure_same_prepared_identity(current, prepared),
-         :ok <- ensure_response_matches(current, response) do
+         :ok <- ensure_response_matches(current, response, []) do
       material =
         current
         |> Map.merge(%{
@@ -45,10 +45,104 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end
   end
 
-  @spec load_current(String.t()) :: {:ok, map()} | {:error, :not_found | atom()}
-  def load_current(root) do
+  @spec prepare_staged(String.t(), keyword()) :: {:ok, map()} | {:error, atom()}
+  def prepare_staged(root, opts \\ []) do
+    with {:ok, current} <- load_current(root),
+         true <- current.state == "registered",
+         {:error, :not_found} <- load_staged(root),
+         {:ok, generated} <- PKI.generate_csr(current.cluster_id, current.node_id) do
+      material =
+        Map.merge(generated, %{
+          generation_id: Ecto.UUID.generate(),
+          state: "prepared",
+          enrollment_id: current.enrollment_id,
+          cluster_id: current.cluster_id,
+          node_id: current.node_id,
+          controller_id: current.controller_id,
+          controller_uri_san: current.controller_uri_san,
+          runtime_trust_spki_sha256: current.runtime_trust_spki_sha256,
+          controller_certificate_identifier: nil,
+          controller_certificate_fingerprint: nil,
+          controller_certificate_pem: nil,
+          certificate_identifier: nil,
+          credential_generation_id: nil,
+          node_certificate_pem: nil,
+          runtime_ca_certificate_pem: nil
+        })
+
+      with {:ok, _published} <- publish_generation(root, material, :staged_initial, opts) do
+        load_staged(root)
+      end
+    else
+      {:ok, _staged} -> {:error, :node_identity_rotation_in_progress}
+      false -> {:error, :node_identity_storage_invalid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec finalize_staged(String.t(), map(), map(), keyword()) ::
+          {:ok, map()} | {:error, atom()}
+  def finalize_staged(root, prepared, response, opts \\ []) do
+    with {:ok, staged} <- load_staged(root, opts),
+         :ok <- ensure_same_prepared_identity(staged, prepared),
+         :ok <- ensure_response_matches(staged, response, opts),
+         {:ok, credential_generation_id} <-
+           Ecto.UUID.cast(response["credential_generation_id"]) do
+      material =
+        staged
+        |> Map.merge(%{
+          generation_id: Ecto.UUID.generate(),
+          state: "registered",
+          credential_generation_id: credential_generation_id,
+          certificate_identifier: response["certificate_identifier"],
+          controller_certificate_identifier: response["controller_certificate_identifier"],
+          controller_certificate_fingerprint: response["controller_certificate_fingerprint"],
+          controller_certificate_pem: response["controller_certificate_pem"],
+          node_certificate_pem: response["node_certificate_pem"],
+          runtime_ca_certificate_pem: response["runtime_ca_certificate_pem"]
+        })
+
+      with {:ok, _published} <- publish_generation(root, material, :staged_replace, opts) do
+        load_staged(root, opts)
+      end
+    else
+      _other -> {:error, :node_identity_binding_mismatch}
+    end
+  end
+
+  @spec load_staged(String.t(), keyword()) :: {:ok, map()} | {:error, :not_found | atom()}
+  def load_staged(root, opts \\ []) do
+    with :ok <- validate_private_directory(root),
+         {:ok, root_stat} <- File.stat(root) do
+      load_pointer(root, "staged", root_stat.uid, opts)
+    else
+      {:error, :enoent} -> {:error, :not_found}
+      _other -> {:error, :node_identity_storage_invalid}
+    end
+  rescue
+    _error -> {:error, :node_identity_storage_invalid}
+  catch
+    _kind, _reason -> {:error, :node_identity_storage_invalid}
+  end
+
+  @spec activate_staged(String.t(), keyword()) :: {:ok, map()} | {:error, atom()}
+  def activate_staged(root, opts \\ []) do
+    with {:ok, current} <- load_current(root, opts),
+         {:ok, staged} <- load_staged(root, opts),
+         true <- current.state == "registered" and staged.state == "registered",
+         true <- same_stable_identity?(current, staged),
+         :ok <- publish_pointer(root, "current", staged.generation_id, :replace),
+         :ok <- remove_pointer(root, "staged") do
+      {:ok, staged}
+    else
+      _other -> {:error, :node_identity_storage_invalid}
+    end
+  end
+
+  @spec load_current(String.t(), keyword()) :: {:ok, map()} | {:error, :not_found | atom()}
+  def load_current(root, opts \\ []) do
     case validate_private_directory(root) do
-      :ok -> load_initialized_root(root)
+      :ok -> load_initialized_root(root, opts)
       {:error, :enoent} -> {:error, :not_found}
       _reason -> {:error, :node_identity_storage_invalid}
     end
@@ -58,26 +152,26 @@ defmodule OrchardCLI.NodeIdentity.Store do
     _kind, _reason -> {:error, :node_identity_storage_invalid}
   end
 
-  defp load_initialized_root(root) do
+  defp load_initialized_root(root, opts) do
     case File.stat(root) do
-      {:ok, root_stat} -> load_current_pointer(root, root_stat.uid)
+      {:ok, root_stat} -> load_current_pointer(root, root_stat.uid, opts)
       _result -> {:error, :node_identity_storage_invalid}
     end
   end
 
-  defp load_current_pointer(root, expected_uid) do
-    case read_current(root, expected_uid) do
-      {:ok, generation_id} -> load_generation(root, generation_id, expected_uid)
+  defp load_current_pointer(root, expected_uid, opts) do
+    case read_pointer(root, "current", expected_uid) do
+      {:ok, generation_id} -> load_generation(root, generation_id, expected_uid, opts)
       {:error, :enoent} -> missing_current_result(root, expected_uid)
       _reason -> {:error, :node_identity_storage_invalid}
     end
   end
 
-  defp load_generation(root, generation_id, expected_uid) do
+  defp load_generation(root, generation_id, expected_uid, opts) do
     generation_root = Path.join([root, "generations", generation_id])
 
     with :ok <- validate_private_directory(generation_root, expected_uid),
-         {:ok, material} <- read_generation(generation_root, expected_uid),
+         {:ok, material} <- read_generation(generation_root, expected_uid, opts),
          true <- material.generation_id == generation_id do
       {:ok, material}
     else
@@ -135,7 +229,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end
   end
 
-  defp publish_generation(root, material, mode) do
+  defp publish_generation(root, material, mode, opts \\ []) do
     staging_root = Path.join(root, ".staging-#{material.generation_id}")
     generation_root = Path.join([root, "generations", material.generation_id])
 
@@ -146,7 +240,8 @@ defmodule OrchardCLI.NodeIdentity.Store do
          :ok <- sync_directory(staging_root),
          :ok <- File.rename(staging_root, generation_root),
          :ok <- sync_directory(Path.join(root, "generations")),
-         :ok <- publish_current(root, material.generation_id, mode) do
+         :ok <- publish_generation_pointer(root, material.generation_id, mode),
+         :ok <- after_pointer_publish(opts) do
       {:ok, material}
     else
       _reason -> cleanup_publish_failure(root, material)
@@ -155,6 +250,13 @@ defmodule OrchardCLI.NodeIdentity.Store do
     _error -> cleanup_publish_failure(root, material)
   catch
     _kind, _reason -> cleanup_publish_failure(root, material)
+  end
+
+  defp after_pointer_publish(opts) do
+    case Keyword.get(opts, :after_pointer_publish) do
+      callback when is_function(callback, 0) -> callback.()
+      _other -> :ok
+    end
   end
 
   defp prepare_root(root) do
@@ -186,6 +288,31 @@ defmodule OrchardCLI.NodeIdentity.Store do
       validate_private_file(Path.join(root, "current"), root_stat.uid)
     end
   end
+
+  defp validate_publish_mode(root, :staged_initial) do
+    case File.lstat(Path.join(root, "staged")) do
+      {:error, :enoent} -> :ok
+      _other -> {:error, :already_present}
+    end
+  end
+
+  defp validate_publish_mode(root, :staged_replace) do
+    with {:ok, root_stat} <- File.stat(root) do
+      validate_private_file(Path.join(root, "staged"), root_stat.uid)
+    end
+  end
+
+  defp publish_generation_pointer(root, generation_id, :initial),
+    do: publish_pointer(root, "current", generation_id, :initial)
+
+  defp publish_generation_pointer(root, generation_id, :replace),
+    do: publish_pointer(root, "current", generation_id, :replace)
+
+  defp publish_generation_pointer(root, generation_id, :staged_initial),
+    do: publish_pointer(root, "staged", generation_id, :initial)
+
+  defp publish_generation_pointer(root, generation_id, :staged_replace),
+    do: publish_pointer(root, "staged", generation_id, :replace)
 
   defp create_or_validate_private_directory(path, expected_uid \\ nil) do
     case File.lstat(path) do
@@ -234,7 +361,8 @@ defmodule OrchardCLI.NodeIdentity.Store do
         :runtime_trust_spki_sha256,
         :csr_fingerprint,
         :public_key_fingerprint,
-        :certificate_identifier
+        :certificate_identifier,
+        :credential_generation_id
       ])
       |> Jason.encode!()
 
@@ -263,12 +391,12 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end)
   end
 
-  defp publish_current(root, generation_id, :initial) do
-    temporary = Path.join(root, ".current-#{Ecto.UUID.generate()}")
-    current = Path.join(root, "current")
+  defp publish_pointer(root, name, generation_id, :initial) do
+    temporary = Path.join(root, ".#{name}-#{Ecto.UUID.generate()}")
+    pointer = Path.join(root, name)
 
     with :ok <- write_private_file(temporary, generation_id <> "\n"),
-         :ok <- File.ln(temporary, current),
+         :ok <- File.ln(temporary, pointer),
          :ok <- File.rm(temporary),
          :ok <- sync_directory(root) do
       :ok
@@ -279,12 +407,12 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end
   end
 
-  defp publish_current(root, generation_id, :replace) do
-    temporary = Path.join(root, ".current-#{Ecto.UUID.generate()}")
-    current = Path.join(root, "current")
+  defp publish_pointer(root, name, generation_id, :replace) do
+    temporary = Path.join(root, ".#{name}-#{Ecto.UUID.generate()}")
+    pointer = Path.join(root, name)
 
     with :ok <- write_private_file(temporary, generation_id <> "\n"),
-         :ok <- File.rename(temporary, current),
+         :ok <- File.rename(temporary, pointer),
          :ok <- sync_directory(root) do
       :ok
     else
@@ -321,18 +449,18 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end
   end
 
-  defp read_current(root, expected_uid) do
-    current = Path.join(root, "current")
+  defp read_pointer(root, name, expected_uid) do
+    pointer = Path.join(root, name)
 
-    with :ok <- validate_private_file(current, expected_uid),
-         {:ok, contents} <- File.read(current) do
+    with :ok <- validate_private_file(pointer, expected_uid),
+         {:ok, contents} <- File.read(pointer) do
       contents
       |> String.trim()
       |> Ecto.UUID.cast()
     end
   end
 
-  defp read_generation(root, expected_uid) do
+  defp read_generation(root, expected_uid, opts) do
     with {:ok, metadata_json} <- read_private_file(root, "metadata.json", expected_uid),
          {:ok, metadata} <- Jason.decode(metadata_json),
          {:ok, private_key_pem} <-
@@ -341,7 +469,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
          {:ok, certificate_fields} <- read_certificate_fields(root, metadata, expected_uid),
          material <-
            generation_material(metadata, private_key_pem, csr_pem, certificate_fields),
-         :ok <- validate_generation(material) do
+         :ok <- validate_generation(material, opts) do
       {:ok, material}
     end
   end
@@ -362,6 +490,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
       csr_fingerprint: metadata["csr_fingerprint"],
       public_key_fingerprint: metadata["public_key_fingerprint"],
       certificate_identifier: metadata["certificate_identifier"],
+      credential_generation_id: metadata["credential_generation_id"],
       private_key_pem: private_key_pem,
       csr_pem: csr_pem,
       controller_certificate_pem: certificate_fields.controller_certificate_pem,
@@ -370,7 +499,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
     }
   end
 
-  defp validate_generation(%{state: "prepared"} = material) do
+  defp validate_generation(%{state: "prepared"} = material, _opts) do
     with true <- is_nil(material.controller_certificate_identifier),
          true <- is_nil(material.controller_certificate_fingerprint),
          true <- is_nil(material.controller_certificate_pem),
@@ -383,32 +512,36 @@ defmodule OrchardCLI.NodeIdentity.Store do
     end
   end
 
-  defp validate_generation(%{state: "registered"} = material) do
-    identity = PKI.certificate_identity(material.enrollment_id, material.csr_fingerprint)
+  defp validate_generation(%{state: "registered"} = material, opts) do
+    authority_id = material.credential_generation_id || material.enrollment_id
+    identity = PKI.certificate_identity(authority_id, material.csr_fingerprint)
+
+    validation_attrs = %{
+      certificate_identifier: material.certificate_identifier,
+      certificate_serial: Integer.to_string(identity.serial),
+      cluster_id: material.cluster_id,
+      csr_fingerprint: material.csr_fingerprint,
+      enrollment_id: authority_id,
+      node_id: material.node_id,
+      node_certificate_pem: material.node_certificate_pem,
+      public_key_fingerprint: material.public_key_fingerprint,
+      runtime_ca_certificate_pem: material.runtime_ca_certificate_pem,
+      runtime_trust_spki_sha256: material.runtime_trust_spki_sha256
+    }
+
+    validation_attrs = maybe_put_now(validation_attrs, opts)
 
     with :ok <- validate_local_identity(material),
          :ok <- validate_controller_certificate(material),
          true <- material.certificate_identifier == identity.identifier,
-         :ok <-
-           PKI.validate_issued_identity(%{
-             certificate_identifier: material.certificate_identifier,
-             certificate_serial: Integer.to_string(identity.serial),
-             cluster_id: material.cluster_id,
-             csr_fingerprint: material.csr_fingerprint,
-             enrollment_id: material.enrollment_id,
-             node_id: material.node_id,
-             node_certificate_pem: material.node_certificate_pem,
-             public_key_fingerprint: material.public_key_fingerprint,
-             runtime_ca_certificate_pem: material.runtime_ca_certificate_pem,
-             runtime_trust_spki_sha256: material.runtime_trust_spki_sha256
-           }) do
+         :ok <- PKI.validate_issued_identity(validation_attrs) do
       :ok
     else
       _reason -> {:error, :node_identity_storage_invalid}
     end
   end
 
-  defp validate_generation(_material), do: {:error, :node_identity_storage_invalid}
+  defp validate_generation(_material, _opts), do: {:error, :node_identity_storage_invalid}
 
   defp validate_controller_certificate(%{
          controller_certificate_identifier: nil,
@@ -544,9 +677,9 @@ defmodule OrchardCLI.NodeIdentity.Store do
     if valid, do: :ok, else: {:error, :node_identity_binding_mismatch}
   end
 
-  defp ensure_response_matches(current, response) do
+  defp ensure_response_matches(current, response, opts) do
     if response_bindings_match?(current, response) and
-         response_certificate_valid?(current, response) do
+         response_certificate_valid?(current, response, opts) do
       :ok
     else
       {:error, :node_identity_binding_mismatch}
@@ -579,7 +712,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
     |> Enum.all?(&is_binary/1)
   end
 
-  defp response_certificate_valid?(current, response) do
+  defp response_certificate_valid?(current, response, opts) do
     with {:ok, controller_certificate} <-
            CertificateIdentity.from_pem(response["controller_certificate_pem"]),
          true <-
@@ -594,21 +727,66 @@ defmodule OrchardCLI.NodeIdentity.Store do
              response["controller_certificate_pem"],
              response["runtime_ca_certificate_pem"]
            ) do
-      PKI.validate_issued_identity(%{
+      attrs = %{
         certificate_identifier: response["certificate_identifier"],
         certificate_serial: response["certificate_serial"],
         cluster_id: current.cluster_id,
         csr_fingerprint: current.csr_fingerprint,
-        enrollment_id: current.enrollment_id,
+        enrollment_id: response["credential_generation_id"] || current.enrollment_id,
         node_id: current.node_id,
         node_certificate_pem: response["node_certificate_pem"],
         public_key_fingerprint: current.public_key_fingerprint,
         runtime_ca_certificate_pem: response["runtime_ca_certificate_pem"],
         runtime_trust_spki_sha256: current.runtime_trust_spki_sha256
-      }) == :ok
+      }
+
+      attrs = maybe_put_now(attrs, opts)
+
+      PKI.validate_issued_identity(attrs) == :ok
     else
       _other -> false
     end
+  end
+
+  defp load_pointer(root, name, expected_uid, opts) do
+    case read_pointer(root, name, expected_uid) do
+      {:ok, generation_id} -> load_generation(root, generation_id, expected_uid, opts)
+      {:error, :enoent} -> {:error, :not_found}
+      _other -> {:error, :node_identity_storage_invalid}
+    end
+  end
+
+  defp maybe_put_now(attrs, opts) do
+    case Keyword.get(opts, :now) do
+      %DateTime{} = now -> Map.put(attrs, :now, now)
+      _other -> attrs
+    end
+  end
+
+  defp remove_pointer(root, name) do
+    path = Path.join(root, name)
+
+    with {:ok, root_stat} <- File.stat(root),
+         :ok <- validate_private_file(path, root_stat.uid),
+         :ok <- File.rm(path),
+         :ok <- sync_directory(root) do
+      :ok
+    else
+      _other -> {:error, :node_identity_storage_failed}
+    end
+  end
+
+  defp same_stable_identity?(left, right) do
+    fields = [
+      :enrollment_id,
+      :cluster_id,
+      :node_id,
+      :controller_id,
+      :controller_uri_san,
+      :runtime_trust_spki_sha256
+    ]
+
+    Map.take(left, fields) == Map.take(right, fields)
   end
 
   defp cleanup_publish_failure(root, material) do
@@ -616,7 +794,8 @@ defmodule OrchardCLI.NodeIdentity.Store do
     |> Path.join(".staging-#{material.generation_id}")
     |> File.rm_rf()
 
-    unless current_points_to_generation?(root, material.generation_id) do
+    unless pointer_references_generation?(root, "current", material.generation_id) or
+             pointer_references_generation?(root, "staged", material.generation_id) do
       [root, "generations", material.generation_id]
       |> Path.join()
       |> File.rm_rf()
@@ -625,8 +804,8 @@ defmodule OrchardCLI.NodeIdentity.Store do
     {:error, :node_identity_storage_failed}
   end
 
-  defp current_points_to_generation?(root, generation_id) do
-    case File.read(Path.join(root, "current")) do
+  defp pointer_references_generation?(root, name, generation_id) do
+    case File.read(Path.join(root, name)) do
       {:ok, contents} -> String.trim(contents) == generation_id
       _result -> false
     end

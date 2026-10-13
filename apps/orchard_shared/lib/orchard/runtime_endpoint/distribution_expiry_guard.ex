@@ -5,9 +5,13 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
 
   use GenServer
 
-  alias Orchard.RuntimeEndpoint.{BeamNodeName, DistributionLaunch}
+  alias Orchard.RuntimeEndpoint.{
+    BeamNodeName,
+    BeamPeerConnectionLock,
+    DistributionLaunch,
+    RevokedCookie
+  }
 
-  @expired_cookie :orchard_expired_peer_grant
   @max_timer_ms :timer.hours(24)
   @shutdown_grace_ms 1_000
 
@@ -34,6 +38,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
         hard_stop: Keyword.get(opts, :hard_stop, &hard_stop/0),
         now: Keyword.get(opts, :now, &DateTime.utc_now/0),
         peer: peer,
+        revoked_cookie: Keyword.get_lazy(opts, :revoked_cookie, &RevokedCookie.value/0),
         shutdown_grace_ms: Keyword.get(opts, :shutdown_grace_ms, @shutdown_grace_ms),
         stop_distribution: Keyword.get(opts, :stop_distribution, &Node.stop/0)
       }
@@ -61,22 +66,26 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
   end
 
   defp expire_distribution(state) do
-    cookie_result = safe_call(state.cookie_setter, [state.peer, @expired_cookie])
-    _disconnect_result = safe_call(state.disconnect, [state.peer])
-    stop_result = safe_call(state.stop_distribution, [])
+    watchdog = start_halt_watchdog(state.hard_stop, state.shutdown_grace_ms)
+
+    {cookie_result, stop_result} =
+      BeamPeerConnectionLock.transact(state.peer, fn ->
+        cookie_result = safe_call(state.cookie_setter, [state.peer, state.revoked_cookie])
+        _disconnect_result = safe_call(state.disconnect, [state.peer])
+        stop_result = safe_call(state.stop_distribution, [])
+        {cookie_result, stop_result}
+      end)
+
+    if cookie_result == true and stop_result == :ok do
+      cancel_halt_watchdog(watchdog)
+    end
+
     finish_expiry(cookie_result, stop_result, state)
   end
 
   defp finish_expiry(true, :ok, state), do: {:noreply, %{state | expired?: true}}
 
   defp finish_expiry(_cookie_result, _stop_result, state) do
-    watchdog_result =
-      safe_call(&start_halt_watchdog/2, [state.hard_stop, state.shutdown_grace_ms])
-
-    if watchdog_result != :ok do
-      _hard_stop_result = safe_call(state.hard_stop, [])
-    end
-
     _fail_closed_result = safe_call(state.fail_closed, [])
     {:noreply, %{state | expired?: true}}
   end
@@ -121,12 +130,17 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
   end
 
   defp start_halt_watchdog(hard_stop, shutdown_grace_ms) do
-    {:ok, _pid} =
+    {:ok, pid} =
       Task.start(fn ->
         Process.sleep(shutdown_grace_ms)
         safe_call(hard_stop, [])
       end)
 
+    pid
+  end
+
+  defp cancel_halt_watchdog(pid) when is_pid(pid) do
+    Process.exit(pid, :kill)
     :ok
   end
 

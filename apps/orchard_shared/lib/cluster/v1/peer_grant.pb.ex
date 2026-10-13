@@ -55,6 +55,35 @@ defmodule Orchard.Cluster.V1.RetrieveBeamPeerGrantResponse do
   field(:secret_hash, 20, type: :bytes, json_name: "secretHash")
 end
 
+defmodule Orchard.Cluster.V1.AcknowledgeBeamPeerGrantRequest do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.AcknowledgeBeamPeerGrantRequest",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:grant_id, 1, type: :string, json_name: "grantId")
+  field(:generation, 2, type: :uint64)
+  field(:controller_id, 3, type: :string, json_name: "controllerId")
+  field(:installation_id, 4, type: :string, json_name: "installationId")
+  field(:secret_hash, 5, type: :bytes, json_name: "secretHash")
+  field(:local_identity_generation_id, 6, type: :string, json_name: "localIdentityGenerationId")
+end
+
+defmodule Orchard.Cluster.V1.AcknowledgeBeamPeerGrantResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.AcknowledgeBeamPeerGrantResponse",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:grant_id, 1, type: :string, json_name: "grantId")
+  field(:generation, 2, type: :uint64)
+  field(:accepted, 3, type: :bool)
+end
+
 defmodule Orchard.Cluster.V1.ControllerPeerGrantService.Service do
   @moduledoc false
 
@@ -66,6 +95,12 @@ defmodule Orchard.Cluster.V1.ControllerPeerGrantService.Service do
     :RetrieveBeamPeerGrant,
     Orchard.Cluster.V1.RetrieveBeamPeerGrantRequest,
     Orchard.Cluster.V1.RetrieveBeamPeerGrantResponse
+  )
+
+  rpc(
+    :AcknowledgeBeamPeerGrant,
+    Orchard.Cluster.V1.AcknowledgeBeamPeerGrantRequest,
+    Orchard.Cluster.V1.AcknowledgeBeamPeerGrantResponse
   )
 end
 

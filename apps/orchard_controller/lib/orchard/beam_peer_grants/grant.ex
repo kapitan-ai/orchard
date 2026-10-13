@@ -43,11 +43,13 @@ defmodule Orchard.BeamPeerGrants.Grant do
     field(:cutover_at, :utc_datetime_usec)
     field(:expires_at, :utc_datetime_usec)
     field(:delivery_evidence, :map, default: %{})
+    field(:node_staging_evidence, :map, default: %{})
     field(:activation_evidence, :map, default: %{})
     field(:supersession_evidence, :map, default: %{})
     field(:failure_evidence, :map, default: %{})
     field(:revocation_evidence, :map, default: %{})
     field(:delivered_at, :utc_datetime_usec)
+    field(:node_staged_at, :utc_datetime_usec)
     field(:activated_at, :utc_datetime_usec)
     field(:superseded_at, :utc_datetime_usec)
     field(:failed_at, :utc_datetime_usec)
@@ -108,11 +110,13 @@ defmodule Orchard.BeamPeerGrants.Grant do
     [
       :state,
       :delivery_evidence,
+      :node_staging_evidence,
       :activation_evidence,
       :supersession_evidence,
       :failure_evidence,
       :revocation_evidence,
       :delivered_at,
+      :node_staged_at,
       :activated_at,
       :superseded_at,
       :failed_at,
@@ -128,6 +132,7 @@ defmodule Orchard.BeamPeerGrants.Grant do
     [
       :state,
       :delivery_evidence,
+      :node_staging_evidence,
       :activation_evidence,
       :supersession_evidence,
       :failure_evidence,

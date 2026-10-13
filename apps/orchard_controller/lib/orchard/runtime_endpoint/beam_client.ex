@@ -13,12 +13,29 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   alias Orchard.BeamPeerGrants
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{BeamConfig, Operation, Target}
 
-  defstruct [:authenticated_peer, :node, :target, :server_module]
+  alias Orchard.RuntimeEndpoint.{
+    BeamConfig,
+    BeamPeerConnectionLock,
+    ConnectionIncarnation,
+    Operation,
+    RevokedCookie,
+    Target
+  }
+
+  defstruct [
+    :authenticated_peer,
+    :connection_id,
+    :connection_incarnation_registry,
+    :node,
+    :target,
+    :server_module
+  ]
 
   @type t :: %__MODULE__{
           authenticated_peer: Orchard.RuntimeEndpoint.AuthenticatedPeer.t() | nil,
+          connection_id: ConnectionIncarnation.connection_id() | nil,
+          connection_incarnation_registry: GenServer.server() | nil,
           node: node(),
           target: Target.t(),
           server_module: module()
@@ -26,7 +43,6 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   @default_timeout 5_000
   @default_server_module Orchard.Node.RuntimeEndpoint
-  @expired_cookie :orchard_expired_peer_grant
 
   @impl true
   def connect(target), do: connect(target, [])
@@ -51,10 +67,26 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
     with {:ok, config} <- validate_beam_enabled(),
          :ok <- validate_production_target_provenance(target),
          {:ok, authorization} <- BeamPeerGrants.authorize_target(target, opts),
-         :ok <- validate_beam_target(config, target, opts),
-         {:ok, node} <- target_node(target, authorization, opts) do
-      establish_connection(node, target, authorization, opts)
+         :ok <- validate_beam_target(config, target, opts) do
+      connect_with_peer_lock(target, authorization, opts)
     end
+  end
+
+  defp connect_with_peer_lock(target, nil, opts) do
+    with {:ok, node} <- target_node(target, nil, opts) do
+      establish_connection(node, target, nil, opts)
+    end
+  end
+
+  defp connect_with_peer_lock(target, %{node_name: node_name}, opts) do
+    peer = String.to_atom(node_name)
+
+    BeamPeerConnectionLock.transact(peer, fn ->
+      with {:ok, authorization} <- BeamPeerGrants.authorize_target(target, opts),
+           {:ok, ^peer} <- target_node(target, authorization, opts) do
+        establish_connection(peer, target, authorization, opts)
+      end
+    end)
   end
 
   defp establish_connection(node, target, authorization, opts) do
@@ -93,22 +125,106 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
   end
 
   def status(
-        %__MODULE__{authenticated_peer: peer, target: target} = connection,
+        %__MODULE__{
+          authenticated_peer: peer,
+          connection_id: connection_id,
+          node: peer_node,
+          target: target
+        } = connection,
         opts
       ) do
-    with {:ok, response} <- receive_status_observation(connection, target, opts),
+    registry = Keyword.get(opts, :connection_incarnation_registry, ConnectionIncarnation)
+
+    with connection_id when is_integer(connection_id) <- connection_id,
+         {:ok, response} <- receive_authenticated_status(connection, target, opts),
+         incarnation when is_binary(incarnation) <-
+           Map.get(response, :agent_connection_incarnation),
+         :ok <- ConnectionIncarnation.bind(peer_node, connection_id, incarnation, registry),
+         :ok <- run_before_authenticated_observation_commit(opts),
          {:ok, _node} <-
-           Nodes.observe_authenticated_status(target, response, response.observed_at, peer) do
+           ConnectionIncarnation.fence(
+             peer_node,
+             connection_id,
+             incarnation,
+             fn ->
+               Nodes.observe_authenticated_status(
+                 target,
+                 response,
+                 response.observed_at,
+                 peer,
+                 Keyword.merge(opts,
+                   authenticated_connection_fence_held: true,
+                   before_authenticated_observation_commit: nil,
+                   connection_incarnation_registry: registry,
+                   connection_incarnation_evidence: %{
+                     connection_id: connection_id,
+                     incarnation: incarnation,
+                     peer_node: peer_node
+                   }
+                 )
+               )
+             end,
+             registry
+           )
+           |> normalize_connection_fence_result(opts) do
       {:ok, response}
     else
-      :noop -> {:error, :beam_peer_observation_rejected}
-      {:error, reason} -> {:error, reason}
+      :noop ->
+        {:error, :beam_peer_observation_rejected}
+
+      {:error, reason} ->
+        reject_authenticated_connection(peer_node, connection_id, registry, reason, opts)
+
+      _other ->
+        reject_authenticated_connection(
+          peer_node,
+          connection_id,
+          registry,
+          :beam_connection_incarnation_invalid,
+          opts
+        )
     end
   end
+
+  defp reject_authenticated_connection(_peer_node, _connection_id, _registry, reason, _opts),
+    do: {:error, reason}
+
+  defp revoked_cookie(opts) do
+    case Keyword.fetch(opts, :revoked_cookie) do
+      {:ok, cookie} when is_atom(cookie) -> cookie
+      _other -> RevokedCookie.value()
+    end
+  end
+
+  defp run_before_authenticated_observation_commit(opts) do
+    case Keyword.get(opts, :before_authenticated_observation_commit) do
+      callback when is_function(callback, 0) -> callback.()
+      _other -> :ok
+    end
+  end
+
+  defp normalize_connection_fence_result(
+         {:error, :connection_incarnation_not_current},
+         opts
+       ) do
+    if is_function(Keyword.get(opts, :before_authenticated_observation_commit), 0),
+      do: {:error, :beam_peer_observation_rejected},
+      else: {:error, :connection_incarnation_not_current}
+  end
+
+  defp normalize_connection_fence_result(result, _opts), do: result
 
   defp receive_status_observation(connection, target, opts) do
     with {:ok, response} when is_map(response) <-
            rpc(connection, :status, [target, opts], opts) do
+      observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      {:ok, Map.put(response, :observed_at, observed_at)}
+    end
+  end
+
+  defp receive_authenticated_status(connection, target, opts) do
+    with {:ok, response} when is_map(response) <-
+           rpc(connection, :authenticated_status, [target, node(), opts], opts) do
       observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
       {:ok, Map.put(response, :observed_at, observed_at)}
     end
@@ -269,26 +385,40 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
   end
 
   defp finish_connect(node, target, authorization, opts) do
-    case BeamPeerGrants.ensure_authorization_current(authorization, opts) do
-      :ok ->
+    registry = Keyword.get(opts, :connection_incarnation_registry, ConnectionIncarnation)
+
+    case {BeamPeerGrants.ensure_authorization_current(authorization, opts),
+          connection_id(node, authorization, registry)} do
+      {:ok, {:ok, connection_id}} ->
         {:ok,
          %__MODULE__{
            authenticated_peer: authenticated_peer(authorization),
+           connection_id: connection_id,
+           connection_incarnation_registry: registry,
            node: node,
            target: target,
            server_module: server_module(target)
          }}
 
-      {:error, _reason} = error ->
+      {{:error, _reason} = error, _connection_id} ->
+        invalidate_peer(node, opts)
+        error
+
+      {_authorization, {:error, _reason} = error} ->
         invalidate_peer(node, opts)
         error
     end
   end
 
+  defp connection_id(_node, nil, _registry), do: {:ok, nil}
+
+  defp connection_id(node, _authorization, registry),
+    do: ConnectionIncarnation.connection_id(node, registry)
+
   defp invalidate_peer(node, opts) do
     cookie_setter = Keyword.get(opts, :cookie_setter, &Node.set_cookie/2)
     disconnect = Keyword.get(opts, :disconnect, &Node.disconnect/1)
-    _cookie_result = safe_transport_call(cookie_setter, [node, @expired_cookie])
+    _cookie_result = safe_transport_call(cookie_setter, [node, revoked_cookie(opts)])
     _disconnect_result = safe_transport_call(disconnect, [node])
     :ok
   end

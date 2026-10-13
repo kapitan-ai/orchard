@@ -3,7 +3,11 @@ defmodule Orchard.Node.BeamPeerGrantClient do
   Retrieves and installs one certificate-authenticated BEAM Peer Grant.
   """
 
-  alias Orchard.Cluster.V1.RetrieveBeamPeerGrantResponse
+  alias Orchard.Cluster.V1.{
+    AcknowledgeBeamPeerGrantRequest,
+    RetrieveBeamPeerGrantResponse
+  }
+
   alias Orchard.Node.BeamPeerGrantStore
   alias Orchard.TransportTLS.PeerVerifier
 
@@ -23,12 +27,34 @@ defmodule Orchard.Node.BeamPeerGrantClient do
     with {:ok, credential} <- client_credential(identity),
          {:ok, response} <- retrieve(transport, target, credential, request),
          true <- response_matches_request?(response, request),
-         true <- response.node_beam_name == node_beam_name do
-      install_response(root, identity, node_beam_name, response)
+         true <- response.node_beam_name == node_beam_name,
+         {:ok, stored} <- install_response(root, identity, node_beam_name, response),
+         :ok <- acknowledge(transport, target, credential, request, stored, identity) do
+      {:ok, stored}
     else
       false -> {:error, :beam_peer_credential_mismatch}
       {:error, reason} -> {:error, reason}
       _other -> {:error, :beam_peer_grant_control_unavailable}
+    end
+  end
+
+  @doc """
+  Reconciles Controller acknowledgement after a matching grant was already published locally.
+  """
+  @spec acknowledge_installed(
+          map(),
+          String.t(),
+          struct(),
+          BeamPeerGrantStore.stored_grant(),
+          keyword()
+        ) ::
+          :ok | {:error, atom()}
+  def acknowledge_installed(identity, target, request, stored, opts \\ [])
+      when is_map(identity) and is_binary(target) and is_map(stored) and is_list(opts) do
+    transport = Keyword.get(opts, :transport, __MODULE__.GRPCTransport)
+
+    with {:ok, credential} <- client_credential(identity) do
+      acknowledge(transport, target, credential, request, stored, identity)
     end
   end
 
@@ -56,8 +82,36 @@ defmodule Orchard.Node.BeamPeerGrantClient do
       )
       when is_binary(root) and is_map(identity) and is_binary(node_beam_name) do
     with {:ok, delivery} <- normalize_response(response) do
-      BeamPeerGrantStore.install(root, identity, delivery, node_beam_name)
+      if response.generation == 1 do
+        BeamPeerGrantStore.install(root, identity, delivery, node_beam_name)
+      else
+        BeamPeerGrantStore.stage(root, identity, delivery, node_beam_name)
+      end
     end
+  end
+
+  defp acknowledge(transport, target, credential, request, stored, identity) do
+    acknowledgement = %AcknowledgeBeamPeerGrantRequest{
+      grant_id: request.grant_id,
+      generation: request.generation,
+      controller_id: request.controller_id,
+      installation_id: stored.installation_id,
+      secret_hash: stored.secret_hash,
+      local_identity_generation_id: value(identity, :generation_id)
+    }
+
+    case transport.acknowledge(target, credential, acknowledgement) do
+      {:ok, %{accepted: true, grant_id: grant_id, generation: generation}}
+      when grant_id == request.grant_id and generation == request.generation ->
+        :ok
+
+      _other ->
+        {:error, :beam_peer_grant_staging_acknowledgement_unavailable}
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_staging_acknowledgement_unavailable}
+  catch
+    _kind, _reason -> {:error, :beam_peer_grant_staging_acknowledgement_unavailable}
   end
 
   defp normalize_response(response) do
@@ -161,10 +215,49 @@ defmodule Orchard.Node.BeamPeerGrantClient.GRPCTransport do
     end
   end
 
+  @spec acknowledge(String.t(), Orchard.GRPCTypes.credential(), struct(), keyword()) ::
+          {:ok, Orchard.Cluster.V1.AcknowledgeBeamPeerGrantResponse.t()} | {:error, atom()}
+  def acknowledge(target, credential, request, opts \\ []) do
+    connector = Keyword.get(opts, :connector, GRPC.Stub)
+    service_stub = Keyword.get(opts, :service_stub, Stub)
+    connect_timeout_ms = timeout(opts, :connect_timeout_ms, @default_connect_timeout_ms)
+    rpc_timeout_ms = timeout(opts, :rpc_timeout_ms, @default_rpc_timeout_ms)
+
+    connect_options = [
+      cred: credential,
+      adapter_opts: [transport_opts: [timeout: connect_timeout_ms]]
+    ]
+
+    case connector.connect(target, connect_options) do
+      {:ok, channel} ->
+        acknowledge_connected(channel, request, connector, service_stub, rpc_timeout_ms)
+
+      {:error, _reason} ->
+        {:error, :beam_peer_grant_control_unavailable}
+    end
+  end
+
   defp retrieve_connected(channel, request, connector, service_stub, rpc_timeout_ms) do
     result = safe_retrieve(service_stub, channel, request, rpc_timeout_ms)
     safe_disconnect(connector, channel)
     result
+  end
+
+  defp acknowledge_connected(channel, request, connector, service_stub, rpc_timeout_ms) do
+    result = safe_acknowledge(service_stub, channel, request, rpc_timeout_ms)
+    safe_disconnect(connector, channel)
+    result
+  end
+
+  defp safe_acknowledge(service_stub, channel, request, rpc_timeout_ms) do
+    case service_stub.acknowledge_beam_peer_grant(channel, request, timeout: rpc_timeout_ms) do
+      {:ok, response} -> {:ok, response}
+      {:error, error} -> {:error, control_error(error)}
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_control_unavailable}
+  catch
+    _kind, _reason -> {:error, :beam_peer_grant_control_unavailable}
   end
 
   defp safe_retrieve(service_stub, channel, request, rpc_timeout_ms) do

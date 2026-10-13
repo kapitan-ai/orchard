@@ -217,6 +217,7 @@ defmodule OrchardNodeAgentApplicationTest do
              {Orchard.Node.BeamPeerGrantStartupVerifier, verifier_opts},
              {Orchard.RuntimeEndpoint.DistributionExpiryGuard, expiry_opts},
              {Orchard.Node.BeamPeerGrantBootstrap, bootstrap_opts},
+             {Orchard.RuntimeEndpoint.ConnectionIncarnation, role: :node_agent},
              Orchard.Node.Supervisor
            ] = Orchard.NodeAgent.Application.child_specs()
 
@@ -348,6 +349,7 @@ defmodule OrchardNodeAgentApplicationTest do
              {BootstrapStartupVerifier, verifier_opts},
              {BootstrapExpiryGuard, expiry_opts},
              {Orchard.Node.BeamPeerGrantBootstrap, bootstrap_opts},
+             {Orchard.RuntimeEndpoint.ConnectionIncarnation, role: :node_agent},
              Orchard.Node.Supervisor
            ] = Orchard.NodeAgent.Application.child_specs()
 

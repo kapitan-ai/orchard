@@ -59,6 +59,11 @@ while IFS= read -r path; do
       conformance=true
       packaging=true
       ;;
+    packaging/linux/*|scripts/build-linux-node-package.sh|scripts/test-linux-node-package.sh)
+      portable=true
+      conformance=true
+      packaging=true
+      ;;
     packaging/*|scripts/build-app.sh|scripts/build-dmg.sh|scripts/build-payload.sh|scripts/sign-app.sh|scripts/test-app-*|scripts/test-build-app.sh|scripts/test-build-dmg.sh|scripts/test-build-payload.sh|scripts/test-payload-*)
       macos=true
       packaging=true

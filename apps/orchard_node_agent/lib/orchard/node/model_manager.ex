@@ -29,6 +29,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.Cluster.V1.WorkerCrashCounter
   alias Orchard.Node
+  alias Orchard.Node.HostInventory
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
   alias Orchard.Node.ModelLoadFailure
@@ -1451,7 +1452,8 @@ defmodule Orchard.Node.ModelManager do
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
       worker_crash_counters: worker_crash_counters(state),
       supports_prompt_token_ids: supports_prompt_token_ids,
-      runtime_model_placements: runtime_model_placements(state, worker_request_limits)
+      runtime_model_placements: runtime_model_placements(state, worker_request_limits),
+      host_inventory: HostInventory.current()
     }
 
     {response, put_worker_request_limits(state, worker_request_limits)}

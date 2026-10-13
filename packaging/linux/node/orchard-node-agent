@@ -1,0 +1,98 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'orchard-node-agent: ERROR: %s\n' "$1" >&2
+    exit "${2:-78}"
+}
+
+root_prefix=""
+if [ "${ORCHARD_LINUX_RELOCATED_TEST:-0}" = "1" ]; then
+    root_prefix=${ORCHARD_LINUX_ROOT:-}
+    config_uid=$(id -u)
+    config_gid=$(id -g)
+elif [ -n "${ORCHARD_LINUX_ROOT:-}" ]; then
+    fail "ORCHARD_LINUX_ROOT is restricted to relocated lifecycle tests"
+else
+    config_uid=0
+    config_gid=$(id -g)
+fi
+unset ORCHARD_LINUX_ROOT ORCHARD_LINUX_RELOCATED_TEST
+
+install_root="$root_prefix/opt/orchard/node"
+config_root="$root_prefix/etc/orchard/node"
+state_root="$root_prefix/var/lib/orchard/node"
+log_root="$root_prefix/var/log/orchard/node"
+runtime_root="$root_prefix/run/orchard-node"
+env_file="$config_root/node-agent.env"
+identity_root="$state_root/identity"
+lock_file="$identity_root/agent.lock"
+profile_file="$install_root/share/platform-profile"
+
+[ -f "$profile_file" ] || fail "platform profile is missing: $profile_file"
+profile=$(cat "$profile_file")
+case "$profile" in
+    ubuntu_24_04_x86_64_node)
+        stat_command=stat
+        coreutils_prefix=""
+        ;;
+    ubuntu_26_04_x86_64_node)
+        stat_command=gnustat
+        coreutils_prefix=gnu
+        ;;
+    *) fail "unsupported platform profile: $profile" ;;
+esac
+
+check_owner_mode() {
+    path=$1
+    expected_uid=$2
+    expected_gid=$3
+    max_mode=$4
+    metadata=$($stat_command -Lc '%u:%g:%a' "$path" 2>/dev/null) || fail "cannot inspect $path"
+    actual_uid=${metadata%%:*}
+    remainder=${metadata#*:}
+    actual_gid=${remainder%%:*}
+    actual_mode=${remainder#*:}
+    [ "$actual_uid" = "$expected_uid" ] || fail "$path has owner uid=$actual_uid, expected $expected_uid"
+    [ "$actual_gid" = "$expected_gid" ] || fail "$path has group gid=$actual_gid, expected $expected_gid"
+    permissions=$((0$actual_mode))
+    maximum=$((0$max_mode))
+    [ $((permissions & ~maximum)) -eq 0 ] || fail "$path mode=$actual_mode exceeds $max_mode"
+}
+
+if [ -f "$env_file" ]; then
+    check_owner_mode "$config_root" "$config_uid" "$config_gid" 750
+    check_owner_mode "$env_file" "$config_uid" "$config_gid" 640
+    set -a
+    . "$env_file"
+    set +a
+else
+    fail "required root-owned configuration is missing: $env_file"
+fi
+
+current_uid=$(id -u)
+current_gid=$(id -g)
+[ -d "$identity_root" ] || fail "identity root is missing: $identity_root"
+check_owner_mode "$identity_root" "$current_uid" "$current_gid" 700
+
+umask 077
+: >> "$lock_file"
+chmod 600 "$lock_file"
+check_owner_mode "$lock_file" "$current_uid" "$current_gid" 600
+exec 9>"$lock_file"
+flock -n 9 || fail "identity root is already owned by another Node Agent" 75
+
+export ORCHARD_SUPPORT_ROOT="$state_root"
+export ORCHARD_NODE_IDENTITY_ROOT="$identity_root"
+export ORCHARD_NODE_IDENTITY_PATH="$identity_root/node-id"
+export ORCHARD_MODELS_ROOT="$state_root/models"
+export ORCHARD_WORKER_SOCKET_DIR="$runtime_root/worker-sockets"
+export ORCHARD_WORKER_LOG_DIR="$log_root/workers"
+export RELEASE_TMP="$runtime_root"
+export ORCHARD_LINUX_COREUTILS_PREFIX="$coreutils_prefix"
+RELEASE_DISTRIBUTION=none
+export RELEASE_DISTRIBUTION
+unset RELEASE_NODE RELEASE_COOKIE RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS
+unset ERL_EPMD_PORT ERL_AFLAGS ERL_FLAGS ERL_ZFLAGS ELIXIR_ERL_OPTIONS
+
+exec "$install_root/releases/orchard_node_agent/bin/orchard_node_agent" "$@"

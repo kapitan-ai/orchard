@@ -10,7 +10,13 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
   require Logger
 
   alias Orchard.BeamPeerGrants
-  alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
+
+  alias Orchard.Cluster.V1.{
+    AcknowledgeBeamPeerGrantRequest,
+    AcknowledgeBeamPeerGrantResponse,
+    RetrieveBeamPeerGrantRequest,
+    RetrieveBeamPeerGrantResponse
+  }
 
   @opaque_rejection "permission_denied"
 
@@ -31,6 +37,29 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
     end
   end
 
+  @spec acknowledge_beam_peer_grant(
+          AcknowledgeBeamPeerGrantRequest.t(),
+          Orchard.GRPCTypes.server_stream()
+        ) :: AcknowledgeBeamPeerGrantResponse.t()
+  def acknowledge_beam_peer_grant(%AcknowledgeBeamPeerGrantRequest{} = request, stream) do
+    with certificate_der when is_binary(certificate_der) <- peer_certificate(stream),
+         {:ok, grant} <-
+           BeamPeerGrants.acknowledge_from_peer_certificate(
+             acknowledgement_map(request),
+             certificate_der
+           ) do
+      %AcknowledgeBeamPeerGrantResponse{
+        grant_id: grant.id,
+        generation: grant.generation,
+        accepted: true
+      }
+    else
+      :undefined -> reject(:beam_peer_certificate_missing)
+      {:error, reason} -> reject(reason)
+      _other -> reject(:beam_peer_credential_mismatch)
+    end
+  end
+
   defp peer_certificate(%GRPC.Server.Stream{adapter: adapter, payload: payload}) do
     adapter.get_cert(payload)
   end
@@ -40,6 +69,17 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
       grant_id: request.grant_id,
       generation: request.generation,
       controller_id: request.controller_id
+    }
+  end
+
+  defp acknowledgement_map(request) do
+    %{
+      grant_id: request.grant_id,
+      generation: request.generation,
+      controller_id: request.controller_id,
+      installation_id: request.installation_id,
+      secret_hash: request.secret_hash,
+      local_identity_generation_id: request.local_identity_generation_id
     }
   end
 

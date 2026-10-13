@@ -14,7 +14,7 @@ defmodule Orchard.Application do
   }
 
   alias Orchard.ControllerInstances.MembershipOwner
-  alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
+  alias Orchard.RuntimeEndpoint.{ConnectionIncarnation, DistributionExpiryGuard}
 
   @impl true
   def start(_type, _args) do
@@ -136,6 +136,8 @@ defmodule Orchard.Application do
       |> Kernel.++([{ControllerInitializer, membership_identity_opts()}])
       |> maybe_add_controller_startup_verifier(config)
       |> maybe_add_controller_expiry_guard(config)
+      |> maybe_add_connection_incarnation(config)
+      |> maybe_add_disconnect_reconciler(config)
       |> Kernel.++([{ControlListener, listener_opts}])
     else
       children
@@ -185,6 +187,23 @@ defmodule Orchard.Application do
     if Keyword.get(config, :mode, :distributed) == :distributed do
       expiry_guard = Keyword.get(config, :expiry_guard, DistributionExpiryGuard)
       children ++ [{expiry_guard, Keyword.take(config, [:manifest_path])}]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_connection_incarnation(children, config) do
+    if Keyword.get(config, :mode, :distributed) == :distributed do
+      children ++ [{ConnectionIncarnation, role: :controller}]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_disconnect_reconciler(children, config) do
+    if Keyword.get(config, :mode, :distributed) == :distributed and
+         Application.get_env(:orchard_controller, :start_repo, true) do
+      children ++ [Orchard.BeamDisconnectObligations]
     else
       children
     end

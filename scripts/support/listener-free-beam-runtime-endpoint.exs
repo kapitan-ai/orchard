@@ -165,6 +165,7 @@ defmodule Orchard.ListenerFreeBeamRuntimeEndpointValidation do
 
     alias Orchard.RuntimeEndpoint.{
       BeamClient,
+      ConnectionIncarnation,
       ModelRef,
       Observation,
       Operation,
@@ -258,6 +259,70 @@ defmodule Orchard.ListenerFreeBeamRuntimeEndpointValidation do
       File.write!(
         Path.join(root, "controller.listener-free.complete"),
         Enum.join(evidence, "\n") <> "\n"
+      )
+
+      :ok
+    end
+
+    def run_fence_matrix!(root, node_id) do
+      target = active_target!(node_id)
+      {:ok, %BeamClient{} = connection} = BeamClient.connect(target)
+      {:ok, %Observation{}} = BeamClient.status(connection, timeout: @timeout)
+      before_delayed_commit = observation_snapshot!(node_id)
+      old_connection_id = connection.connection_id
+      peer = connection.node
+
+      assert_rejected =
+        BeamClient.status(connection,
+          timeout: @timeout,
+          before_authenticated_observation_commit: fn ->
+            true = Node.disconnect(peer)
+
+            wait_until!(fn ->
+              ConnectionIncarnation.connection_id(peer) == {:error, :connection_not_current}
+            end)
+
+            :pong = Node.ping(peer)
+
+            wait_until!(fn ->
+              case ConnectionIncarnation.connection_id(peer) do
+                {:ok, successor_id} -> successor_id != old_connection_id
+                _other -> false
+              end
+            end)
+          end
+        )
+
+      {:error, :beam_peer_observation_rejected} = assert_rejected
+      ^before_delayed_commit = observation_snapshot!(node_id)
+
+      {:ok, %BeamClient{} = replacement} = BeamClient.connect(target)
+      true = replacement.connection_id != old_connection_id
+      {:ok, %Observation{}} = BeamClient.status(replacement, timeout: @timeout)
+      :ok = BeamClient.disconnect(replacement)
+      :pong = Node.ping(replacement.node)
+
+      before_version_skew = observation_snapshot!(node_id)
+
+      legacy = %{
+        replacement
+        | server_module: Orchard.ListenerFreeBeamRuntimeEndpointValidation.LegacyStatusServer
+      }
+
+      {:error, :beam_connection_incarnation_invalid} =
+        BeamClient.status(legacy, timeout: @timeout)
+
+      ^before_version_skew = observation_snapshot!(node_id)
+
+      {:ok, %BeamClient{} = recovered} = BeamClient.connect(target)
+      {:ok, %Observation{}} = BeamClient.status(recovered, timeout: @timeout)
+
+      File.write!(
+        Path.join(root, "controller.connection-fence.complete"),
+        "real delayed commit rejected: true\n" <>
+          "unchanged-authority reconnect used a new OTP connection: true\n" <>
+          "ordinary client cleanup preserved shared connection: true\n" <>
+          "authenticated version skew failed closed without persistence: true\n"
       )
 
       :ok
@@ -393,6 +458,19 @@ defmodule Orchard.ListenerFreeBeamRuntimeEndpointValidation do
       true = count > 0
     end
 
+    defp observation_snapshot!(node_id) do
+      %{rows: [row]} =
+        Repo.query!(
+          "SELECT state::text, last_heartbeat_at, " <>
+            "(SELECT count(*) FROM node_heartbeats WHERE node_id::text = $1), " <>
+            "(SELECT count(*) FROM node_runtime_capacity_evidence WHERE node_id::text = $1) " <>
+            "FROM nodes WHERE id::text = $1",
+          [node_id]
+        )
+
+      row
+    end
+
     defp wait_until!(fun, attempts \\ 50)
     defp wait_until!(_fun, 0), do: raise("condition did not become true")
 
@@ -406,6 +484,14 @@ defmodule Orchard.ListenerFreeBeamRuntimeEndpointValidation do
     end
 
     defp deadline, do: System.system_time(:millisecond) + 10_000
+  end
+end
+
+defmodule Orchard.ListenerFreeBeamRuntimeEndpointValidation.LegacyStatusServer do
+  alias Orchard.Node.RuntimeEndpoint
+
+  def authenticated_status(target, _controller_node, opts) do
+    RuntimeEndpoint.status(target, opts)
   end
 end
 

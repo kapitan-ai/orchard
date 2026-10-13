@@ -1330,6 +1330,7 @@ defmodule OrchardNodeAgentTest do
 
   test "node supervisor boots all required children including the runtime gRPC listener" do
     assert is_pid(Process.whereis(NodeSupervisor))
+    assert is_pid(Process.whereis(Orchard.Node.HostInventory))
     assert is_pid(Process.whereis(ModelManager))
     assert is_pid(Process.whereis(WorkerSupervisor))
     assert is_pid(Process.whereis(Orchard.Node.ModelLoadTaskSupervisor))
@@ -1340,6 +1341,7 @@ defmodule OrchardNodeAgentTest do
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
 
     assert NodeSupervisor.grpc_server_id() in child_ids
+    assert Orchard.Node.HostInventory in child_ids
     assert ModelManager in child_ids
     assert WorkerSupervisor in child_ids
     assert Orchard.Node.ModelLoadTaskSupervisor in child_ids
@@ -1348,6 +1350,28 @@ defmodule OrchardNodeAgentTest do
     # supervision tree, so client channels are no longer owned by NodeSupervisor.
     refute GRPC.Client.Supervisor in child_ids
     assert is_pid(Process.whereis(GRPC.Client.Supervisor))
+  end
+
+  test "inventory restart does not restart runtime custody or the listener" do
+    inventory_pid = Process.whereis(Orchard.Node.HostInventory)
+    manager_pid = Process.whereis(ModelManager)
+    worker_supervisor_pid = Process.whereis(WorkerSupervisor)
+    listener_pid = child_pid(NodeSupervisor, NodeSupervisor.grpc_server_id())
+    monitor_ref = Process.monitor(inventory_pid)
+
+    assert Enum.all?(
+             [inventory_pid, manager_pid, worker_supervisor_pid, listener_pid],
+             &is_pid/1
+           )
+
+    Process.exit(inventory_pid, :kill)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^inventory_pid, :killed}
+
+    replacement = await_named_replacement(Orchard.Node.HostInventory, inventory_pid, 100)
+    assert is_pid(replacement)
+    assert Process.whereis(ModelManager) == manager_pid
+    assert Process.whereis(WorkerSupervisor) == worker_supervisor_pid
+    assert child_pid(NodeSupervisor, NodeSupervisor.grpc_server_id()) == listener_pid
   end
 
   test "node supervisor omits only the runtime gRPC listener when it is disabled" do
@@ -1378,7 +1402,8 @@ defmodule OrchardNodeAgentTest do
              Orchard.Node.ModelLoadTaskSupervisor,
              Orchard.Node.RuntimeProcessReaper,
              WorkerSupervisor,
-             Orchard.Node.RuntimeEndpointTaskSupervisor
+             Orchard.Node.RuntimeEndpointTaskSupervisor,
+             Orchard.Node.HostInventory
            ]
 
     refute NodeSupervisor.grpc_server_id() in child_ids
@@ -5968,6 +5993,28 @@ defmodule OrchardNodeAgentTest do
   defp test_node_agent_port do
     System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "15071")
     |> String.to_integer()
+  end
+
+  defp child_pid(supervisor, child_id) do
+    supervisor
+    |> Supervisor.which_children()
+    |> Enum.find_value(fn
+      {^child_id, pid, _type, _modules} -> pid
+      _child -> nil
+    end)
+  end
+
+  defp await_named_replacement(_name, _previous_pid, 0), do: nil
+
+  defp await_named_replacement(name, previous_pid, attempts) do
+    case Process.whereis(name) do
+      pid when is_pid(pid) and pid != previous_pid ->
+        pid
+
+      _pid ->
+        Process.sleep(5)
+        await_named_replacement(name, previous_pid, attempts - 1)
+    end
   end
 
   defp restore_sentry_enrichment(nil),

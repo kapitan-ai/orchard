@@ -7,6 +7,8 @@ cd "$REPO_ROOT"
 
 ELIXIR_BIN="$(mise which elixir)"
 EPMD_BIN="$(mise which epmd)"
+ERL_BIN="$(mise which erl)"
+ERLANG_BIN_DIR="$(dirname "$ERL_BIN")"
 
 discover_private_ipv4() {
   local interface address
@@ -79,7 +81,7 @@ cleanup() {
     wait "$NODE_PID" 2>/dev/null || true
   fi
 
-  ERL_EPMD_PORT="$EPMD_PORT" "$EPMD_BIN" -stop >/dev/null 2>&1 || true
+  "$EPMD_BIN" -port "$EPMD_PORT" -kill >/dev/null 2>&1 || true
   if [[ "${ORCHARD_BEAM_SMOKE_KEEP:-0}" == "1" ]]; then
     echo "kept expiry smoke root: $SMOKE_ROOT" >&2
   else
@@ -116,6 +118,7 @@ NODE_ERL_ARGS="-proto_dist inet_tls -ssl_dist_optfile $NODE_TLS_OPTIONS -kernel 
 CONTROLLER_ERL_ARGS="-proto_dist inet_tls -ssl_dist_optfile $CONTROLLER_TLS_OPTIONS -kernel inet_dist_use_interface $IP_TUPLE inet_dist_listen_min $CONTROLLER_DIST_PORT inet_dist_listen_max $CONTROLLER_DIST_PORT"
 
 HOME="$NODE_HOME" \
+PATH="$ERLANG_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS="$IPV4" \
 ERL_EPMD_PORT="$EPMD_PORT" \
 ORCHARD_EXPIRY_LAUNCH_MANIFEST="$NODE_LAUNCH_MANIFEST" \
@@ -148,6 +151,7 @@ if ! wait_for_file "$NODE_READY" "$NODE_PID"; then
 fi
 
 HOME="$CONTROLLER_HOME" \
+PATH="$ERLANG_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS="$IPV4" \
 ERL_EPMD_PORT="$EPMD_PORT" \
 ORCHARD_EXPIRY_LAUNCH_MANIFEST="$CONTROLLER_LAUNCH_MANIFEST" \
@@ -208,6 +212,7 @@ if ! kill -0 "$NODE_PID" 2>/dev/null || ! kill -0 "$CONTROLLER_PID" 2>/dev/null;
 fi
 
 HOME="$CONTROLLER_HOME" \
+PATH="$ERLANG_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS="$IPV4" \
 ERL_EPMD_PORT="$EPMD_PORT" \
 ORCHARD_PEER_COOKIE_FILE="$GRANT_FILE" \

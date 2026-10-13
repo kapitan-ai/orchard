@@ -9,10 +9,15 @@ defmodule Orchard.BeamPeerGrants do
   import Ecto.Query
 
   alias Orchard.BeamAuthorizationRoot.Store, as: AuthorizationRootStore
+  alias Orchard.BeamDisconnectObligations
+  alias Orchard.BeamDisconnectObligations.Obligation
   alias Orchard.BeamPeerGrantDescriptor
   alias Orchard.BeamPeerGrants.{Grant, Secret}
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControlPlane
+  alias Orchard.Governance.AuditWriter
+  alias Orchard.NodeCredentials
+  alias Orchard.NodeCredentials.Generation, as: CredentialGeneration
   alias Orchard.Nodes.{Enrollment, Node}
   alias Orchard.NodeTrust
   alias Orchard.Repo
@@ -24,6 +29,7 @@ defmodule Orchard.BeamPeerGrants do
   @contract_version 1
   @purpose "runtime_endpoint"
   @initial_validity_days 30
+  @minimum_generation_interval_seconds 3_600
   @tracer_admission_lock "orchard.beam_peer_grants.tracer_admission"
 
   @spec list_for_node(Ecto.UUID.t()) :: [Grant.t()]
@@ -108,11 +114,26 @@ defmodule Orchard.BeamPeerGrants do
   @spec ensure_active_grant_current(Ecto.UUID.t(), keyword()) :: :ok | {:error, atom()}
   def ensure_active_grant_current(grant_id, opts \\ []) when is_list(opts) do
     with {:ok, grant_id} <- Ecto.UUID.cast(grant_id),
-         %Grant{} = grant <- Repo.get(Grant, grant_id) do
+         %Grant{} = grant <- Repo.get(Grant, grant_id),
+         :ok <- ensure_predecessor_disconnected(grant) do
       ensure_grant_current(grant, [:active], opts)
     else
+      {:error, reason} -> {:error, reason}
       _other -> {:error, :beam_peer_grant_missing}
     end
+  end
+
+  defp ensure_predecessor_disconnected(%Grant{generation: 1}), do: :ok
+
+  defp ensure_predecessor_disconnected(%Grant{} = grant) do
+    pending? =
+      Obligation
+      |> where([obligation], obligation.node_id == ^grant.node_id)
+      |> where([obligation], obligation.reason == "grant_cutover")
+      |> where([obligation], obligation.state in [:pending, :attempted])
+      |> Repo.exists?()
+
+    if pending?, do: {:error, :beam_predecessor_disconnect_incomplete}, else: :ok
   end
 
   @spec ensure_authorization_current(target_authorization() | nil, keyword()) ::
@@ -161,6 +182,26 @@ defmodule Orchard.BeamPeerGrants do
   end
 
   @doc """
+  Records authenticated proof that the Node durably published the delivered grant.
+  """
+  @spec acknowledge_persisted(map(), AuthenticatedPeer.t(), keyword()) ::
+          {:ok, Grant.t()} | {:error, atom()}
+  def acknowledge_persisted(request, %AuthenticatedPeer{} = peer, opts \\ []) do
+    with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant_delivery),
+         {:ok, request} <- normalize_acknowledgement_request(request) do
+      Repo.transaction(fn -> acknowledge_persisted_locked(request, peer, opts) end)
+    end
+  end
+
+  @spec acknowledge_from_peer_certificate(map(), binary(), keyword()) ::
+          {:ok, Grant.t()} | {:error, atom()}
+  def acknowledge_from_peer_certificate(request, certificate_der, opts \\ []) do
+    with {:ok, peer} <- authenticated_peer_from_certificate(certificate_der) do
+      acknowledge_persisted(request, peer, opts)
+    end
+  end
+
+  @doc """
   Issues the initial Controller-to-Node grant inside the caller's admission transaction.
   """
   @spec issue_initial_for_admission(Node.t(), keyword()) ::
@@ -175,6 +216,37 @@ defmodule Orchard.BeamPeerGrants do
 
   def issue_initial_for_admission(%Node{}, _opts),
     do: {:error, :beam_peer_grant_admission_invalid}
+
+  @doc """
+  Stages the next exact-pair grant for the Node's already-staged certificate generation.
+  """
+  @spec stage_successor(Ecto.UUID.t(), keyword()) :: {:ok, Grant.t()} | {:error, term()}
+  def stage_successor(node_id, opts \\ []) when is_list(opts) do
+    with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant),
+         true <- enabled?(),
+         {:ok, node_id} <- Ecto.UUID.cast(node_id),
+         {:ok, opts} <- put_preloaded_authorization_root(opts) do
+      Repo.transaction(fn -> stage_successor_locked(node_id, opts) end)
+    else
+      _other -> {:error, :beam_peer_grant_rotation_invalid}
+    end
+  end
+
+  @doc """
+  Atomically commits the staged certificate and Peer Grant generations.
+  """
+  @spec commit_successor(Ecto.UUID.t(), pos_integer(), keyword()) ::
+          {:ok, Grant.t()} | {:error, term()}
+  def commit_successor(node_id, generation, opts \\ [])
+      when is_integer(generation) and generation > 0 and is_list(opts) do
+    with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant),
+         true <- enabled?(),
+         {:ok, node_id} <- Ecto.UUID.cast(node_id) do
+      AuditWriter.transaction(fn -> commit_successor_locked(node_id, generation, opts) end)
+    else
+      _other -> {:error, :beam_peer_grant_rotation_invalid}
+    end
+  end
 
   @doc false
   @spec lock_initial_admission_node(Ecto.UUID.t(), keyword()) ::
@@ -224,19 +296,158 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
+  defp stage_successor_locked(node_id, opts) do
+    now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    with %Node{} = node <- lock_node(node_id),
+         true <- node.state in [:admitted, :active],
+         %CredentialGeneration{} = credential <- lock_rotation_credential(node_id),
+         %Grant{} = active <- lock_pair_grant(node_id, :active),
+         nil <- lock_pair_grant(node_id, :pending_delivery),
+         nil <- lock_pair_grant(node_id, :staged),
+         :ok <- ensure_generation_interval(active, now),
+         %ControllerInstance{} = controller <- lock_controller(active.controller_id),
+         {:ok, authorization_root} <- load_authorization_root(controller, opts),
+         attrs <- successor_attrs(active, credential, now),
+         {:ok, secret} <- Secret.derive(attrs, authorization_root.key),
+         {:ok, grant} <- insert_grant(Map.put(attrs, :secret_hash, secret.secret_hash)) do
+      grant
+    else
+      %Grant{} -> Repo.rollback(:beam_peer_grant_rotation_in_progress)
+      nil -> Repo.rollback(:beam_peer_grant_rotation_invalid)
+      false -> Repo.rollback(:beam_peer_grant_rotation_invalid)
+      {:error, reason} -> Repo.rollback(reason)
+      _other -> Repo.rollback(:beam_peer_grant_rotation_invalid)
+    end
+  end
+
+  defp commit_successor_locked(node_id, generation, opts) do
+    now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    with %Grant{} = active_scope <- pair_grant(node_id, :active),
+         %Grant{generation: ^generation} = staged_scope <- pair_grant(node_id, :staged),
+         %Node{} <- lock_node(node_id),
+         %CredentialGeneration{} = predecessor_credential <-
+           lock_grant_credential(active_scope),
+         %CredentialGeneration{} = credential <- lock_grant_credential(staged_scope),
+         %Grant{} = active <- lock_pair_grant(node_id, :active),
+         %Grant{generation: ^generation} = staged <- lock_pair_grant(node_id, :staged),
+         {:ok, credential} <- maybe_activate_credential(credential, opts),
+         true <- staged.node_certificate_identifier == credential.certificate_identifier,
+         true <-
+           staged.node_certificate_fingerprint_sha256 ==
+             credential.certificate_fingerprint_sha256,
+         {1, _rows} <- transition_grant(active, :superseded, now),
+         {1, _rows} <- transition_grant(staged, :active, now),
+         {:ok, _obligation} <-
+           BeamDisconnectObligations.enqueue_in_transaction(
+             active,
+             predecessor_credential.id,
+             "grant_cutover",
+             now
+           ) do
+      Repo.get!(Grant, staged.id)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+      _other -> Repo.rollback(:beam_peer_grant_rotation_invalid)
+    end
+  end
+
+  defp successor_attrs(active, credential, now) do
+    expires_at =
+      earliest(DateTime.add(now, @initial_validity_days, :day), credential.not_after_at)
+
+    active
+    |> Map.from_struct()
+    |> Map.take([
+      :cluster_id,
+      :controller_id,
+      :controller_beam_name,
+      :controller_certificate_identifier,
+      :controller_certificate_fingerprint_sha256,
+      :beam_authorization_root_id,
+      :node_id,
+      :node_beam_name,
+      :contract_version,
+      :purpose
+    ])
+    |> Map.merge(%{
+      id: Ecto.UUID.generate(),
+      generation: active.generation + 1,
+      node_certificate_identifier: credential.certificate_identifier,
+      node_certificate_fingerprint_sha256: credential.certificate_fingerprint_sha256,
+      state: :pending_delivery,
+      issued_at: now,
+      not_before_at: now,
+      cutover_at: now,
+      expires_at: expires_at,
+      delivery_evidence: %{},
+      activation_evidence: %{},
+      supersession_evidence: %{},
+      failure_evidence: %{},
+      revocation_evidence: %{}
+    })
+  end
+
+  defp ensure_generation_interval(active, now) do
+    boundary = DateTime.add(active.issued_at, @minimum_generation_interval_seconds, :second)
+
+    if DateTime.compare(now, boundary) in [:eq, :gt],
+      do: :ok,
+      else: {:error, :beam_peer_grant_generation_rate_limited}
+  end
+
+  defp maybe_activate_credential(%CredentialGeneration{state: :current} = credential, _opts),
+    do: {:ok, credential}
+
+  defp maybe_activate_credential(%CredentialGeneration{state: :staged} = credential, opts),
+    do:
+      NodeCredentials.activate_staged_in_transaction(
+        credential.node_id,
+        credential.generation,
+        opts
+      )
+
+  defp transition_grant(grant, :superseded, now) do
+    grant
+    |> where_id()
+    |> where([candidate], candidate.state == :active)
+    |> update([candidate],
+      set: [state: :superseded, superseded_at: ^now]
+    )
+    |> Repo.update_all([])
+  end
+
+  defp transition_grant(grant, :active, now) do
+    grant
+    |> where_id()
+    |> where([candidate], candidate.state == :staged)
+    |> update([candidate],
+      set: [state: :active, activated_at: ^now]
+    )
+    |> Repo.update_all([])
+  end
+
+  defp where_id(%Grant{id: id}), do: where(Grant, [grant], grant.id == ^id)
+
+  defp earliest(left, right) do
+    if DateTime.compare(left, right) == :lt, do: left, else: right
+  end
+
   defp distribution_launch_material_locked(grant_id, opts) do
     now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
-    with {:ok, grant} <- lock_only_current_active_grant(grant_id, now),
-         :ok <- run_lock_observer(opts, :grant),
-         %Node{} = node <- lock_node(grant.node_id),
+    with %Grant{} = scope <- Repo.get(Grant, grant_id),
+         %Node{} = node <- lock_node(scope.node_id),
          :ok <- run_lock_observer(opts, :node),
+         {:ok, grant} <- lock_only_current_active_grant(grant_id, now),
+         :ok <- run_lock_observer(opts, :grant),
          {:ok, enrollment} <- lock_only_launch_enrollment(node.id),
          :ok <- run_lock_observer(opts, :enrollment),
          {:ok, controller} <- lock_grant_controller(grant.controller_id),
          :ok <- run_lock_observer(opts, :controller),
          {:ok, peer} <- authenticated_peer(enrollment),
-         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
+         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer, opts),
          :ok <- validate_controller_binding(controller),
          {:ok, local_identity} <- NodeTrust.peer_grant_runtime_generation_paths(),
          true <- local_identity.cluster_id == grant.cluster_id,
@@ -258,6 +469,7 @@ defmodule Orchard.BeamPeerGrants do
         scope: launch_scope(grant)
       }
     else
+      nil -> Repo.rollback(:beam_distribution_launch_scope_invalid)
       {:error, reason} -> Repo.rollback(reason)
       _other -> Repo.rollback(:beam_distribution_launch_scope_invalid)
     end
@@ -336,7 +548,10 @@ defmodule Orchard.BeamPeerGrants do
     |> join(:inner, [grant], node in Node, on: node.id == grant.node_id)
     |> where([grant, node], grant.node_id == ^node_id)
     |> where([grant, node], node.state in [:admitted, :active])
-    |> where([grant, _node], grant.state in [:pending_delivery, :delivery_failed, :active])
+    |> where(
+      [grant, _node],
+      grant.state in [:pending_delivery, :delivery_failed, :staged, :active]
+    )
     |> order_by([grant, _node], desc: grant.generation)
     |> limit(2)
     |> Repo.all()
@@ -391,23 +606,45 @@ defmodule Orchard.BeamPeerGrants do
   defp deliver_locked(request, peer, opts) do
     now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
 
-    with %Grant{} = grant <- lock_grant(request.grant_id),
+    with %Grant{} = scope <- Repo.get(Grant, request.grant_id),
+         %Node{} = node <- lock_node(scope.node_id),
+         :ok <- run_lock_observer(opts, :node),
+         %Grant{} = grant <- lock_grant(request.grant_id),
          :ok <- run_lock_observer(opts, :grant),
          :ok <- validate_delivery_request(grant, request),
          :ok <- validate_delivery_lifecycle(grant, now),
-         %Node{} = node <- lock_node(grant.node_id),
-         :ok <- run_lock_observer(opts, :node),
          %Enrollment{} = enrollment <- lock_enrollment(peer.enrollment_id),
          :ok <- run_lock_observer(opts, :enrollment),
          %ControllerInstance{} = controller <- lock_controller(grant.controller_id),
          :ok <- run_lock_observer(opts, :controller),
-         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
+         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer, opts),
          :ok <- validate_controller_binding(controller),
          {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
          true <- secret.secret_hash == grant.secret_hash,
          {:ok, grant} <- mark_delivered(grant, peer, now, opts) do
       delivery_payload(grant, secret)
+    else
+      nil -> Repo.rollback(:beam_peer_grant_missing)
+      {:error, reason} -> Repo.rollback(reason)
+      false -> Repo.rollback(:beam_peer_credential_mismatch)
+      _other -> Repo.rollback(:beam_peer_credential_mismatch)
+    end
+  end
+
+  defp acknowledge_persisted_locked(request, peer, opts) do
+    now = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.truncate(:microsecond)
+
+    with %Grant{} = scope <- Repo.get(Grant, request.grant_id),
+         %Node{} = node <- lock_node(scope.node_id),
+         %Grant{} = grant <- lock_grant(request.grant_id),
+         :ok <- validate_delivery_request(grant, request),
+         true <- grant.secret_hash == request.secret_hash,
+         %Enrollment{} = enrollment <- lock_enrollment(peer.enrollment_id),
+         %ControllerInstance{} = controller <- lock_controller(grant.controller_id),
+         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer, opts),
+         {:ok, acknowledged} <- acknowledge_grant(grant, request, now, opts) do
+      acknowledged
     else
       nil -> Repo.rollback(:beam_peer_grant_missing)
       {:error, reason} -> Repo.rollback(reason)
@@ -433,6 +670,27 @@ defmodule Orchard.BeamPeerGrants do
   defp normalize_delivery_request(_request),
     do: {:error, :beam_peer_grant_generation_mismatch}
 
+  defp normalize_acknowledgement_request(request) when is_map(request) do
+    with {:ok, delivery} <- normalize_delivery_request(request),
+         {:ok, installation_id} <- Ecto.UUID.cast(value(request, :installation_id)),
+         {:ok, local_identity_generation_id} <-
+           Ecto.UUID.cast(value(request, :local_identity_generation_id)),
+         secret_hash when is_binary(secret_hash) and byte_size(secret_hash) == 32 <-
+           value(request, :secret_hash) do
+      {:ok,
+       Map.merge(delivery, %{
+         installation_id: installation_id,
+         local_identity_generation_id: local_identity_generation_id,
+         secret_hash: secret_hash
+       })}
+    else
+      _other -> {:error, :beam_peer_grant_staging_proof_invalid}
+    end
+  end
+
+  defp normalize_acknowledgement_request(_request),
+    do: {:error, :beam_peer_grant_staging_proof_invalid}
+
   defp validate_delivery_request(grant, request) do
     cond do
       grant.generation != request.generation ->
@@ -453,7 +711,7 @@ defmodule Orchard.BeamPeerGrants do
     do: {:error, :beam_peer_grant_expired}
 
   defp validate_delivery_lifecycle(%Grant{state: state} = grant, now)
-       when state in [:pending_delivery, :active, :delivery_failed] do
+       when state in [:pending_delivery, :staged, :active, :delivery_failed] do
     cond do
       DateTime.compare(now, grant.not_before_at) == :lt ->
         {:error, :beam_peer_grant_not_active}
@@ -469,10 +727,7 @@ defmodule Orchard.BeamPeerGrants do
   defp validate_delivery_lifecycle(%Grant{}, _now),
     do: {:error, :beam_peer_grant_not_active}
 
-  defp validate_delivery_scope(grant, node, enrollment, controller, peer) do
-    result = enrollment.certificate_result
-    certificate_pem = value(result, :node_certificate_pem)
-
+  defp validate_delivery_scope(grant, node, enrollment, controller, peer, opts) do
     with true <- peer.scheme == :mtls,
          true <- node.id == grant.node_id and node.state in [:admitted, :active],
          true <- controller.status == :operational,
@@ -484,13 +739,20 @@ defmodule Orchard.BeamPeerGrants do
          true <- enrollment.state == :consumed,
          true <- enrollment.certificate_issuance_outcome == :issued,
          true <- peer.node_id == node.id,
+         {:ok, credential} <-
+           NodeCredentials.authorize_peer(
+             node.id,
+             peer.certificate_identifier,
+             peer.certificate_fingerprint,
+             opts
+           ),
+         result = credential.certificate_result,
          true <- peer.node_uri_san == value(result, :node_uri_san),
-         true <- peer.certificate_identifier == enrollment.certificate_identifier,
          true <- peer.certificate_serial == value(result, :certificate_serial),
          true <- is_binary(peer.runtime_trust_spki_sha256),
          true <- is_binary(value(result, :runtime_trust_spki_sha256)),
          true <- peer.runtime_trust_spki_sha256 == value(result, :runtime_trust_spki_sha256),
-         true <- is_binary(certificate_pem),
+         certificate_pem when is_binary(certificate_pem) <- value(result, :node_certificate_pem),
          {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
          true <- certificate.uri_sans == [peer.node_uri_san],
          true <- certificate.serial == peer.certificate_serial,
@@ -512,8 +774,9 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp mark_delivered(%Grant{state: :active} = grant, _peer, _now, opts) do
-    with :ok <- ensure_grant_current(grant, [:active], opts) do
+  defp mark_delivered(%Grant{state: state} = grant, _peer, _now, opts)
+       when state in [:active, :staged] do
+    with :ok <- ensure_grant_current(grant, [state], opts) do
       {:ok, grant}
     end
   end
@@ -536,6 +799,9 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
+  defp acknowledged_state(%Grant{generation: 1}), do: :active
+  defp acknowledged_state(%Grant{}), do: :staged
+
   defp update_delivery_transition(grant, evidence, opts) do
     query = current_grant_query(grant, [:pending_delivery, :delivery_failed])
 
@@ -546,7 +812,6 @@ defmodule Orchard.BeamPeerGrants do
         query
         |> update([candidate],
           set: [
-            state: :active,
             delivered_at: ^delivered_at,
             delivery_evidence: ^evidence
           ]
@@ -557,7 +822,6 @@ defmodule Orchard.BeamPeerGrants do
         query
         |> update([candidate],
           set: [
-            state: :active,
             delivered_at: fragment("clock_timestamp()"),
             delivery_evidence: ^evidence
           ]
@@ -569,6 +833,48 @@ defmodule Orchard.BeamPeerGrants do
     end
   rescue
     _error -> {:error, :beam_peer_grant_delivery_unavailable}
+  end
+
+  defp acknowledge_grant(%Grant{state: state} = grant, request, _now, _opts)
+       when state in [:active, :staged] do
+    evidence = grant.node_staging_evidence
+
+    if evidence["installation_id"] == request.installation_id and
+         evidence["local_identity_generation_id"] == request.local_identity_generation_id do
+      {:ok, grant}
+    else
+      {:error, :beam_peer_grant_staging_proof_invalid}
+    end
+  end
+
+  defp acknowledge_grant(%Grant{} = grant, request, now, opts) do
+    evidence = %{
+      "generation" => grant.generation,
+      "installation_id" => request.installation_id,
+      "local_identity_generation_id" => request.local_identity_generation_id,
+      "node_id" => grant.node_id,
+      "proof" => "mtls_after_atomic_local_publication"
+    }
+
+    state = acknowledged_state(grant)
+    query = current_grant_query(grant, [:pending_delivery, :delivery_failed])
+
+    with :ok <- ensure_grant_current(grant, [:pending_delivery, :delivery_failed], opts),
+         {1, _rows} <-
+           query
+           |> update([candidate],
+             set: [
+               state: ^state,
+               node_staged_at: ^now,
+               node_staging_evidence: ^evidence
+             ]
+           )
+           |> Repo.update_all([]) do
+      {:ok, Repo.get!(Grant, grant.id)}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :beam_peer_grant_staging_proof_invalid}
+    end
   end
 
   defp ensure_grant_current(grant, allowed_states, opts) do
@@ -645,23 +951,26 @@ defmodule Orchard.BeamPeerGrants do
   end
 
   defp authorize_target_locked(grant_id, target, opts) do
-    case lock_grant(grant_id) do
-      %Grant{} = grant -> authorize_existing_target(grant, target, opts)
-      nil -> Repo.rollback(:beam_peer_grant_missing)
+    with %Grant{} = scope <- Repo.get(Grant, grant_id),
+         %Node{} = node <- lock_node(scope.node_id),
+         %Grant{} = grant <- lock_grant(grant_id) do
+      authorize_existing_target(grant, node, target, opts)
+    else
+      _other -> Repo.rollback(:beam_peer_grant_missing)
     end
   end
 
-  defp authorize_existing_target(grant, target, opts) do
+  defp authorize_existing_target(grant, node, target, opts) do
     with :ok <- validate_target_beam_name(grant, target),
          :ok <- validate_target_generation(grant, target),
          {:ok, grant} <- authorize_target_lifecycle(grant, DateTime.utc_now()),
-         %Node{} = node <- lock_node(grant.node_id),
+         :ok <- ensure_predecessor_disconnected(grant),
          %Enrollment{} = enrollment <- lock_target_enrollment(target),
          %ControllerInstance{} = controller <- lock_controller(grant.controller_id),
          {:ok, peer} <- authenticated_peer(enrollment),
          :ok <- validate_target_peer_binding(target, peer),
          :ok <- validate_target_controller_binding(target, controller),
-         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
+         :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer, opts),
          :ok <- validate_controller_binding(controller),
          {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
@@ -690,16 +999,16 @@ defmodule Orchard.BeamPeerGrants do
   end
 
   defp authenticated_peer(%Enrollment{} = enrollment) do
-    result = enrollment.certificate_result
-
-    with certificate_pem when is_binary(certificate_pem) <- value(result, :node_certificate_pem),
+    with {:ok, credential} <- NodeCredentials.current(enrollment.node_id),
+         result = credential.certificate_result,
+         certificate_pem when is_binary(certificate_pem) <- value(result, :node_certificate_pem),
          {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem) do
       {:ok,
        %AuthenticatedPeer{
          node_id: enrollment.node_id,
          node_uri_san: value(result, :node_uri_san),
          enrollment_id: enrollment.id,
-         certificate_identifier: enrollment.certificate_identifier,
+         certificate_identifier: credential.certificate_identifier,
          certificate_serial: certificate.serial,
          certificate_fingerprint: certificate.fingerprint,
          runtime_trust_spki_sha256: value(result, :runtime_trust_spki_sha256)
@@ -735,27 +1044,39 @@ defmodule Orchard.BeamPeerGrants do
   end
 
   defp matching_certificate_peers(cluster_id, node_id, certificate) do
-    Enrollment
-    |> where([enrollment], enrollment.cluster_id == ^cluster_id)
-    |> where([enrollment], enrollment.node_id == ^node_id)
-    |> where([enrollment], enrollment.state == :consumed)
-    |> where([enrollment], enrollment.certificate_issuance_outcome == :issued)
+    CredentialGeneration
+    |> where([generation], generation.cluster_id == ^cluster_id)
+    |> where([generation], generation.node_id == ^node_id)
+    |> where([generation], generation.state in [:current, :staged])
     |> Repo.all()
-    |> Enum.flat_map(fn enrollment ->
-      case authenticated_peer(enrollment) do
-        {:ok, peer} -> matching_peer(peer, certificate)
-        {:error, _reason} -> []
-      end
-    end)
+    |> Enum.flat_map(&matching_generation_peer(&1, certificate))
   end
 
-  defp matching_peer(peer, certificate) do
-    if peer.certificate_serial == certificate.serial and
-         peer.certificate_fingerprint == certificate.fingerprint and
-         certificate.uri_sans == [peer.node_uri_san] do
-      [peer]
+  defp matching_generation_peer(generation, certificate) do
+    result = generation.certificate_result
+
+    with true <- generation.certificate_fingerprint_sha256 == certificate.fingerprint,
+         true <- value(result, :certificate_serial) == certificate.serial,
+         [node_uri_san] <- certificate.uri_sans,
+         {:ok, _accepted} <-
+           NodeCredentials.authorize_peer(
+             generation.node_id,
+             generation.certificate_identifier,
+             certificate.fingerprint
+           ) do
+      [
+        %AuthenticatedPeer{
+          node_id: generation.node_id,
+          node_uri_san: node_uri_san,
+          enrollment_id: generation.enrollment_id,
+          certificate_identifier: generation.certificate_identifier,
+          certificate_serial: certificate.serial,
+          certificate_fingerprint: certificate.fingerprint,
+          runtime_trust_spki_sha256: value(result, :runtime_trust_spki_sha256)
+        }
+      ]
     else
-      []
+      _other -> []
     end
   end
 
@@ -853,6 +1174,44 @@ defmodule Orchard.BeamPeerGrants do
   defp lock_controller(controller_id) do
     ControllerInstance
     |> where([controller], controller.id == ^controller_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_pair_grant(node_id, state) do
+    Grant
+    |> where([grant], grant.node_id == ^node_id and grant.state == ^state)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp pair_grant(node_id, state) do
+    Repo.get_by(Grant, node_id: node_id, state: state)
+  end
+
+  defp lock_rotation_credential(node_id) do
+    CredentialGeneration
+    |> where([generation], generation.node_id == ^node_id)
+    |> where([generation], generation.state in [:current, :staged])
+    |> order_by([generation], desc: generation.generation)
+    |> limit(1)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_grant_credential(grant) do
+    CredentialGeneration
+    |> where([generation], generation.node_id == ^grant.node_id)
+    |> where([generation], generation.state in [:current, :staged])
+    |> where(
+      [generation],
+      generation.certificate_identifier == ^grant.node_certificate_identifier
+    )
+    |> where(
+      [generation],
+      generation.certificate_fingerprint_sha256 ==
+        ^grant.node_certificate_fingerprint_sha256
+    )
     |> lock("FOR UPDATE")
     |> Repo.one()
   end

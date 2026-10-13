@@ -5,6 +5,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     Ack,
     EnsureModelLoadedResponse,
     GenerationParams,
+    HostInventoryObservation,
     RuntimeHealth,
     RuntimeModelPlacement,
     RuntimeNodeMetadata,
@@ -31,6 +32,11 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     node_id = Ecto.UUID.generate()
     target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
 
+    host_inventory = %HostInventoryObservation{
+      schema_version: 1,
+      authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY
+    }
+
     response =
       status_response(
         node_id: node_id,
@@ -48,6 +54,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
         worker_crash_counters: [
           %WorkerCrashCounter{model_id: @model_id, count: 7, counter_version: "epoch-1"}
         ],
+        host_inventory: host_inventory,
         supports_prompt_token_ids: true
       )
 
@@ -60,6 +67,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     assert observation.aggregate_active_request_count == 3
     assert observation.metadata.node_id == node_id
     assert observation.health.ready == true
+    assert observation.host_inventory == host_inventory
     assert observation.supports_prompt_token_ids == true
 
     assert [%WorkerCrashCounter{model_id: @model_id, count: 7, counter_version: "epoch-1"}] =
@@ -359,6 +367,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
       runtime_health: Keyword.get(opts, :runtime_health),
       runtime_model_placements: Keyword.get(opts, :runtime_model_placements, []),
       worker_crash_counters: Keyword.get(opts, :worker_crash_counters, []),
+      host_inventory: Keyword.get(opts, :host_inventory),
       supports_prompt_token_ids: Keyword.get(opts, :supports_prompt_token_ids, false)
     }
   end

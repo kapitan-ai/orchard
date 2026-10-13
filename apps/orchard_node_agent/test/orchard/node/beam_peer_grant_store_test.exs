@@ -19,6 +19,17 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       send(self(), {:grant_control_retrieve, target, credential, request})
       Process.get(:beam_peer_grant_response)
     end
+
+    def acknowledge(target, credential, request) do
+      send(self(), {:grant_control_acknowledge, target, credential, request})
+
+      {:ok,
+       %Orchard.Cluster.V1.AcknowledgeBeamPeerGrantResponse{
+         accepted: true,
+         grant_id: request.grant_id,
+         generation: request.generation
+       }}
+    end
   end
 
   defmodule RaisingControlTransport do
@@ -1362,6 +1373,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
     %{
       grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      installation_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
       generation: 1,
       cluster_id: identity.cluster_id,
       controller_id: identity.controller_id,
@@ -1388,6 +1400,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     struct!(
       RetrieveBeamPeerGrantResponse,
       delivery
+      |> Map.delete(:installation_id)
       |> Map.update!(:issued_at, &DateTime.to_iso8601/1)
       |> Map.update!(:not_before_at, &DateTime.to_iso8601/1)
       |> Map.update!(:cutover_at, fn nil -> "" end)

@@ -62,6 +62,12 @@ assert_case macos-packaging \
 assert_case packaging-contract-readme \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/dmg/README.md
+assert_case linux-node-package \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  packaging/linux/node/orchard-node-agent.service
+assert_case linux-node-package-test \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  scripts/test-linux-node-package.sh
 assert_case mlx-provider \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py

@@ -5,6 +5,7 @@ defmodule Orchard.Nodes.Lifecycle do
 
   alias Orchard.Governance
   alias Orchard.Governance.{AuditLog, AuditWriter}
+  alias Orchard.NodeCredentials
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
   alias Orchard.Repo
@@ -120,6 +121,7 @@ defmodule Orchard.Nodes.Lifecycle do
     AuditWriter.transaction(fn ->
       with {:ok, node} <- Nodes.lock_node(node_id),
            [] <- blocker_codes(action, node),
+           :ok <- revoke_decommission_authority(action, node, attrs, opts),
            {:ok, updated_node} <- update_node_state(node, target_state(action)),
            {:ok, audit_log} <-
              insert_lifecycle_audit_log(action, node, updated_node, attrs, opts) do
@@ -141,6 +143,21 @@ defmodule Orchard.Nodes.Lifecycle do
   end
 
   def execute(_action, _node_id, _attrs, _opts), do: {:error, :lifecycle_action_unknown}
+
+  defp revoke_decommission_authority(:decommission, node, attrs, opts) do
+    reason =
+      case Map.get(attrs, "reason") do
+        reason when is_binary(reason) and reason != "" -> reason
+        _other -> "node decommission"
+      end
+
+    case NodeCredentials.revoke_in_transaction(node.id, reason, opts) do
+      {:ok, _revoked} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp revoke_decommission_authority(_action, _node, _attrs, _opts), do: :ok
 
   defp do_blocker_codes(spec, action, %Node{} = node) do
     []

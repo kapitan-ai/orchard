@@ -8,6 +8,7 @@ defmodule Orchard.NodeEnrollments do
   alias Orchard.ControlPlane
   alias Orchard.Governance
   alias Orchard.Governance.AuditWriter
+  alias Orchard.NodeCredentials
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.Nodes, as: NodeInventory
   alias Orchard.Nodes.{Enrollment, EnrollmentToken, Node}
@@ -177,6 +178,8 @@ defmodule Orchard.NodeEnrollments do
            run_fault_checkpoint(opts, :after_token_consumption_before_certificate_issuance),
          {:ok, response} <- issue_redemption_certificate(pending, request, now),
          {:ok, updated} <- persist_issued_certificate(pending, response),
+         {:ok, _credential_generation} <-
+           NodeCredentials.register_initial(updated, response, request.csr, now),
          {:ok, registered_node} <- register_node(node, request.runtime_endpoint, now),
          {:ok, _candidate} <-
            NodeInventory.ensure_pending_admission_candidate(registered_node),

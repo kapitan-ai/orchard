@@ -109,7 +109,7 @@ cleanup() {
   stop_process "$CONTROLLER_PID"
   stop_process "$NODE_PID"
   stop_process "$CONTROL_PID"
-  ERL_EPMD_PORT="$EPMD_PORT" mise exec -- epmd -stop >/dev/null 2>&1 || true
+  mise exec -- epmd -port "$EPMD_PORT" -kill >/dev/null 2>&1 || true
   MIX_ENV=dev PGDATABASE="$DATABASE" mise exec -- mix ecto.drop --quiet >/dev/null 2>&1 || true
   exec 8>&-
   exec 9>&-
@@ -272,12 +272,95 @@ fi
 
 printf 'activation and heartbeat persistence: %s\n' "$persisted"
 
+fence_command="Orchard.ListenerFreeBeamRuntimeEndpointValidation.run_fence_matrix!(\"$SMOKE_ROOT\", \"$NODE_ID\")"
+printf '%s\n' "$fence_command" >&9
+
+if ! wait_for_file "$SMOKE_ROOT/controller.connection-fence.complete" "$CONTROLLER_PID"; then
+  cat "$SMOKE_ROOT/node.log" >&2
+  cat "$SMOKE_ROOT/controller.log" >&2
+  echo "error: authenticated connection-fence matrix did not complete" >&2
+  exit 1
+fi
+
+cat "$SMOKE_ROOT/controller.connection-fence.complete"
+
+heartbeat_count() {
+  psql --no-psqlrc --tuples-only --no-align \
+    --command "SELECT count(*) FROM node_heartbeats WHERE node_id = '$NODE_ID'"
+}
+
+wait_for_fresh_observation() {
+  local baseline="$1"
+  local label="$2"
+
+  for _attempt in $(seq 1 120); do
+    local state count
+    state="$(
+      psql --no-psqlrc --tuples-only --no-align \
+        --command "SELECT state::text FROM nodes WHERE id = '$NODE_ID'" 2>/dev/null || true
+    )"
+    count="$(heartbeat_count 2>/dev/null || true)"
+
+    if [[ "$state" == "active" && "$count" =~ ^[0-9]+$ ]] && (( count > baseline )); then
+      printf '%s: active with heartbeat count %s\n' "$label" "$count"
+      return 0
+    fi
+
+    sleep 0.25
+  done
+
+  return 1
+}
+
+before_node_restart="$(heartbeat_count)"
+stop_process "$NODE_PID"
+NODE_PID=""
+rm -f "$ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE"
+
+ORCHARD_BEAM_NODE_NAME="$NODE_NAME" \
+ORCHARD_BEAM_DIST_PORT_MIN="$NODE_DIST_PORT" \
+ORCHARD_BEAM_DIST_PORT_MAX="$NODE_DIST_PORT" \
+  mise exec -- "$REPO_ROOT/bin/source-dev-peer-grant" node-run \
+    <&8 >>"$SMOKE_ROOT/node.log" 2>&1 &
+NODE_PID=$!
+
+if ! wait_for_file "$ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE" "$NODE_PID" ||
+   ! wait_for_fresh_observation "$before_node_restart" "Node restart recovery"; then
+  cat "$SMOKE_ROOT/node.log" >&2
+  cat "$SMOKE_ROOT/controller.log" >&2
+  echo "error: authenticated Node restart did not recover a fresh observation" >&2
+  exit 1
+fi
+
+before_controller_restart="$(heartbeat_count)"
+stop_process "$CONTROLLER_PID"
+CONTROLLER_PID=""
+
+ORCHARD_BEAM_NODE_NAME="$CONTROLLER_NAME" \
+ORCHARD_BEAM_DIST_PORT_MIN="$CONTROLLER_DIST_PORT" \
+ORCHARD_BEAM_DIST_PORT_MAX="$CONTROLLER_DIST_PORT" \
+  mise exec -- "$REPO_ROOT/bin/source-dev-peer-grant" controller-run \
+    <&9 >>"$SMOKE_ROOT/controller.log" 2>&1 &
+CONTROLLER_PID=$!
+
+if ! wait_for_fresh_observation "$before_controller_restart" "Controller restart recovery"; then
+  cat "$SMOKE_ROOT/node.log" >&2
+  cat "$SMOKE_ROOT/controller.log" >&2
+  echo "error: authenticated Controller restart did not recover a fresh observation" >&2
+  exit 1
+fi
+
 stop_process "$CONTROLLER_PID"
 CONTROLLER_PID=""
 stop_process "$NODE_PID"
 NODE_PID=""
 
-MIX_ENV=test mise exec -- mix test \
+test_args=()
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  test_args+=(--exclude macos)
+fi
+
+MIX_ENV=test mise exec -- mix test "${test_args[@]}" \
   apps/orchard_controller/test/application_test.exs \
   apps/orchard_controller/test/orchard/beam_peer_grants_test.exs \
   apps/orchard_controller/test/orchard/beam_peer_grants/controller_preflight_test.exs \
@@ -301,4 +384,4 @@ ORCHARD_CONTROLLER_MEMBERSHIP_HOST="$IPV4" \
 echo "BEAM Peer Grant composed source-dev application tracer passed"
 echo "Validated: real grant-control application, real mTLS retrieval, owner-only preflight, exact TLS Distribution application launches, admitted-to-active BEAM observation, and explicit legacy BEAM first-connect compatibility"
 echo "Negative paths: wrong canonical launch name, tampered optfile, wrong certificate and grant scope, revoked or expired grant, active-peer expiry with failed reconnection, and no automatic gRPC fallback"
-echo "This is source-dev single-Mac evidence, not packaged or two-Mac acceptance"
+echo "This is source-dev single-host evidence, not packaged or mixed-host acceptance"

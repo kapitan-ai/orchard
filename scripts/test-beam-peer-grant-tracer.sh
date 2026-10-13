@@ -7,6 +7,8 @@ cd "$REPO_ROOT"
 
 ELIXIR_BIN="$(mise which elixir)"
 EPMD_BIN="$(mise which epmd)"
+ERLANG_BIN_DIR="$(dirname "$(mise which erl)")"
+export PATH="$ERLANG_BIN_DIR:$PATH"
 
 discover_private_ipv4() {
   local interface address
@@ -54,7 +56,7 @@ cleanup() {
     wait "$NODE_PID" 2>/dev/null || true
   fi
 
-  ERL_EPMD_PORT="$EPMD_PORT" "$EPMD_BIN" -stop >/dev/null 2>&1 || true
+  "$EPMD_BIN" -port "$EPMD_PORT" -kill >/dev/null 2>&1 || true
   rm -rf "$SMOKE_ROOT"
 }
 trap cleanup EXIT

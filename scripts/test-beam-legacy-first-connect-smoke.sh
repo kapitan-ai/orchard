@@ -11,6 +11,8 @@ CONTROLLER_DIST_PORT="${ORCHARD_BEAM_LEGACY_CONTROLLER_DIST_PORT:-$((54000 + $$ 
 COOKIE="orchard_legacy_$(head -c 30 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 COOKIE_FILE="$SMOKE_ROOT/beam.cookie"
 COOKIE_HOME="$SMOKE_ROOT/cookie-home"
+HOST_HEX_HOME="${HEX_HOME:-$HOME/.hex}"
+HOST_MIX_HOME="${MIX_HOME:-$(mise exec -- sh -c 'printf %s "$MIX_HOME"')}"
 NODE_NAME="orchard_node_agent@127.0.0.1"
 CONTROLLER_NAME="orchard_controller@127.0.0.1"
 NODE_PID=""
@@ -37,7 +39,7 @@ stop_process() {
 
 cleanup() {
   stop_process "$NODE_PID"
-  ERL_EPMD_PORT="$EPMD_PORT" mise exec -- epmd -stop >/dev/null 2>&1 || true
+  mise exec -- epmd -port "$EPMD_PORT" -kill >/dev/null 2>&1 || true
   rm -rf "$SMOKE_ROOT"
 }
 trap cleanup EXIT
@@ -45,6 +47,7 @@ trap cleanup EXIT
 cd "$REPO_ROOT"
 ELIXIR_BIN="$(mise which elixir)"
 ELIXIR_BIN_DIR="$(dirname "$ELIXIR_BIN")"
+ERLANG_BIN_DIR="$(dirname "$(mise which erl)")"
 chmod 700 "$SMOKE_ROOT"
 printf '%s\n' "$COOKIE" > "$COOKIE_FILE"
 chmod 600 "$COOKIE_FILE"
@@ -56,7 +59,9 @@ chmod 400 "$COOKIE_HOME/.erlang.cookie"
 ERL_EPMD_ADDRESS=127.0.0.1 ERL_EPMD_PORT="$EPMD_PORT" mise exec -- epmd -daemon
 
 HOME="$COOKIE_HOME" \
-PATH="$ELIXIR_BIN_DIR:$PATH" \
+HEX_HOME="$HOST_HEX_HOME" \
+MIX_HOME="$HOST_MIX_HOME" \
+PATH="$ELIXIR_BIN_DIR:$ERLANG_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS=127.0.0.1 \
 ERL_EPMD_PORT="$EPMD_PORT" \
 "$ELIXIR_BIN" \
@@ -88,7 +93,9 @@ if (( ready != 1 )); then
 fi
 
 HOME="$COOKIE_HOME" \
-PATH="$ELIXIR_BIN_DIR:$PATH" \
+HEX_HOME="$HOST_HEX_HOME" \
+MIX_HOME="$HOST_MIX_HOME" \
+PATH="$ELIXIR_BIN_DIR:$ERLANG_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS=127.0.0.1 \
 ERL_EPMD_PORT="$EPMD_PORT" \
 MIX_ENV=dev \

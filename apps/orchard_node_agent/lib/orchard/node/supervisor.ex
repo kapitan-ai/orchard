@@ -9,7 +9,14 @@ defmodule Orchard.Node.Supervisor do
 
   use Supervisor
 
-  alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
+  alias Orchard.Node.{
+    Endpoint,
+    HostInventory,
+    ModelManager,
+    RuntimeProcessReaper,
+    RuntimeTLS,
+    WorkerSupervisor
+  }
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -28,6 +35,7 @@ defmodule Orchard.Node.Supervisor do
         {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
       ]
       |> maybe_add_runtime_grpc_listener()
+      |> Kernel.++([HostInventory])
 
     Supervisor.init(children, strategy: :rest_for_one)
   end

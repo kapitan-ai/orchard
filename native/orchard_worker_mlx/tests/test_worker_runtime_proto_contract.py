@@ -22,7 +22,7 @@ LEGACY_PROTO = (
     / "v1"
     / "worker_runtime.proto"
 )
-EXPECTED_DESCRIPTOR_SET_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "437908118a25dc80af6482910cec9afb95730f1d78e5f7d67994264fdf3acb10"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",

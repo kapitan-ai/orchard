@@ -21,7 +21,13 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   alias Orchard.Inference
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    BeamClient,
+    GrpcCompatibilityClient,
+    ReconnectBackoff,
+    Target
+  }
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
@@ -70,6 +76,13 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @spec run_once(keyword()) :: {:ok, [result()]} | {:error, atom()}
   def run_once(opts \\ []) do
+    case run_cycle(opts) do
+      {:ok, results, _failures} -> {:ok, results}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_cycle(opts) do
     client = Keyword.get(opts, :client, Inference.runtime_endpoint_client())
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
@@ -91,11 +104,11 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
           end)
         end
 
-      trusted_results =
-        Enum.flat_map(trusted_targets, &probe_target(&1, client, timeout, observed_at, :trusted))
+      trusted_outcomes =
+        Enum.map(trusted_targets, &probe_target(&1, client, timeout, observed_at, :trusted))
 
-      discovery_results =
-        Enum.flat_map(
+      discovery_outcomes =
+        Enum.map(
           discovery_targets,
           &probe_target(&1, client, timeout, observed_at, :discovery)
         )
@@ -103,7 +116,17 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
       _ = Nodes.sweep_stale_node_heartbeats(observed_at)
       safe_prune_heartbeats(heartbeat_context, observed_at)
 
-      {:ok, trusted_results ++ discovery_results}
+      outcomes = trusted_outcomes ++ discovery_outcomes
+
+      results =
+        for {:observed, result} <- outcomes, do: result
+
+      failures =
+        for {{:failed, reason}, target} <- Enum.zip(trusted_outcomes, trusted_targets),
+            target.transport == :beam,
+            do: {target.id, reason}
+
+      {:ok, results, failures}
     else
       false -> {:error, :activation_probe_transport_disabled}
       {:error, reason} -> {:error, reason}
@@ -117,30 +140,154 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
       |> Keyword.get(:interval, configured_interval())
       |> contract_safe_interval()
 
+    monotonic_ms = Keyword.get(opts, :monotonic_ms, fn -> System.monotonic_time(:millisecond) end)
+    now_ms = monotonic_ms.()
     schedule_probe(interval)
-    {:ok, %{interval: interval}}
+
+    {:ok,
+     %{
+       interval: interval,
+       monotonic_ms: monotonic_ms,
+       next_regular_at_ms: now_ms + interval,
+       probe_opts:
+         Keyword.take(opts, [
+           :client,
+           :discovery_targets,
+           :heartbeat_context,
+           :observed_at,
+           :targets,
+           :timeout
+         ]),
+       random_offset: Keyword.get(opts, :random_offset, fn width -> :rand.uniform(width) - 1 end),
+       reconnect: %{}
+     }}
   end
 
   @impl true
   def handle_info(:probe, state) do
-    safe_run_once()
-    schedule_probe(state.interval)
+    now_ms = state.monotonic_ms.()
+    {targets, regular?, configured_ids} = scheduled_targets(state, now_ms)
+
+    state =
+      if targets == [] and not regular? do
+        state
+      else
+        probe_scheduled_targets(state, targets, configured_ids, regular?, now_ms)
+      end
+
+    schedule_probe(next_delay(state, now_ms))
     {:noreply, state}
   end
 
-  defp safe_run_once do
-    case run_once() do
-      {:ok, _results} -> :ok
-      {:error, _reason} -> :ok
-    end
+  defp safe_run_cycle(opts) do
+    run_cycle(opts)
   rescue
     exception ->
       Logger.debug("Activation status probe crashed: #{Exception.message(exception)}")
-      :ok
+      {:error, :activation_probe_failed}
   catch
     kind, reason ->
       Logger.debug("Activation status probe aborted: #{inspect({kind, reason})}")
-      :ok
+      {:error, :activation_probe_failed}
+  end
+
+  defp scheduled_targets(state, now_ms) do
+    targets = configured_targets(state.probe_opts)
+    regular? = now_ms >= state.next_regular_at_ms
+
+    selected =
+      Enum.filter(targets, fn target ->
+        case Map.get(state.reconnect, target.id) do
+          nil -> regular?
+          backoff -> ReconnectBackoff.due?(backoff, now_ms)
+        end
+      end)
+
+    {selected, regular?, MapSet.new(targets, & &1.id)}
+  end
+
+  defp configured_targets(opts) do
+    Keyword.get_lazy(opts, :targets, fn ->
+      Inference.activation_probe_runtime_endpoint_targets()
+    end)
+  end
+
+  defp probe_scheduled_targets(state, targets, configured_ids, regular?, now_ms) do
+    opts =
+      state.probe_opts
+      |> Keyword.put(:targets, targets)
+      |> Keyword.put(:discovery_targets, [])
+
+    state = if regular?, do: %{state | next_regular_at_ms: now_ms + state.interval}, else: state
+
+    case safe_run_cycle(opts) do
+      {:ok, results, failures} ->
+        update_reconnect_state(state, configured_ids, results, failures, regular?, now_ms)
+
+      {:error, _reason} ->
+        %{state | reconnect: Map.new(state.reconnect, &block_reconnect/1)}
+    end
+  end
+
+  defp update_reconnect_state(state, configured_ids, results, failures, regular?, now_ms) do
+    observed_ids = MapSet.new(results, & &1.target_id)
+
+    reconnect =
+      state.reconnect
+      |> Map.drop(MapSet.to_list(observed_ids))
+      |> maybe_drop_absent_targets(configured_ids, regular?)
+      |> add_failures(failures, now_ms, state.random_offset)
+
+    %{state | reconnect: reconnect}
+  end
+
+  defp maybe_drop_absent_targets(reconnect, current_ids, true),
+    do: Map.take(reconnect, MapSet.to_list(current_ids))
+
+  defp maybe_drop_absent_targets(reconnect, _current_ids, false), do: reconnect
+
+  defp block_reconnect({target_id, backoff}),
+    do: {target_id, ReconnectBackoff.authority_lost(backoff)}
+
+  defp add_failures(reconnect, failures, now_ms, random_offset) do
+    Enum.reduce(failures, reconnect, fn {target_id, reason}, states ->
+      backoff = Map.get(states, target_id, ReconnectBackoff.new(now_ms))
+      backoff = next_reconnect_state(backoff, reason, now_ms, random_offset)
+      Map.put(states, target_id, backoff)
+    end)
+  end
+
+  defp next_reconnect_state(backoff, reason, now_ms, random_offset) do
+    if authority_failure?(reason) do
+      ReconnectBackoff.authority_lost(backoff)
+    else
+      {_delay, backoff} = ReconnectBackoff.failed(backoff, now_ms, random_offset)
+      backoff
+    end
+  end
+
+  defp authority_failure?(reason)
+       when reason in [
+              :beam_peer_grant_authorization_unavailable,
+              :beam_peer_grant_revoked,
+              :beam_peer_grant_expired,
+              :beam_peer_grant_missing,
+              :beam_peer_credential_mismatch,
+              :beam_authorization_root_unavailable
+            ],
+       do: true
+
+  defp authority_failure?(_reason), do: false
+
+  defp next_delay(state, now_ms) do
+    retry_deadline =
+      state.reconnect
+      |> Map.values()
+      |> Enum.reject(& &1.blocked?)
+      |> Enum.map(& &1.next_attempt_at_ms)
+      |> Enum.min(fn -> state.next_regular_at_ms end)
+
+    max(min(retry_deadline, state.next_regular_at_ms) - now_ms, 1)
   end
 
   defp safe_prune_heartbeats(heartbeat_context, observed_at) do
@@ -163,7 +310,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
           case client.status(connection, timeout: timeout) do
             {:ok, observation} ->
               maybe_persist_discovery_observation(mode, target, observation, observed_at)
-              [%{target_id: target.id, status: :observed}]
+              {:observed, %{target_id: target.id, status: :observed}}
 
             {:error, reason} ->
               record_probe_failure(mode, target, reason, observed_at)
@@ -205,12 +352,14 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     # Seam rejections are ignored by Nodes.record_transport_failure/3.
     _ = Nodes.record_transport_failure(target, reason, observed_at)
     log_probe_failure(target.id, reason)
+    {:failed, reason}
   end
 
   defp record_probe_failure(:discovery, target, reason, _observed_at) do
     # Discovery targets are not yet trusted inventory. Failures stay ephemeral so
     # a missing configured peer does not invent Node demotion rows.
     log_probe_failure(target.id, reason)
+    {:failed, reason}
   end
 
   defp disconnect(client, connection) do
@@ -226,7 +375,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   defp log_probe_failure(target_id, reason) do
     Logger.debug("Activation status probe failed for #{target_id}: #{probe_failure_code(reason)}")
-    []
+    :ok
   end
 
   defp probe_failure_code(reason) when is_atom(reason), do: reason

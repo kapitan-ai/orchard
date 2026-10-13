@@ -1,7 +1,7 @@
 defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
   use ExUnit.Case, async: true
 
-  alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
+  alias Orchard.RuntimeEndpoint.{BeamPeerConnectionLock, DistributionExpiryGuard, RevokedCookie}
 
   @controller_id "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
   @controller_name "orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.0.0.10"
@@ -181,7 +181,59 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
         replacement
       end
 
-    assert Enum.uniq(replacements) == [:orchard_expired_peer_grant]
+    assert Enum.uniq(replacements) == [RevokedCookie.value()]
+  end
+
+  test "KAP-82 expiry cannot interleave its revoked cookie with a peer transition" do
+    test_pid = self()
+    now = ~U[2026-07-13 08:00:00.000000Z]
+    peer = String.to_atom(@controller_name)
+
+    manifest = %{
+      role: :node_agent,
+      controller_id: @controller_id,
+      node_id: @node_id,
+      controller_beam_name: @controller_name,
+      node_beam_name: @node_name,
+      expires_at: now
+    }
+
+    transition =
+      Task.async(fn ->
+        BeamPeerConnectionLock.transact(peer, fn ->
+          send(test_pid, :peer_transition_paused)
+
+          receive do
+            :release_peer_transition -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :peer_transition_paused
+
+    assert {:ok, guard} =
+             DistributionExpiryGuard.start_link(
+               name: :serialized_expiry_guard,
+               manifest_path: "/protected/launch.json",
+               launch_loader: fn _path -> {:ok, manifest} end,
+               now: fn -> now end,
+               cookie_setter: fn ^peer, _replacement ->
+                 send(test_pid, :expiry_cookie_installed)
+                 true
+               end,
+               disconnect: fn ^peer -> true end,
+               stop_distribution: fn -> :ok end,
+               fail_closed: fn -> :ok end,
+               shutdown_grace_ms: 25,
+               hard_stop: fn -> send(test_pid, :expiry_deadline_reached) end
+             )
+
+    refute_receive :expiry_cookie_installed
+    assert_receive :expiry_deadline_reached, @expiry_timeout_ms
+    send(transition.pid, :release_peer_transition)
+    assert Task.await(transition) == :ok
+    assert_receive :expiry_cookie_installed, @expiry_timeout_ms
+    GenServer.stop(guard)
   end
 
   test "SPEC.md §7.5.0 malformed manifest peers fail without creating atoms" do

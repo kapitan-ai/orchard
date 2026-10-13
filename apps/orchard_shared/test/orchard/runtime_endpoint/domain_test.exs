@@ -111,6 +111,13 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert Observation.new(%{}).worker_crash_counters == []
   end
 
+  test "additive host inventory is preserved while older observations decode as absent" do
+    inventory = %{schema_version: 1, authority: :observation_only}
+
+    assert Observation.new(%{host_inventory: inventory}).host_inventory == inventory
+    assert Observation.new(%{}).host_inventory == nil
+  end
+
   test "SPEC.md §4.6.2 observations preserve aggregate capacity evidence before fallbacks" do
     observation =
       Observation.new(%{

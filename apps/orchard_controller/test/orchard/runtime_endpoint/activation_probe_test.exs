@@ -13,6 +13,26 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
     def status(_connection, _opts), do: {:error, :authenticated_transport_failed}
   end
 
+  defmodule RecordingFailingClient do
+    def connect(target) do
+      send(Process.whereis(:activation_probe_test_pid), {:reconnect_attempt, target.id})
+      {:error, :beam_node_unavailable}
+    end
+
+    def disconnect(_connection), do: :ok
+    def status(_connection, _opts), do: {:error, :beam_node_unavailable}
+  end
+
+  defmodule AuthorityFailingClient do
+    def connect(target) do
+      send(Process.whereis(:activation_probe_test_pid), {:authority_attempt, target.id})
+      {:error, :beam_peer_grant_revoked}
+    end
+
+    def disconnect(_connection), do: :ok
+    def status(_connection, _opts), do: {:error, :beam_peer_grant_revoked}
+  end
+
   defmodule RejectingClient do
     def connect(target), do: {:ok, %{target: target}}
     def disconnect(_connection), do: :ok
@@ -64,7 +84,14 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
       :orchard_controller,
       :activation_probe,
       Keyword.merge(previous,
-        allowed_clients: [FailingClient, RejectingClient, IdleClient, DiscoveryClient],
+        allowed_clients: [
+          FailingClient,
+          RecordingFailingClient,
+          AuthorityFailingClient,
+          RejectingClient,
+          IdleClient,
+          DiscoveryClient
+        ],
         interval_ms: 5_000
       )
     )
@@ -77,7 +104,115 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
       end
     end)
 
+    Process.register(self(), :activation_probe_test_pid)
+
+    on_exit(fn ->
+      if Process.whereis(:activation_probe_test_pid) == self(),
+        do: Process.unregister(:activation_probe_test_pid)
+    end)
+
     :ok
+  end
+
+  test "KAP-82 private BEAM retries use scheduled equal jitter rather than fixed polling" do
+    {:ok, clock} = Agent.start_link(fn -> 0 end)
+
+    target =
+      Target.beam(Ecto.UUID.generate(),
+        address: :missing_peer@localhost,
+        metadata: %{authorization: :inference_dispatch, source: :trusted_node_inventory}
+      )
+
+    pid =
+      start_supervised!(
+        {ActivationProbe,
+         client: RecordingFailingClient,
+         interval: 5_000,
+         monotonic_ms: fn -> Agent.get(clock, & &1) end,
+         random_offset: fn _width -> 0 end,
+         targets: [target]}
+      )
+
+    Agent.update(clock, fn _now -> 5_000 end)
+    send(pid, :probe)
+    assert_receive {:reconnect_attempt, target_id}
+    assert target_id == target.id
+    assert %{reconnect: %{^target_id => first}} = :sys.get_state(pid)
+    assert first.ceiling_ms == 500
+    assert first.next_attempt_at_ms == 5_125
+
+    Agent.update(clock, fn _now -> 5_124 end)
+    send(pid, :probe)
+    _state = :sys.get_state(pid)
+    refute_receive {:reconnect_attempt, ^target_id}
+
+    Agent.update(clock, fn _now -> 5_125 end)
+    send(pid, :probe)
+    assert_receive {:reconnect_attempt, ^target_id}
+    assert %{reconnect: %{^target_id => second}} = :sys.get_state(pid)
+    assert second.ceiling_ms == 1_000
+    assert second.next_attempt_at_ms == 5_375
+  end
+
+  test "KAP-82 regular polling cannot bypass transient backoff or lost authority" do
+    {:ok, clock} = Agent.start_link(fn -> 0 end)
+
+    target =
+      Target.beam(Ecto.UUID.generate(),
+        address: :missing_peer@localhost,
+        metadata: %{authorization: :inference_dispatch, source: :trusted_node_inventory}
+      )
+
+    transient =
+      start_supervised!(
+        {ActivationProbe,
+         name: :transient_activation_probe,
+         client: RecordingFailingClient,
+         interval: 5_000,
+         monotonic_ms: fn -> Agent.get(clock, & &1) end,
+         random_offset: fn width -> width - 1 end,
+         targets: [target]}
+      )
+
+    Agent.update(clock, fn _now -> 5_000 end)
+    send(transient, :probe)
+    assert_receive {:reconnect_attempt, target_id}
+    assert target_id == target.id
+
+    for retry_at <- [5_249, 5_748, 6_747, 8_746] do
+      Agent.update(clock, fn _now -> retry_at end)
+      send(transient, :probe)
+      assert_receive {:reconnect_attempt, ^target_id}
+    end
+
+    assert %{reconnect: %{^target_id => %{next_attempt_at_ms: 12_745}}} =
+             :sys.get_state(transient)
+
+    Agent.update(clock, fn _now -> 10_000 end)
+    send(transient, :probe)
+    _state = :sys.get_state(transient)
+    refute_receive {:reconnect_attempt, ^target_id}
+
+    assert :ok = stop_supervised(ActivationProbe)
+
+    authority =
+      start_supervised!(
+        {ActivationProbe,
+         client: AuthorityFailingClient,
+         interval: 5_000,
+         monotonic_ms: fn -> Agent.get(clock, & &1) end,
+         targets: [target]}
+      )
+
+    Agent.update(clock, fn _now -> 15_000 end)
+    send(authority, :probe)
+    assert_receive {:authority_attempt, ^target_id}
+    assert %{reconnect: %{^target_id => %{blocked?: true}}} = :sys.get_state(authority)
+
+    Agent.update(clock, fn _now -> 20_000 end)
+    send(authority, :probe)
+    _state = :sys.get_state(authority)
+    refute_receive {:authority_attempt, ^target_id}
   end
 
   test "SPEC.md §4.5 probe interval is strictly below freshness and unreachable thresholds" do

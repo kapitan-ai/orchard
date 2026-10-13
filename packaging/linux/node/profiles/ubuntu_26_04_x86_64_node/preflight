@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'orchard-linux-node-preflight: %s\n' "$1" >&2
+    exit 1
+}
+
+root=${1:-/}
+case "$root" in /*) ;; *) root=/ ;; esac
+os_release="$root/etc/os-release"
+[ -f "$os_release" ] || fail "missing $os_release"
+
+id_fields=$(grep -c '^ID=' "$os_release" || true)
+version_fields=$(grep -c '^VERSION_ID=' "$os_release" || true)
+[ "$id_fields" = "1" ] && grep -Fqx 'ID=ubuntu' "$os_release" || fail "requires exact ID=ubuntu"
+[ "$version_fields" = "1" ] && grep -Fqx 'VERSION_ID="26.04"' "$os_release" || fail "requires exact VERSION_ID=26.04"
+
+[ "$(uname -m)" = "x86_64" ] || fail "requires x86_64"
+[ "$(cat "$root/proc/1/comm")" = "systemd" ] || fail "requires systemd as PID 1"
+! grep -qi microsoft "$root/proc/sys/kernel/osrelease" || fail "WSL is not qualified"
+! systemd-detect-virt --container --quiet || fail "containers as hosts are not qualified"
+kernel=$(uname -r)
+printf '%s\n' "$kernel" | grep -Eq '^7\.0\.[0-9]+-[0-9]+-generic$' || fail "requires Ubuntu 26.04 generic kernel 7.0 line, found $kernel"
+libc=$(ldd --version | sed -n '1s/.* //p')
+case "$libc" in 2.43|2.43-*) ;; *) fail "requires Ubuntu 26.04 glibc 2.43, found ${libc:-unknown}" ;; esac
+systemd=$(systemctl --version | sed -n '1s/[^0-9]*\([0-9][0-9]*\).*/\1/p')
+[ "$systemd" = "259" ] || fail "requires Ubuntu 26.04 systemd 259, found ${systemd:-unknown}"
+command -v gnustat >/dev/null 2>&1 && gnustat --version | grep -q 'GNU coreutils' || fail "requires gnu-coreutils gnustat"
+command -v gnutimeout >/dev/null 2>&1 && gnutimeout --version | grep -q 'GNU coreutils' || fail "requires gnu-coreutils gnutimeout"
+[ "$(gnustat -fc %T "$root/sys/fs/cgroup")" = "cgroup2fs" ] || fail "requires unified cgroup v2"
+command -v flock >/dev/null 2>&1 || fail "requires util-linux flock"
+while read -r package minimum; do
+    installed=$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null) || fail "missing dependency $package"
+    dpkg --compare-versions "$installed" ge "$minimum" || fail "$package $installed does not satisfy >= $minimum"
+done <<'EOF'
+libc6 2.43
+systemd 259
+util-linux 2.41.3
+gnu-coreutils 9.7
+adduser 3.153ubuntu1
+libssl3t64 3.5.5
+libtinfo6 6.6
+zlib1g 1:1.3.dfsg+really1.3.1
+libstdc++6 16
+libgcc-s1 16
+EOF
+
+printf 'orchard-linux-node-preflight: compatible ubuntu_26_04_x86_64_node candidate host\n'

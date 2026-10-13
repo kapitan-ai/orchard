@@ -10,6 +10,9 @@ defmodule OrchardSharedTest do
     ExecuteInferenceRequest,
     FinishReason,
     GenerationParams,
+    HostCpuObservation,
+    HostEvidence,
+    HostInventoryObservation,
     InferenceEvent,
     ModelLoadFailureCategory,
     ModelRef,
@@ -210,6 +213,27 @@ defmodule OrchardSharedTest do
     assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
   end
 
+  test "round-trips additive observation-only host inventory" do
+    response = %StatusResponse{
+      host_inventory: %HostInventoryObservation{
+        schema_version: 1,
+        observed_at_unix_ms: 1_789_743_600_000,
+        authority: :HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY,
+        cpu: %HostCpuObservation{
+          evidence: %HostEvidence{
+            state: :HOST_EVIDENCE_STATE_OBSERVED,
+            source: "lscpu --json",
+            observed_at_unix_ms: 1_789_743_600_000
+          },
+          architecture: "x86_64",
+          logical_processor_count: 32
+        }
+      }
+    }
+
+    assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
+  end
+
   test "StatusResponse with absent node_metadata and runtime_health decodes as nil" do
     # Encode a StatusResponse with only legacy fields (1-3)
     legacy = %StatusResponse{
@@ -221,6 +245,7 @@ defmodule OrchardSharedTest do
     decoded = legacy |> StatusResponse.encode() |> StatusResponse.decode()
     assert decoded.node_metadata == nil
     assert decoded.runtime_health == nil
+    assert decoded.host_inventory == nil
   end
 
   test "StatusResponse with runtime_health containing affected_model round-trips" do

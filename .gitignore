@@ -29,6 +29,8 @@ erl_crash.dump
 *.dmg
 *.pkg
 *.pkg.sha256
+*.deb
+*.deb.sha256
 
 # Database
 *.db

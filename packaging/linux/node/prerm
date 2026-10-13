@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = "remove" ]; then
+    root=${ORCHARD_PACKAGE_ROOT:-}
+    if [ -n "$root" ]; then
+        [ "${ORCHARD_SYSTEMD_SIMULATE:-0}" = "1" ] || exit 1
+        install -d -m 0700 "$root/run/orchard-node"
+        printf 'stop\ndisable\n' >> "$root/run/orchard-node/systemd-simulation.log"
+    else
+        systemctl stop orchard-node-agent.service
+        systemctl disable orchard-node-agent.service
+    fi
+fi
+exit 0

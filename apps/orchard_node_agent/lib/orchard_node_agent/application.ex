@@ -11,7 +11,7 @@ defmodule Orchard.NodeAgent.Application do
   }
 
   alias Orchard.Node.Supervisor, as: NodeSupervisor
-  alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
+  alias Orchard.RuntimeEndpoint.{ConnectionIncarnation, DistributionExpiryGuard}
 
   @impl true
   def start(_type, _args) do
@@ -72,6 +72,7 @@ defmodule Orchard.NodeAgent.Application do
         {verifier, shared_opts},
         {expiry_guard, expiry_opts},
         {BeamPeerGrantBootstrap, bootstrap_opts},
+        {ConnectionIncarnation, role: :node_agent},
         NodeSupervisor
       ]
     else

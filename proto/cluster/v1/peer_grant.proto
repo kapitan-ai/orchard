@@ -7,6 +7,8 @@ package cluster.v1;
 service ControllerPeerGrantService {
   rpc RetrieveBeamPeerGrant(RetrieveBeamPeerGrantRequest)
       returns (RetrieveBeamPeerGrantResponse);
+  rpc AcknowledgeBeamPeerGrant(AcknowledgeBeamPeerGrantRequest)
+      returns (AcknowledgeBeamPeerGrantResponse);
 }
 
 message RetrieveBeamPeerGrantRequest {
@@ -36,4 +38,19 @@ message RetrieveBeamPeerGrantResponse {
   string expires_at = 18;
   string encoded_secret = 19;
   bytes secret_hash = 20;
+}
+
+message AcknowledgeBeamPeerGrantRequest {
+  string grant_id = 1;
+  uint64 generation = 2;
+  string controller_id = 3;
+  string installation_id = 4;
+  bytes secret_hash = 5;
+  string local_identity_generation_id = 6;
+}
+
+message AcknowledgeBeamPeerGrantResponse {
+  string grant_id = 1;
+  uint64 generation = 2;
+  bool accepted = 3;
 }

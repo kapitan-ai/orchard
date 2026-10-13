@@ -9,13 +9,29 @@ defmodule Orchard.Node.RuntimeEndpoint do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node.{RuntimeEndpointMapper, RuntimeServer, Status}
-  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target}
+  alias Orchard.RuntimeEndpoint.{ConnectionIncarnation, GrpcMapping, Operation, Target}
 
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
 
   @spec status(Target.t() | nil, keyword()) :: {:ok, Orchard.RuntimeEndpoint.Observation.t()}
   def status(target \\ nil, _opts \\ []) do
     {:ok, RuntimeEndpointMapper.observation_from_status(target, Status.current())}
+  end
+
+  @doc """
+  Returns status fenced to the current authenticated Controller connection.
+  """
+  @spec authenticated_status(Target.t(), node(), keyword()) ::
+          {:ok, Orchard.RuntimeEndpoint.Observation.t()} | {:error, atom()}
+  def authenticated_status(target, controller_node, opts \\ [])
+      when is_atom(controller_node) and is_list(opts) do
+    registry = Keyword.get(opts, :connection_incarnation_registry, ConnectionIncarnation)
+
+    with {:ok, %{incarnation: incarnation}} <-
+           ConnectionIncarnation.issue(controller_node, registry),
+         {:ok, observation} <- status(target, opts) do
+      {:ok, Map.put(observation, :agent_connection_incarnation, incarnation)}
+    end
   end
 
   @spec ensure_model_loaded(Operation.EnsureModelLoadedRequest.t(), keyword()) ::

@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+root=${ORCHARD_PACKAGE_ROOT:-}
+if [ -n "$root" ]; then
+    [ "${ORCHARD_SYSTEMD_SIMULATE:-0}" = "1" ] || exit 1
+else
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+if [ "${1:-}" = "remove" ]; then
+    rm -rf "$root/run/orchard-node"
+fi
+
+# Deliberately retain the configuration, state, and log roots. Destructive
+# purge is outside this profile.
+exit 0

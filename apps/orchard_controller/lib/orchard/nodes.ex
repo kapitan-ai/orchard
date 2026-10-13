@@ -81,6 +81,7 @@ defmodule Orchard.Nodes do
   alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Governance
   alias Orchard.Governance.{AuditLog, AuditWriter}
+  alias Orchard.NodeCredentials
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Enrollment, Node}
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
@@ -88,6 +89,7 @@ defmodule Orchard.Nodes do
 
   alias Orchard.RuntimeEndpoint.{
     AuthenticatedPeer,
+    ConnectionIncarnation,
     GrpcCompatibilityMapper,
     ModelRef,
     Observation,
@@ -1678,11 +1680,19 @@ defmodule Orchard.Nodes do
          opts
        ) do
     Repo.transaction(fn ->
-      with %BeamPeerGrants.Grant{} = grant <-
+      with %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
+           :ok <- run_lock_observer(opts, :node),
+           {:ok, _credential} <-
+             NodeCredentials.authorize_peer_in_transaction(
+               peer_identity.node_id,
+               peer_identity.certificate_identifier,
+               peer_identity.certificate_fingerprint,
+               opts
+             ),
+           :ok <- run_lock_observer(opts, :credential),
+           %BeamPeerGrants.Grant{} = grant <-
              lock_authenticated_beam_grant(target, peer_identity),
            :ok <- run_lock_observer(opts, :grant),
-           %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
-           :ok <- run_lock_observer(opts, :node),
            %Enrollment{} = enrollment <- lock_authenticated_enrollment(peer_identity),
            :ok <- run_lock_observer(opts, :enrollment),
            %ControllerInstance{} = controller <-
@@ -1940,9 +1950,8 @@ defmodule Orchard.Nodes do
 
       case Repo.update_all(query, set: Map.to_list(updates)) do
         {1, _rows} ->
-          Node
-          |> Repo.get!(node.id)
-          |> persist_authenticated_capacity_evidence(
+          persist_and_fence_authenticated_observation(
+            node.id,
             target,
             observation,
             status_response,
@@ -1954,6 +1963,55 @@ defmodule Orchard.Nodes do
       end
     else
       Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp persist_and_fence_authenticated_observation(
+         node_id,
+         target,
+         observation,
+         status_response,
+         opts
+       ) do
+    updated =
+      Node
+      |> Repo.get!(node_id)
+      |> persist_authenticated_capacity_evidence(
+        target,
+        observation,
+        without_connection_incarnation(status_response),
+        opts
+      )
+
+    with :ok <- run_before_authenticated_observation_commit(opts),
+         true <-
+           Keyword.get(opts, :authenticated_connection_fence_held, false) or
+             current_connection_incarnation?(opts) do
+      updated
+    else
+      _reason -> Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp without_connection_incarnation(status_response),
+    do: Map.put(status_response, :agent_connection_incarnation, nil)
+
+  defp current_connection_incarnation?(opts) do
+    registry = Keyword.get(opts, :connection_incarnation_registry, ConnectionIncarnation)
+
+    case Keyword.get(opts, :connection_incarnation_evidence) do
+      %{connection_id: connection_id, incarnation: incarnation, peer_node: peer_node} ->
+        ConnectionIncarnation.current?(peer_node, connection_id, incarnation, registry)
+
+      _other ->
+        false
+    end
+  end
+
+  defp run_before_authenticated_observation_commit(opts) do
+    case Keyword.get(opts, :before_authenticated_observation_commit) do
+      callback when is_function(callback, 0) -> callback.()
+      _other -> :ok
     end
   end
 
@@ -3048,7 +3106,13 @@ defmodule Orchard.Nodes do
   defp trusted_connection_address(_node), do: :error
 
   defp enrollment_certificate_binding(%Enrollment{} = enrollment) do
-    result = enrollment.certificate_result
+    with {:ok, credential} <- NodeCredentials.current(enrollment.node_id) do
+      credential_certificate_binding(enrollment, credential)
+    end
+  end
+
+  defp credential_certificate_binding(enrollment, credential) do
+    result = credential.certificate_result
     certificate_pem = map_get(result, :node_certificate_pem)
     stored_serial = map_get(result, :certificate_serial)
     stored_node_uri = map_get(result, :node_uri_san)
@@ -3057,7 +3121,7 @@ defmodule Orchard.Nodes do
     expected_node_uri =
       "urn:orchard:cluster:#{enrollment.cluster_id}:node:#{enrollment.node_id}"
 
-    with true <- non_empty?(enrollment.certificate_identifier),
+    with true <- non_empty?(credential.certificate_identifier),
          true <- is_binary(certificate_pem),
          {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
          true <- certificate.serial == stored_serial,
@@ -3066,7 +3130,7 @@ defmodule Orchard.Nodes do
          true <- non_empty?(runtime_trust_spki) do
       {:ok,
        %{
-         certificate_identifier: enrollment.certificate_identifier,
+         certificate_identifier: credential.certificate_identifier,
          certificate_serial: certificate.serial,
          certificate_fingerprint: certificate.fingerprint,
          node_uri_san: expected_node_uri,

@@ -11,6 +11,7 @@ defmodule OrchardCLI.NodeIdentityStoreSecurityTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.NodeCredentials
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
   alias Orchard.NodeTrust
@@ -232,6 +233,89 @@ defmodule OrchardCLI.NodeIdentityStoreSecurityTest do
     assert legacy.controller_certificate_pem == nil
   end
 
+  test "KAP-82 renewal stages and atomically activates owner-only certificate generations", %{
+    root: root,
+    trust: trust
+  } do
+    prepared = prepare_case(Path.join(root, "renewal-generations"), trust)
+    response = redeem!(prepared)
+    assert {:ok, original} = Store.finalize(prepared.identity_root, prepared.identity, response)
+
+    assert {:error, :node_identity_storage_failed} =
+             Store.prepare_staged(prepared.identity_root,
+               after_pointer_publish: fn -> {:error, :forced_post_publish_failure} end
+             )
+
+    assert {:ok, renewal} = Store.load_staged(prepared.identity_root)
+    assert renewal.state == "prepared"
+    refute renewal.generation_id == original.generation_id
+
+    assert {:error, :node_identity_rotation_in_progress} =
+             Store.prepare_staged(prepared.identity_root)
+
+    renewal_at = DateTime.add(prepared.now, 60, :day)
+
+    assert {:ok, authority} =
+             NodeCredentials.stage_renewal(prepared.bundle.node_id, renewal.csr_pem,
+               now: renewal_at
+             )
+
+    renewal_response = authority.certificate_result
+    assert renewal_response["credential_generation_id"] == authority.id
+
+    assert :ok =
+             PKI.validate_issued_identity(%{
+               certificate_identifier: renewal_response["certificate_identifier"],
+               certificate_serial: renewal_response["certificate_serial"],
+               cluster_id: renewal.cluster_id,
+               csr_fingerprint: renewal.csr_fingerprint,
+               enrollment_id: authority.id,
+               node_id: renewal.node_id,
+               node_certificate_pem: renewal_response["node_certificate_pem"],
+               public_key_fingerprint: renewal.public_key_fingerprint,
+               runtime_ca_certificate_pem: renewal_response["runtime_ca_certificate_pem"],
+               runtime_trust_spki_sha256: renewal.runtime_trust_spki_sha256,
+               now: renewal_at
+             })
+
+    assert {:ok, staged} =
+             Store.finalize_staged(
+               prepared.identity_root,
+               renewal,
+               renewal_response,
+               now: renewal_at
+             )
+
+    assert staged.state == "registered"
+    assert staged.credential_generation_id == authority.id
+    assert {:ok, ^original} = Store.load_current(prepared.identity_root)
+    assert private_mode(Path.join(prepared.identity_root, "staged")) == 0o600
+
+    staged_root = Path.join([prepared.identity_root, "generations", staged.generation_id])
+    assert private_mode(staged_root) == 0o700
+    assert private_mode(Path.join(staged_root, "node-private-key.pem")) == 0o600
+
+    assert {:ok, activated} = Store.activate_staged(prepared.identity_root, now: renewal_at)
+    assert activated.generation_id == staged.generation_id
+    assert {:error, :not_found} = Store.load_staged(prepared.identity_root)
+
+    current_pointer = File.read!(Path.join(prepared.identity_root, "current"))
+    staged_pointer = Path.join(prepared.identity_root, "staged")
+    File.write!(staged_pointer, current_pointer, [:exclusive])
+    File.chmod!(staged_pointer, 0o600)
+
+    assert {:ok, recovered} = Store.activate_staged(prepared.identity_root, now: renewal_at)
+    assert recovered.generation_id == staged.generation_id
+    assert {:error, :not_found} = Store.load_staged(prepared.identity_root)
+
+    File.ln_s!(
+      Path.join(prepared.identity_root, "current"),
+      Path.join(prepared.identity_root, "staged")
+    )
+
+    assert {:error, :node_identity_storage_invalid} = Store.load_staged(prepared.identity_root)
+  end
+
   defp prepare_case(root, trust) do
     now = DateTime.utc_now()
     expires_at = DateTime.add(now, 3_600, :second)
@@ -415,4 +499,9 @@ defmodule OrchardCLI.NodeIdentityStoreSecurityTest do
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp private_mode(path) do
+    {:ok, stat} = File.stat(path)
+    Bitwise.band(stat.mode, 0o777)
+  end
 end

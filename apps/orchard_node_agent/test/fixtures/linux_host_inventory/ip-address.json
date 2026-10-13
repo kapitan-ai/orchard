@@ -1,0 +1,25 @@
+[
+  {
+    "ifindex": 1,
+    "ifname": "lo",
+    "mtu": 65536,
+    "operstate": "UNKNOWN",
+    "link_type": "loopback",
+    "address": "00:00:00:00:00:00",
+    "addr_info": [
+      {"family": "inet", "local": "127.0.0.1", "prefixlen": 8, "scope": "host"}
+    ]
+  },
+  {
+    "ifindex": 2,
+    "ifname": "eth0",
+    "mtu": 1500,
+    "operstate": "UP",
+    "link_type": "ether",
+    "address": "02:00:00:00:00:01",
+    "addr_info": [
+      {"family": "inet", "local": "192.0.2.10", "prefixlen": 24, "scope": "global"},
+      {"family": "inet6", "local": "2001:db8::10", "prefixlen": 64, "scope": "global"}
+    ]
+  }
+]

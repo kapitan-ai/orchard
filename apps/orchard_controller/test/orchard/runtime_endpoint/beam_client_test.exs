@@ -15,6 +15,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
   alias Orchard.RuntimeEndpoint.{
     AuthenticatedPeer,
     BeamClient,
+    ConnectionIncarnation,
     ModelRef,
     Observation,
     Operation,
@@ -120,6 +121,17 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
         end
 
       {:ok, Observation.new(attrs)}
+    end
+
+    def authenticated_status(target, _controller_node, opts) do
+      with {:ok, observation} <- status(target, opts) do
+        {:ok,
+         Map.put(
+           observation,
+           :agent_connection_incarnation,
+           Base.url_encode64(<<7::128>>, padding: false)
+         )}
+      end
     end
   end
 
@@ -353,6 +365,22 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     refute observation.observed_at == remote_observed_at
   end
 
+  test "KAP-82 source-dev compatibility reconnect remains outside authenticated fencing" do
+    target =
+      Target.beam(@node_id,
+        address: node(),
+        metadata: %{server_module: FutureObservationServer, source_dev: true}
+      )
+
+    assert {:ok, before_disconnect} = BeamClient.connect(target)
+    assert :ok = BeamClient.disconnect(before_disconnect)
+    assert {:ok, after_reconnect} = BeamClient.connect(target)
+
+    assert before_disconnect.authenticated_peer == nil
+    assert before_disconnect.connection_id == nil
+    assert Map.from_struct(before_disconnect) == Map.from_struct(after_reconnect)
+  end
+
   test "issue #201 SPEC §4.6.2 authenticated BEAM status shares Controller receive time with evidence" do
     {target, peer} = authenticated_beam_fixture!()
     target = put_in(target.metadata[:server_module], FutureObservationServer)
@@ -362,13 +390,27 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     connection = %BeamClient{
       authenticated_peer: peer,
+      connection_id: 1,
+      connection_incarnation_registry:
+        start_supervised!(
+          {ConnectionIncarnation,
+           name: nil,
+           role: :controller,
+           monitor: fn _enabled, _opts -> :ok end,
+           connection_id_provider: fn _peer -> 1 end}
+        ),
       node: node(),
       server_module: FutureObservationServer,
       target: target
     }
 
     before_status = DateTime.utc_now()
-    assert {:ok, observation} = BeamClient.status(connection, [])
+
+    assert {:ok, observation} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: connection.connection_incarnation_registry
+             )
+
     after_status = DateTime.utc_now()
     evidence = DispatchCapacity.get_capacity_evidence(target.node_id)
 
@@ -541,12 +583,26 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     peer = authenticated_peer!(node.id)
 
-    assert {:ok, _delivery} =
+    assert {:ok, delivery} =
              BeamPeerGrants.deliver(
                %{
                  grant_id: grant.id,
                  generation: grant.generation,
                  controller_id: grant.controller_id
+               },
+               peer,
+               now: now
+             )
+
+    assert {:ok, _acknowledged} =
+             BeamPeerGrants.acknowledge_persisted(
+               %{
+                 grant_id: delivery.grant_id,
+                 generation: delivery.generation,
+                 controller_id: delivery.controller_id,
+                 installation_id: Ecto.UUID.generate(),
+                 local_identity_generation_id: Ecto.UUID.generate(),
+                 secret_hash: delivery.secret_hash
                },
                peer,
                now: now

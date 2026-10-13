@@ -91,7 +91,20 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
   end
 
   defp load_or_retrieve(store, client, root, identity, node_beam_name, descriptor, retrieval) do
+    request = struct!(RetrieveBeamPeerGrantRequest, Map.take(descriptor, request_fields()))
+
     case store.load(root, identity, node_beam_name) do
+      {:ok, grant} when retrieval == :allow ->
+        with :ok <-
+               client.acknowledge_installed(
+                 identity,
+                 descriptor.control_endpoint,
+                 request,
+                 grant
+               ) do
+          {:ok, grant}
+        end
+
       {:ok, grant} ->
         {:ok, grant}
 
@@ -99,8 +112,6 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
         {:error, :beam_peer_grant_missing}
 
       {:error, :beam_peer_grant_missing} ->
-        request = struct!(RetrieveBeamPeerGrantRequest, Map.take(descriptor, request_fields()))
-
         client.retrieve_and_install(
           root,
           identity,

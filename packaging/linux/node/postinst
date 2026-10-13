@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+ensure_directory() {
+    if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
+        printf 'orchard-node-agent postinst: refusing unsafe directory path %s\n' "$1" >&2
+        exit 1
+    fi
+    if [ -d "$1" ]; then
+        chown "$2:$3" "$1"
+        chmod "$4" "$1"
+    else
+        install -d -o "$2" -g "$3" -m "$4" "$1"
+    fi
+}
+
+root=${ORCHARD_PACKAGE_ROOT:-}
+if [ -n "$root" ]; then
+    [ "${ORCHARD_SYSTEMD_SIMULATE:-0}" = "1" ] || {
+        printf 'orchard-node-agent postinst: relocated roots require simulated systemd\n' >&2
+        exit 1
+    }
+    owner=$(id -un)
+    group=$(id -gn)
+    config_owner=$owner
+else
+    root=""
+    if ! getent group orchard-node >/dev/null; then
+        addgroup --system orchard-node
+    fi
+    if ! getent passwd orchard-node >/dev/null; then
+        adduser --system --ingroup orchard-node --home /var/lib/orchard/node --no-create-home --disabled-login orchard-node
+    fi
+    account=$(getent passwd orchard-node)
+    account_group=$(id -gn orchard-node)
+    account_home=$(printf '%s' "$account" | cut -d: -f6)
+    account_shell=$(printf '%s' "$account" | cut -d: -f7)
+    [ "$account_group" = "orchard-node" ] && [ "$account_home" = "/var/lib/orchard/node" ] || {
+        printf 'orchard-node-agent postinst: existing orchard-node account is incompatible\n' >&2
+        exit 1
+    }
+    case "$account_shell" in
+        /usr/sbin/nologin|/sbin/nologin|/bin/false) ;;
+        *)
+            printf 'orchard-node-agent postinst: orchard-node must be a non-login account\n' >&2
+            exit 1
+            ;;
+    esac
+    owner=orchard-node
+    group=orchard-node
+    config_owner=root
+fi
+
+ensure_directory "$root/etc/orchard/node" "$config_owner" "$group" 0750
+ensure_directory "$root/var/lib/orchard/node" "$config_owner" "$group" 0750
+ensure_directory "$root/var/log/orchard/node" "$config_owner" "$group" 0750
+ensure_directory "$root/var/lib/orchard/node/identity" "$owner" "$group" 0700
+ensure_directory "$root/var/lib/orchard/node/models" "$owner" "$group" 0750
+ensure_directory "$root/var/log/orchard/node/workers" "$owner" "$group" 0700
+
+if [ -n "$root" ]; then
+    install -d -m 0700 "$root/run/orchard-node"
+    printf 'daemon-reload\n' >> "$root/run/orchard-node/systemd-simulation.log"
+else
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0

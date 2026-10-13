@@ -1,0 +1,2 @@
+nvcc: NVIDIA (R) Cuda compiler driver
+Cuda compilation tools, release 13.0, V13.0.0

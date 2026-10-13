@@ -174,6 +174,15 @@ It SHALL use operator-provided external Postgres and SHALL NOT require a local N
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
 
+The enumerated experimental Linux Node platform and distribution candidates are `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node`; neither is a supported profile.
+`ubuntu_24_04_x86_64_node` SHALL target Ubuntu Server 24.04 LTS on x86_64 with Linux kernel 6.8 or newer within the Ubuntu 24.04 hardware-enablement line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
+`ubuntu_26_04_x86_64_node` SHALL target Ubuntu Server 26.04 LTS with `VERSION_ID=26.04` on x86_64, the Ubuntu 26.04 generic/server kernel 7.0 line, glibc 2.43 within that release, systemd 259 within that release, and unified cgroup v2.
+Each candidate SHALL use the portable Node Agent, the Node-only Debian artifact design, one dedicated non-login `orchard-node` service identity, and the fixed filesystem and lifecycle contract in ADR 0034 as amended by ADR 0036.
+Each candidate SHALL have its own accepted machine-readable host dependency closure, fail-closed preflight, and independently captured real-host lifecycle and mixed-platform qualification evidence.
+Other Ubuntu releases, distributions, architectures, libc implementations, init systems, containers-as-hosts, WSL, rootless installation, cloud-image-specific package variants, and amd64v3-only variants remain unqualified.
+The candidates SHALL remain separate from the Linux Controller profile and from every CUDA, ROCm, vLLM, model, and Serving Profile qualification.
+Defining, packaging, installing, or testing either candidate SHALL NOT establish Linux Node or runtime-provider support, and evidence for one candidate SHALL NOT qualify the other.
+
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
 
@@ -901,6 +910,9 @@ A Node is an explicitly managed resource representing an admitted host that runs
 A Node is not defined solely by operating system or processor vendor.
 The current supported Nodes are Apple Silicon macOS hosts under the supported Apple Silicon macOS platform profile and macOS MLX Node runtime profile.
 Future Node support requires separate platform, distribution, runtime-provider, trust, and real-runtime acceptance evidence as applicable.
+The experimental `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node` candidates do not become schedulable from installation, systemd state, process identity, heartbeat, PID, cgroup, or inventory evidence.
+Their CPU, memory, disk, OS, kernel, network, and accelerator facts remain bounded observations until the existing Node admission, lifecycle, health, capability, capacity, and allocation contracts independently authorize use.
+NVIDIA/CUDA and AMD/ROCm observations SHALL retain distinct evidence provenance, and neither observation family SHALL imply a runtime-provider qualification.
 
 A node record SHALL include:
 
@@ -1438,6 +1450,11 @@ Node agent SHALL:
 * report immediate state changes
 * collect diagnostics
 * cancel orphaned requests when controller session disappears
+
+For the experimental Linux Node candidate, one systemd system service SHALL supervise exactly one Node Agent for one Node Identity Root.
+The Agent SHALL hold a process-lifetime exclusive owner-only lock in the durable identity root and SHALL reject duplicate ownership before enrollment, Runtime Endpoint activation, or worker startup.
+systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT independently prove Orchard custody, native cessation, request-slot release, Resource Allocation release, or scheduling authority.
+Linux host lifecycle and capability mechanics SHALL remain behind platform adapters and MUST NOT add Linux or provider branches to the portable Node Agent contract.
 
 ### 4.10 Local worker contract
 
@@ -3188,6 +3205,11 @@ The Controller SHALL validate the exact Node-ID URI SAN, certificate identifier,
 The Node Agent SHALL validate the exact Controller-ID URI SAN, certificate identifier, fingerprint, and enrolled internal trust authority recorded for the Controller instance.
 TLS certificate validation is necessary but SHALL NOT be treated as complete OTP distribution authorization.
 
+Node credential authority and private-network BEAM mechanics are separate layers.
+The transport-neutral credential layer owns stable Node identity, CSR key-possession proof, certificate issuance and lifecycle, exact cluster and Node binding, owner-only local generations, audit, current-authority checks, and compromise recovery.
+The private-network BEAM layer owns exact Controller-to-Node names and targets, certificate-bound pair grants, staged cutover, explicit connection replacement, reconnect, and stale-connection rejection.
+Neither layer creates a durable inference-operation session identity.
+
 Each production distribution relationship SHALL also require one active BEAM Peer Grant scoped to:
 
 * contract version and purpose
@@ -3229,6 +3251,14 @@ Only one active generation and at most one staged successor generation may exist
 A database uniqueness constraint SHALL enforce at most one `active` and at most one `staged` generation per exact `(cluster_id, controller_id, node_id, purpose)` scope.
 Normal generation creation SHALL be rate-limited to no more than once per hour per pair so legitimate rotation cannot cause unbounded OTP atom creation.
 
+Node Certificates SHALL retain a 90-day default lifetime and SHALL become eligible for renewal 30 days before expiry.
+Certificate issuance MAY backdate `notBefore` by no more than five minutes to tolerate bounded clock uncertainty.
+An endpoint that cannot establish its clock within five minutes of authenticated Controller time SHALL fail closed.
+Clock tolerance SHALL NOT extend certificate `notAfter`, Peer Grant expiry, revocation, decommission, or scheduled cutover authority.
+With Controller time represented as a bounded interval, activation SHALL wait until the earliest possible time reaches `notBefore`; terminal authority SHALL end when the latest possible time reaches its deadline, so uncertainty may shorten authority but never extend it.
+Accepted-authority overlap SHALL begin when a complete successor certificate generation is atomically published as staged and SHALL end no later than the earlier of seven days after that publication and the predecessor's `notAfter`; signed validity alone SHALL NOT establish accepted authority.
+Exactly one complete local certificate generation SHALL be current and at most one SHALL be staged.
+
 The Node Admission state transition, its Node Admission Decision and audit event, and one initial `pending_delivery` Peer Grant record for each currently eligible Controller instance SHALL commit in one Postgres transaction.
 If any part cannot be persisted, admission SHALL fail closed with no partial admission and no orphaned grant metadata.
 A Controller instance enrolled after Node Admission SHALL obtain its initial grant metadata through a separate leader-authorized operation that is itself atomic.
@@ -3236,16 +3266,26 @@ A registered but unadmitted Node SHALL receive no production Peer Grant.
 The Node SHALL retrieve the exact Controller's authorized grant through certificate-authenticated control traffic and store it atomically in its owner-only identity root.
 Lost delivery responses SHALL return the same authorized generation and derived secret after identity, certificate, admission, generation, and expiry are revalidated.
 
-Normal rotation SHALL stage the successor on both endpoints, cut over at an agreed time, deliberately disconnect the old distribution connection, and require the successor generation on reconnect.
+Grant-only rotation SHALL stage a successor Peer Grant bound to unchanged current certificates on both endpoints.
+Certificate renewal SHALL stage the successor certificate and replacement Peer Grants bound to it for each production BEAM relationship.
+Both forms SHALL cut over at an agreed time, deliberately disconnect the old distribution connection, and require the committed successor generations on reconnect.
+Both endpoints SHALL publish owner-only staged/current local generations with pair validation, fsync, atomic rename, bounded generation markers, and symlink refusal.
+A crash before complete staged publication SHALL leave current authority unchanged; ambiguous or incomplete local generations SHALL fail closed on restart.
+At an incomplete certificate cutover's accepted-authority overlap deadline, predecessor authority and successor staging authority SHALL both cease for protected use; only the separately authenticated recovery path remains available.
 Revocation SHALL update Postgres authority immediately, replace the exact-name cookie mapping, exclude the Runtime Endpoint from scheduling and queue capacity, disconnect the peer, and append a sanitized cluster-scoped audit event.
 Revocation SHALL remain visibly incomplete until disconnection succeeds or the affected distribution process is restarted.
 `net_kernel:allow/1` SHALL NOT be treated as a revocation mechanism.
+
+Every established production BEAM connection SHALL be forcibly disconnected at the earliest of peer-certificate expiry, Peer Grant expiry, revocation, decommission, superseding cutover, or loss of current authority.
+There SHALL be no expiry grace for an established connection.
 
 Node or Controller Certificate renewal SHALL require a new Peer Grant generation bound to the renewed certificate identifier and fingerprint.
 Because certificate identity and fingerprint are part of the immutable grant scope, certificate-renewal cadence necessarily drives Peer Grant rotation and a staged reconnect.
 Re-admission SHALL require a new grant ID and generation after current trust and admission requirements succeed.
 Decommission SHALL revoke every Peer Grant involving the Node, revoke the Node Certificate, disconnect the Node from every reachable Controller, and prevent reuse of the same Node ID, canonical BEAM name, certificate, or grant.
 Loss or compromise of a BEAM Authorization Root SHALL stop new authorization under that root until the root is restored or replaced and every affected pair is reissued through certificate-authenticated control traffic.
+Loss or compromise of a Node private key SHALL revoke its certificate and every bound Peer Grant and SHALL require explicit recovery with new key-possession proof; it SHALL NOT silently create a replacement Node identity.
+Certificate issuance, staging, activation, supersession, revocation, decommission, failed cutover, and recovery SHALL append sanitized cluster-scoped audit events.
 
 Each Active/Standby Controller instance SHALL have a distinct stable Controller ID, Controller Certificate URI SAN, canonical BEAM name, BEAM Authorization Root, and Peer Grant with each admitted Node.
 Active and Standby Controllers SHALL NOT share pair grants.
@@ -3264,7 +3304,9 @@ Static target overrides MAY remain for documented source-development and explici
 
 Distributed Erlang membership is a high-trust code boundary, not a per-function capability sandbox.
 A scoped Peer Grant reduces credential blast radius and cross-Node impersonation, but it does not restrict an authenticated peer to individual Runtime Endpoint functions.
-Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted Macs inside restricted private networks.
+Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted hosts inside restricted private networks whose exact platform profile has passed its release-provenance, credential-custody, host-control, network, and mixed-platform acceptance gates.
+The currently qualified hosts at this boundary remain admitted Macs.
+The experimental Linux Node candidate SHALL NOT join production BEAM until its exact immutable package proves first-party release authenticity, protected certificate and Peer Grant custody, trusted names, network restriction, systemd and identity-root controls, and the named macOS-Controller/Linux-Node acceptance profile.
 External providers, third-party adapters, tenant-controlled compute, and partially trusted machines SHALL remain outside the BEAM mesh.
 
 The initial stable operator-facing production BEAM failure vocabulary SHALL include:
@@ -3295,6 +3337,19 @@ The current adapter outcomes `unknown_beam_node`, `node_unavailable`, `node_time
 Transport and liveness failures SHALL remain distinguishable from Peer Grant and certificate failures.
 When BEAM is selected, none of these failures may cause the same Runtime Endpoint operation to retry through gRPC compatibility.
 Certificate and Peer Grant recovery through the explicitly selected gRPC/mTLS control path is not an inference fallback.
+
+Reconnect SHALL mean restoring authenticated BEAM reachability and accepting a fresh Runtime Endpoint Observation for the same persisted Node and Controller IDs inside the Controller-routable private network.
+Reconnect attempts SHALL use equal-jitter exponential backoff with a 250 ms initial ceiling, doubling ceilings, a 30-second maximum ceiling, and each delay selected from the upper half of its current ceiling.
+Backoff SHALL reset only after exact authentication under currently authorized certificate and active Peer Grant generations plus a fresh accepted observation; after a committed cutover, only its successor generations satisfy that rule.
+Authority loss SHALL stop reconnect until explicit recovery re-establishes current authority.
+Reconnect SHALL NOT resume output, retransmit an ambiguous Runtime Endpoint operation, create a universal durable session identity, import KAP-27 session or delivery semantics, or absorb KAP-26 Worker Runtime incarnation.
+
+The Controller SHALL accept a production BEAM Node Agent observation only when the operation began and completed on the currently authenticated native BEAM connection and its captured certificate, local-identity, Peer Grant, and connection generations still equal current authority at commit time.
+A result from a disconnected, superseded, restarted, or reauthenticated connection SHALL be rejected as stale even when it claims the same persisted Node ID and BEAM name.
+Implementation SHALL first prove this fence deterministically with native BEAM connection identity plus current credential and grant generations.
+The deterministic matrix SHALL include connection replacement after response receipt but before durable commit, reconnect with unchanged credentials, Node restart, and Controller restart.
+No custom boot-incarnation field SHALL be added unless those tests demonstrate a concrete stale-observation escape and a separate OpenSpec amendment accepts a random ephemeral per-Agent-boot observation field that is not durable Node identity, a session ID, a replay key, or Worker allocation incarnation.
+Controller `N` and Node Agent `N-1` SHALL fail closed when either side cannot preserve the complete credential, grant, connection-generation, and no-replay contract; KAP-84 remains authoritative for real mixed macOS/Linux qualification.
 
 The gRPC/mTLS path SHALL remain available for enrollment, Node and Controller Certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit Runtime Endpoint compatibility, future external or non-BEAM adapters, and explicit operator opt-out.
 The Python/MLX Worker Runtime SHALL remain a Node Agent-local subprocess and SHALL NOT receive Node Certificates, BEAM Peer Grants, or BEAM membership.
@@ -5090,6 +5145,13 @@ Supported join modes:
    * pre-issued client certificate
    * controller maps cert identity to node record
 
+Enrollment SHALL require proof of possession for the Node Identity Root private key and an exact cluster/Node URI-SAN CSR.
+The Node private key SHALL never leave the Node Identity Root.
+Renewal SHALL use a new local key and CSR, publish at most one complete staged successor atomically, and preserve the current generation across any pre-publication crash.
+Every protected trust or transport operation SHALL recheck its applicable authority at action time.
+Enrollment SHALL use enrollment authority and key-possession proof; certificate lifecycle and recovery SHALL use their explicitly authorized control or operator-recovery path; production BEAM SHALL additionally require current certificates, stable Node and Controller identity, applicable admission, canonical names and targets, an exact active Peer Grant, and current generations.
+Discovery, a PID, a live BEAM name, or previously valid connection state SHALL NOT reconstruct current authority.
+
 ### 10.6 Internal transport
 
 Certificate-backed node lifecycle RPC, production first-party BEAM Distribution, and current gRPC compatibility transports SHALL use:
@@ -5103,6 +5165,11 @@ Certificate-backed node lifecycle RPC, production first-party BEAM Distribution,
 Production first-party BEAM Distribution SHALL additionally enforce the BEAM Peer Grant contract in §7.5.0.
 Certificate identity alone SHALL NOT authorize a production OTP distribution connection.
 Current source-development and packaged first-cut shared-cookie behavior SHALL remain visibly transitional until the enrolled Production BEAM Operating Model passes its required packaged acceptance.
+
+The experimental Linux Node candidate SHALL use this private-network production BEAM and certificate-authenticated gRPC control model.
+It SHALL NOT add an outbound-only Runtime Endpoint session, Internet-exposed Node listener, automatic transport fallback, or replay of an ambiguously accepted inference operation.
+It SHALL NOT add NAT, proxy, or firewall traversal, public remote-session ingress, session identifiers, delivery envelopes, output resumption, or transport flow control.
+Reconnect SHALL follow §7.5.0 and revalidate current certificate, Node, admission, target, Peer Grant, connection, and generation authority before accepting a fresh observation or new work.
 
 The internal node-trust initialization operation SHALL remain separate from `orchardctl cluster init`, which is credential-only per §11.9.
 
@@ -5401,6 +5468,17 @@ Generic Product Version, provenance, trust, secret-free artifact, role, rollback
 The accepted Linux Controller profile uses operator-provided external Postgres and contains only portable applications and assets compatible with that profile.
 Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
 No Linux distribution is supported by this contract-only amendment.
+
+The experimental `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node` candidates SHALL use the versioned Node-only Debian artifact design and SHALL NOT alter the deferred Linux Controller distribution.
+The package lifecycle requires root; the Node Agent runs as the dedicated non-login `orchard-node` identity without sudo, package-mutation, database, or device-reconfiguration authority.
+The package owns immutable release bytes under `/opt/orchard/node`, root-owned configuration under `/etc/orchard/node`, durable identity and state under `/var/lib/orchard/node`, logs under `/var/log/orchard/node`, runtime-only files under `/run/orchard-node`, and one systemd unit.
+The artifact SHALL bundle its exact ERTS and OTP release runtime rather than depend on a host Erlang or Elixir installation.
+Every remaining host dependency SHALL be named with an accepted version constraint in a candidate-specific machine-readable package dependency manifest, checked before mutation, and satisfied by the same candidate-specific closed dependency set for online and air-gapped installation.
+Where package, inventory, lifecycle, or diagnostic behavior depends on GNU coreutils semantics, a candidate SHALL install and invoke the accepted GNU implementation explicitly rather than infer compatibility from a command name or successful exit.
+Air-gapped media SHALL contain the exact package and selected candidate's dependency closure and SHALL require no public download.
+Package lifecycle tests SHALL relocate every owned path and simulate systemd effects under a non-system root without mutating the host.
+Default package removal SHALL retain identity, operator configuration, logs, models, and diagnostic receipts; destructive purge is outside the initial profile.
+Package construction, local installation, or qualification evidence SHALL NOT authorize publication or a Linux support claim.
 
 The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
 The initial source-availability transition SHALL be source-only under the Apache License, Version 2.0, for covered Orchard-authored software and technical documentation, with Copyright 2026 AI Singapore.
@@ -5864,6 +5942,11 @@ The Controller `N` support window for Node Agent versions `N` and `N-1` provides
 It does not authorize concurrent Node Agent processes to share one Node Identity Root and does not define a zero-overlap replacement protocol.
 Any future managed handover guarantee requires a fresh accepted OpenSpec proposal and a separate implementing pull request.
 
+The experimental Linux Node candidate SHALL apply the same sequential cordon, accepted drain, stop, replace, start, reconcile, verify, and uncordon ordering through its Linux host lifecycle adapter.
+Upgrade or rollback SHALL keep the Node unschedulable when exact Agent or Worker Runtime exit, identity-root exclusion, installed bytes, restart, current transport authority, or reconciliation cannot be proved.
+Controller `N` compatibility with Node Agent `N` and `N-1` SHALL remain a reader and behavior compatibility window only.
+An operation that requires Worker Unit, Resource Allocation, runtime incarnation, residency, allocation, or control-generation targeting SHALL fail closed when either participant cannot preserve the complete target and SHALL NOT downgrade to ambiguous Node/model targeting.
+
 ### 13.5 Worker upgrade
 
 Workers are bundled with node agent.
@@ -6073,6 +6156,39 @@ Acceptance:
 * the mixed-platform acceptance profile proves a Linux Controller with external Postgres operating an admitted macOS Node under the macOS MLX Node runtime profile across trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure behavior
 * production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
+
+### Milestone 9 - Experimental Linux Node qualification
+
+This milestone defines qualification work for the enumerated experimental `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node` candidates.
+It does not declare general Linux, CUDA, ROCm, vLLM, model, or Serving Profile support.
+
+Deliver:
+
+* Node-only Debian packaging and one systemd-owned portable Node Agent
+* fixed Linux filesystem, privilege, identity-root, update, rollback, air-gap, and default-removal behavior
+* provider-neutral bounded host inventory with distinct NVIDIA and AMD observation provenance
+* private-network enrollment, credential lifecycle, Peer Grant rotation, reconnect, and stale-session failure behavior under existing transport contracts
+* redacted health, logs, metrics, inventory, lifecycle diagnostics, and offline collection
+* model-free Linux process-group custody and mixed-version compatibility only after the applicable KAP-18 and KAP-26 contracts are accepted
+* a distinct `macos_controller_linux_node_model_free` acceptance profile run independently for each enumerated Linux Node candidate using a qualified macOS Controller `N` and that candidate at `N` and `N-1`, with independently captured evidence from every participating host
+* a separately gated one-H100 runtime-provider pilot only after every provider-neutral prerequisite passes
+
+Acceptance:
+
+* each exact candidate artifact and dependency closure installs on a clean host of that candidate and runs exactly one supervised Agent for one persistent identity
+* each candidate independently proves start, stop, restart, crash, reboot, upgrade, rollback, air-gap install, default removal, and reinstall preserve ownership and fail closed on uncertain survivors
+* the 26.04 candidate records the exact signed Server image, kernel, glibc, systemd, unified cgroup v2, AppArmor, Netplan, filesystem, package, and command-implementation identities exercised; static validation or boot alone is insufficient
+* the 26.04 candidate explicitly qualifies systemd 259, cgroup-v2 survivor and orphan cleanup, `/tmp` tmpfs implications, and any GNU coreutils dependency despite Ubuntu's default uutils commands
+* inventory accurately reports bounded host and stable accelerator observations without creating scheduling or allocation authority
+* credential renewal, revocation, Peer Grant rotation, reconnect, local secret permissions, and stale-session behavior pass failure-path tests
+* accepted certificate-authority overlap is at most seven days from staged publication, clock uncertainty is at most five minutes without expiry extension, renewal begins 30 days before expiry, and established connections are disconnected at certificate expiry
+* delayed observations from superseded connections or restarted Agents fail current connection and credential-generation checks without adding a speculative durable session identity
+* diagnostics are redacted, collectable offline, and incapable of reconstructing or erasing commitments
+* compatible readers accept additive old observations as missing evidence, while incompatible old writers fail closed for generation-targeted work
+* model-free custody distinguishes public terminal, native cessation, request-slot release, and Resource Allocation release under accepted contracts
+* for each enumerated candidate, the `macos_controller_linux_node_model_free` profile proves enrollment, admission, authenticated observation, exact unit/resource targeting, cancellation, drain, Agent restart, orphan handling, and peer isolation for both version pairings; evidence for one candidate does not qualify another, and unavailable direct private-network or macOS host evidence leaves that candidate's gate unmet
+* real-provider qualification, if separately authorized, remains one immutable H100/vLLM/model/profile tuple at concurrency one with no sibling or broader support claim
+* `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before any Linux Node support claim
 
 ---
 

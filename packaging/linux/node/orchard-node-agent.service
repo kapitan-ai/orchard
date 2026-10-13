@@ -1,0 +1,32 @@
+[Unit]
+Description=Experimental Orchard Linux Node Agent
+Documentation=https://github.com/kapitan-ai/orchard
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/orchard/node/node-agent.env
+
+[Service]
+Type=simple
+User=orchard-node
+Group=orchard-node
+ExecStart=/opt/orchard/node/bin/orchard-node-agent start
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+RuntimeDirectory=orchard-node
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/orchard/node /var/log/orchard/node /run/orchard-node
+
+[Install]
+WantedBy=multi-user.target

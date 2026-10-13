@@ -130,7 +130,9 @@ defmodule Orchard.NodeIdentityFile do
     end
   end
 
-  defp generate_uuid do
+  @doc false
+  @spec generate_uuid() :: String.t()
+  def generate_uuid do
     <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
 
     <<a::48, 4::4, b::12, 2::2, c::62>>

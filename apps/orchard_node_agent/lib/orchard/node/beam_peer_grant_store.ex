@@ -3,17 +3,19 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   Persists the Node's exact-pair BEAM grant in owner-only local identity state.
 
   Values are validated against the registered Node identity before plaintext
-  is written. The current tracer permits one immutable generation per
-  Controller identity; rotation and replacement remain future lifecycle work.
+  is written. One active and one staged generation may exist for each exact
+  Controller identity; cutover replaces the active file atomically.
   """
 
   import Bitwise, only: [band: 2]
 
+  alias Orchard.NodeIdentityFile
   alias Orchard.RuntimeEndpoint.BeamNodeName
 
   @directory_mode 0o700
   @file_mode 0o600
-  @lock_command "/usr/bin/lockf"
+  @flock_command "/usr/bin/flock"
+  @lockf_command "/usr/bin/lockf"
   @lock_file ".beam-peer-grants.install.lock"
   @lock_marker "orchard-peer-grant-lock-ready\n"
   @lock_timeout_seconds 5
@@ -30,6 +32,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       when is_binary(root) and is_map(identity) and is_map(delivery) and
              is_binary(expected_node_name) and is_list(opts) do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
+         grant = put_installation_id(grant, opts),
          :ok <- ensure_current(grant, current_time(opts)),
          {:ok, identity_root, expected_uid} <- prepare_identity_root(root) do
       install_with_store_lock(identity_root, grant, expected_uid, opts)
@@ -74,6 +77,48 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   def load(_root, _identity, _expected_node_name),
     do: {:error, :beam_peer_grant_store_invalid}
+
+  @spec stage(String.t(), map(), map(), String.t(), keyword()) ::
+          {:ok, stored_grant()} | {:error, atom()}
+  def stage(root, identity, delivery, expected_node_name, opts \\ [])
+      when is_binary(root) and is_map(identity) and is_map(delivery) and
+             is_binary(expected_node_name) and is_list(opts) do
+    with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
+         grant = put_installation_id(grant, opts),
+         :ok <- ensure_current(grant, current_time(opts)),
+         {:ok, identity_root, expected_uid} <- prepare_identity_root(root) do
+      with_store_lock(identity_root, expected_uid, opts, fn ->
+        stage_under_lock(identity_root, grant, expected_uid, opts)
+      end)
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_store_invalid}
+  catch
+    _kind, _reason -> {:error, :beam_peer_grant_store_invalid}
+  end
+
+  @spec activate_staged(String.t(), map(), String.t(), pos_integer(), keyword()) ::
+          {:ok, stored_grant()} | {:error, atom()}
+  def activate_staged(root, identity, expected_node_name, generation, opts \\ [])
+      when is_binary(root) and is_map(identity) and is_binary(expected_node_name) and
+             is_integer(generation) and generation > 0 and is_list(opts) do
+    with {:ok, identity_root, expected_uid} <- prepare_identity_root(root) do
+      with_store_lock(identity_root, expected_uid, opts, fn ->
+        activate_staged_under_lock(
+          identity_root,
+          identity,
+          expected_node_name,
+          generation,
+          expected_uid,
+          opts
+        )
+      end)
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_store_invalid}
+  catch
+    _kind, _reason -> {:error, :beam_peer_grant_store_invalid}
+  end
 
   @doc """
   Revalidates a grant at the exact moment plaintext may be installed for a peer.
@@ -134,6 +179,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       grant.node_id
     ]
     |> Enum.all?(&valid_uuid?/1)
+    |> Kernel.and(is_nil(grant.installation_id) or valid_uuid?(grant.installation_id))
   end
 
   defp valid_grant_contract?(grant) do
@@ -171,6 +217,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   defp normalized_grant(delivery) do
     %{
       grant_id: value(delivery, :grant_id),
+      installation_id: value(delivery, :installation_id),
       generation: value(delivery, :generation),
       cluster_id: value(delivery, :cluster_id),
       controller_id: value(delivery, :controller_id),
@@ -326,7 +373,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp with_store_lock(identity_root, expected_uid, opts, operation) do
     lock_path = Path.join(identity_root, @lock_file)
-    lock_command = Keyword.get(opts, :lock_command, @lock_command)
+    lock_command = Keyword.get_lazy(opts, :lock_command, &default_lock_command/0)
 
     with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid, lock_command) do
       try do
@@ -381,18 +428,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
           :exit_status,
           :use_stdio,
           :stderr_to_stdout,
-          args:
-            Enum.map(
-              [
-                "-k",
-                "-s",
-                "-t",
-                Integer.to_string(@lock_timeout_seconds),
-                lock_path,
-                "/bin/cat"
-              ],
-              &String.to_charlist/1
-            )
+          args: Enum.map(lock_args(lock_command, lock_path), &String.to_charlist/1)
         ]
       )
 
@@ -403,6 +439,29 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   rescue
     _error -> {:error, :beam_peer_grant_store_invalid}
+  end
+
+  defp default_lock_command do
+    cond do
+      File.regular?(@lockf_command) -> @lockf_command
+      File.regular?(@flock_command) -> @flock_command
+      true -> @lockf_command
+    end
+  end
+
+  defp lock_args(lock_command, lock_path) do
+    if Path.basename(lock_command) == "flock" do
+      ["-x", "-w", Integer.to_string(@lock_timeout_seconds), lock_path, "/bin/cat"]
+    else
+      [
+        "-k",
+        "-s",
+        "-t",
+        Integer.to_string(@lock_timeout_seconds),
+        lock_path,
+        "/bin/cat"
+      ]
+    end
   end
 
   defp await_lock(lock_port) do
@@ -430,6 +489,51 @@ defmodule Orchard.Node.BeamPeerGrantStore do
          {:ok, stored, source} <- publish_or_load(path, grant, expected_uid, opts),
          :ok <- sync_directory(store_root, opts) do
       finish_install(path, stored, source, expected_uid, opts)
+    end
+  end
+
+  defp stage_under_lock(identity_root, grant, expected_uid, opts) do
+    with {:ok, store_root} <- prepare_store(identity_root, expected_uid, opts),
+         active_path = grant_path(store_root, grant.controller_id),
+         staged_path = staged_grant_path(store_root, grant.controller_id),
+         {:ok, active} <- load_existing(active_path, expected_uid),
+         true <- grant.generation == active.generation + 1,
+         {:ok, stored, source} <- publish_or_load(staged_path, grant, expected_uid, opts),
+         :ok <- sync_directory(store_root, opts) do
+      finish_install(staged_path, stored, source, expected_uid, opts)
+    else
+      false -> {:error, :beam_peer_grant_generation_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp activate_staged_under_lock(
+         identity_root,
+         identity,
+         expected_node_name,
+         generation,
+         expected_uid,
+         opts
+       ) do
+    store_root = Path.join(identity_root, @store_directory)
+    controller_id = value(identity, :controller_id)
+    active_path = grant_path(store_root, controller_id)
+    staged_path = staged_grant_path(store_root, controller_id)
+
+    with :ok <- validate_directory(store_root, expected_uid),
+         {:ok, active} <- load_existing(active_path, expected_uid),
+         {:ok, staged} <- load_existing(staged_path, expected_uid),
+         true <- staged.generation == generation and generation == active.generation + 1,
+         {:ok, staged} <- validate_grant(identity, staged, expected_node_name),
+         :ok <- ensure_current(staged, current_time(opts)),
+         :ok <- File.rename(staged_path, active_path),
+         :ok <- validate_file(active_path, expected_uid),
+         :ok <- sync_directory(store_root, opts) do
+      {:ok, staged}
+    else
+      false -> {:error, :beam_peer_grant_generation_mismatch}
+      {:error, _reason} = error -> error
+      _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
 
@@ -471,11 +575,22 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp publish_or_load(path, grant, expected_uid, opts) do
     case load_existing(path, expected_uid) do
-      {:ok, ^grant} -> {:ok, grant, :existing}
-      {:ok, _other} -> {:error, :beam_peer_grant_store_conflict}
+      {:ok, existing} -> existing_delivery_result(existing, grant)
       {:error, :beam_peer_grant_missing} -> publish(path, grant, expected_uid, opts)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp existing_delivery_result(existing, grant) do
+    if same_delivery?(existing, grant) do
+      {:ok, existing, :existing}
+    else
+      {:error, :beam_peer_grant_store_conflict}
+    end
+  end
+
+  defp same_delivery?(left, right) do
+    Map.delete(left, :installation_id) == Map.delete(right, :installation_id)
   end
 
   defp load_existing(path, expected_uid) do
@@ -523,8 +638,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp load_after_publish_race(path, grant, expected_uid) do
     case load_existing(path, expected_uid) do
-      {:ok, ^grant} -> {:ok, grant, :existing}
-      {:ok, _other} -> {:error, :beam_peer_grant_store_conflict}
+      {:ok, existing} -> existing_delivery_result(existing, grant)
       {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
     end
   end
@@ -598,6 +712,14 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   end
 
   defp decode_datetime(_value), do: {:error, :beam_peer_grant_store_invalid}
+
+  defp put_installation_id(grant, opts) do
+    installation_id =
+      grant.installation_id ||
+        Keyword.get_lazy(opts, :installation_id, &NodeIdentityFile.generate_uuid/0)
+
+    Map.put(grant, :installation_id, installation_id)
+  end
 
   defp write_private_file(path, contents, expected_uid) do
     case File.open(path, [:write, :exclusive, :binary]) do
@@ -685,6 +807,10 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   end
 
   defp grant_path(store_root, controller_id), do: Path.join(store_root, controller_id <> ".json")
+
+  defp staged_grant_path(store_root, controller_id),
+    do: Path.join(store_root, controller_id <> ".staged.json")
+
   defp valid_uuid?(value), do: is_binary(value) and Regex.match?(@uuid_pattern, value)
 
   defp value(map, key) when is_map(map) do

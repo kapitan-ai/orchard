@@ -14,6 +14,7 @@ EXCLUDES=(
   --exclude mlx_benchmark
 )
 
+scripts/test-linux-node-package.sh
 mise exec -- mix test "${EXCLUDES[@]}"
 mise exec -- mix test --cover "${EXCLUDES[@]}"
 

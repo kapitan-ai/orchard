@@ -4,6 +4,7 @@ defmodule Orchard.BeamPeerGrantsTest do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.BeamDisconnectObligations
   alias Orchard.BeamPeerGrantDescriptor
   alias Orchard.BeamPeerGrants
   alias Orchard.BeamPeerGrants.{ControllerInitializer, ControlListener, ControlServer, Grant}
@@ -19,8 +20,7 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.NodeEnrollments
   alias Orchard.NodeHeartbeats
   alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
-  alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionDecision, Enrollment, NodeHeartbeat}
+  alias Orchard.Nodes.{AdmissionDecision, Enrollment, Lifecycle, NodeHeartbeat}
   alias Orchard.Nodes.Node
   alias Orchard.NodeTrust
 
@@ -28,12 +28,149 @@ defmodule Orchard.BeamPeerGrantsTest do
     ActivationProbe,
     AuthenticatedPeer,
     BeamClient,
+    ConnectionIncarnation,
     Placement,
     PlacementCapacity,
+    RevokedCookie,
     Target
   }
 
   alias Orchard.TransportTLS.CertificateIdentity
+
+  @connection_incarnation Base.url_encode64(<<1::128>>, padding: false)
+
+  defmodule FenceTestGuard do
+    def start(registry, peer, token) do
+      spawn_link(fn ->
+        receive do
+          {:execute, caller, request_ref, fun} ->
+            result = fun.()
+            :ok = GenServer.call(registry, {:release_fence, peer, token})
+            send(caller, {request_ref, result})
+        end
+      end)
+    end
+  end
+
+  defmodule CurrentConnectionRegistry do
+    use GenServer
+
+    alias Orchard.BeamPeerGrantsTest.FenceTestGuard
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+    def init(opts), do: {:ok, opts}
+    def handle_call({:connection_id, _peer}, _from, state), do: {:reply, {:ok, 1}, state}
+    def handle_call({:bind, _peer, 1, _incarnation}, _from, state), do: {:reply, :ok, state}
+    def handle_call({:current?, _peer, 1, _incarnation}, _from, state), do: {:reply, true, state}
+
+    def handle_call({:acquire_fence, peer, 1, _incarnation}, _from, state) do
+      guard = FenceTestGuard.start(self(), peer, :fence)
+      {:reply, {:ok, :fence, guard}, state}
+    end
+
+    def handle_call({:release_fence, _peer, :fence}, _from, state),
+      do: {:reply, :ok, state}
+
+    def handle_call({:invalidate, _peer, _connection_id}, _from, state), do: {:reply, :ok, state}
+  end
+
+  defmodule MutableConnectionRegistry do
+    use GenServer
+
+    alias Orchard.BeamPeerGrantsTest.FenceTestGuard
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+    def init(opts),
+      do: {:ok, %{connection_id: Keyword.fetch!(opts, :connection_id), binding: nil}}
+
+    def replace(server, connection_id),
+      do: GenServer.call(server, {:replace, connection_id})
+
+    def handle_call({:connection_id, _peer}, _from, state),
+      do: {:reply, {:ok, state.connection_id}, state}
+
+    def handle_call({:bind, peer, connection_id, incarnation}, _from, state) do
+      if connection_id == state.connection_id do
+        binding = %{peer: peer, connection_id: connection_id, incarnation: incarnation}
+        {:reply, :ok, %{state | binding: binding}}
+      else
+        {:reply, {:error, :connection_incarnation_not_current}, %{state | binding: nil}}
+      end
+    end
+
+    def handle_call({:current?, peer, connection_id, incarnation}, _from, state) do
+      current =
+        state.binding == %{
+          peer: peer,
+          connection_id: connection_id,
+          incarnation: incarnation
+        }
+
+      {:reply, current, state}
+    end
+
+    def handle_call({:acquire_fence, peer, connection_id, incarnation}, _from, state) do
+      current =
+        state.binding == %{
+          peer: peer,
+          connection_id: connection_id,
+          incarnation: incarnation
+        }
+
+      if current do
+        guard = FenceTestGuard.start(self(), peer, :fence)
+        {:reply, {:ok, :fence, guard}, state}
+      else
+        {:reply, {:error, :connection_incarnation_not_current}, state}
+      end
+    end
+
+    def handle_call({:release_fence, _peer, :fence}, _from, state),
+      do: {:reply, :ok, state}
+
+    def handle_call({:invalidate, _peer, connection_id}, _from, state) do
+      binding =
+        case state.binding do
+          %{connection_id: ^connection_id} -> nil
+          _other -> state.binding
+        end
+
+      {:reply, :ok, %{state | binding: binding}}
+    end
+
+    def handle_call({:replace, connection_id}, _from, state),
+      do: {:reply, :ok, %{state | connection_id: connection_id, binding: nil}}
+  end
+
+  defmodule Nodes do
+    @incarnation Base.url_encode64(<<1::128>>, padding: false)
+
+    defdelegate activation_probe_runtime_endpoint_targets(), to: Orchard.Nodes
+    defdelegate admit_node(node_id, attrs, opts), to: Orchard.Nodes
+    defdelegate observe_status(target, status, observed_at), to: Orchard.Nodes
+    defdelegate record_transport_failure(target, reason, observed_at), to: Orchard.Nodes
+    defdelegate schedulable_nodes(), to: Orchard.Nodes
+    defdelegate sweep_stale_node_heartbeats(observed_at), to: Orchard.Nodes
+    defdelegate unreachable_threshold_ms(), to: Orchard.Nodes
+
+    def observe_authenticated_status(target, status, observed_at, peer, opts \\ []) do
+      Orchard.Nodes.observe_authenticated_status(
+        target,
+        Map.put(status, :agent_connection_incarnation, @incarnation),
+        observed_at,
+        peer,
+        Keyword.merge(opts,
+          connection_incarnation_registry: Process.get(:connection_registry),
+          connection_incarnation_evidence: %{
+            connection_id: 1,
+            incarnation: @incarnation,
+            peer_node: node()
+          }
+        )
+      )
+    end
+  end
 
   defmodule AuthenticatedStatusServer do
     alias Orchard.Nodes.Node
@@ -54,6 +191,34 @@ defmodule Orchard.BeamPeerGrantsTest do
          },
          runtime_health: %{ready: true, health_code: "", health_message: ""}
        }}
+    end
+
+    def authenticated_status(target, _controller_node, opts) do
+      with {:ok, status} <- status(target, opts) do
+        {:ok,
+         Map.put(
+           status,
+           :agent_connection_incarnation,
+           Base.url_encode64(<<1::128>>, padding: false)
+         )}
+      end
+    end
+  end
+
+  defmodule MissingIncarnationStatusServer do
+    defdelegate status(target, opts), to: AuthenticatedStatusServer
+
+    def authenticated_status(target, _controller_node, opts),
+      do: AuthenticatedStatusServer.status(target, opts)
+  end
+
+  defmodule SelectedIncarnationStatusServer do
+    defdelegate status(target, opts), to: AuthenticatedStatusServer
+
+    def authenticated_status(target, _controller_node, opts) do
+      with {:ok, status} <- AuthenticatedStatusServer.status(target, opts) do
+        {:ok, Map.put(status, :agent_connection_incarnation, Keyword.fetch!(opts, :incarnation))}
+      end
     end
   end
 
@@ -139,6 +304,9 @@ defmodule Orchard.BeamPeerGrantsTest do
   end
 
   setup do
+    connection_registry = start_supervised!({CurrentConnectionRegistry, []})
+    Process.put(:connection_registry, connection_registry)
+
     previous = %{
       control_plane: Application.get_env(:orchard_controller, :control_plane),
       node_trust: Application.get_env(:orchard_controller, :node_trust),
@@ -174,7 +342,11 @@ defmodule Orchard.BeamPeerGrantsTest do
       restore_env(:runtime_endpoint, previous.runtime_endpoint)
     end)
 
-    {:ok, root: root, trust_root: trust_root, authorization_root: authorization_root}
+    {:ok,
+     root: root,
+     trust_root: trust_root,
+     authorization_root: authorization_root,
+     connection_registry: connection_registry}
   end
 
   test "SPEC.md §7.5.0 registered Node has no BEAM Peer Grant before admission" do
@@ -195,6 +367,291 @@ defmodule Orchard.BeamPeerGrantsTest do
       |> Repo.insert!()
 
     assert BeamPeerGrants.list_for_node(node.id) == []
+  end
+
+  test "KAP-82 grant-only rotation stages, delivers, and atomically fences its predecessor", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, initial, now} = pending_grant!(trust_root, authorization_root)
+    peer = authenticated_peer!(node.id)
+
+    {_delivery, _acknowledged} = deliver_and_ack!(initial, peer, now)
+
+    rotate_at = now
+    one_hour_ago = DateTime.add(now, -3_600, :second)
+
+    Repo.update_all(from(grant in Grant, where: grant.id == ^initial.id),
+      set: [issued_at: one_hour_ago]
+    )
+
+    assert {:ok, successor} = BeamPeerGrants.stage_successor(node.id, now: rotate_at)
+    assert successor.generation == initial.generation + 1
+    assert successor.state == :pending_delivery
+    assert successor.node_certificate_identifier == initial.node_certificate_identifier
+
+    {_delivery, _acknowledged} = deliver_and_ack!(successor, peer, rotate_at)
+
+    assert Repo.get!(Grant, successor.id).state == :staged
+
+    assert {:ok, redelivery} =
+             BeamPeerGrants.deliver(delivery_request(successor), peer, now: rotate_at)
+
+    assert {:ok, same_staged} = acknowledge_delivery(redelivery, peer, rotate_at)
+    assert same_staged.id == successor.id
+    assert same_staged.state == :staged
+
+    assert {:ok, committed} =
+             BeamPeerGrants.commit_successor(node.id, successor.generation, now: rotate_at)
+
+    assert committed.state == :active
+    assert Repo.get!(Grant, initial.id).state == :superseded
+
+    assert [obligation] = BeamDisconnectObligations.list_open(node.id)
+    assert obligation.grant_id == initial.id
+    assert obligation.reason == "grant_cutover"
+    assert obligation.state == :pending
+
+    assert {:ok, [blocked_target]} = Nodes.activation_probe_runtime_endpoint_targets()
+
+    assert {:error, :beam_predecessor_disconnect_incomplete} =
+             BeamPeerGrants.authorize_target(blocked_target,
+               test_database_now: fn -> rotate_at end
+             )
+
+    assert :ok =
+             BeamDisconnectObligations.reconcile_once(
+               now: rotate_at,
+               cookie_setter: fn _peer, _cookie -> true end,
+               connected?: fn _peer -> false end
+             )
+
+    assert BeamDisconnectObligations.list_open(node.id) == []
+
+    assert {:ok, [committed_target]} = Nodes.activation_probe_runtime_endpoint_targets()
+    assert committed_target.metadata.grant_id == committed.id
+
+    assert {:ok, %{grant: authorized, encoded_secret: committed_secret}} =
+             BeamPeerGrants.authorize_target(committed_target,
+               test_database_now: fn -> rotate_at end
+             )
+
+    assert authorized.id == committed.id
+    assert is_binary(committed_secret)
+
+    assert {:error, :beam_peer_grant_not_active} =
+             BeamPeerGrants.ensure_active_grant_current(initial.id,
+               test_database_now: fn -> rotate_at end
+             )
+
+    assert {:ok, credential} = Orchard.NodeCredentials.current(node.id, now: rotate_at)
+    assert credential.generation == 1
+
+    Repo.update_all(
+      from(generation in Orchard.NodeCredentials.Generation,
+        where: generation.id == ^credential.id
+      ),
+      set: [renew_after_at: rotate_at]
+    )
+
+    assert {:ok, renewal_csr} = PKI.generate_csr(credential.cluster_id, node.id)
+
+    assert {:ok, staged_credential} =
+             Orchard.NodeCredentials.stage_renewal(node.id, renewal_csr.csr_pem, now: rotate_at)
+
+    Repo.update_all(
+      from(grant in Grant, where: grant.id == ^committed.id),
+      set: [issued_at: one_hour_ago]
+    )
+
+    assert {:ok, certificate_successor} =
+             BeamPeerGrants.stage_successor(node.id, now: rotate_at)
+
+    assert certificate_successor.node_certificate_identifier ==
+             staged_credential.certificate_identifier
+
+    staged_peer = authenticated_peer_for_credential(staged_credential)
+
+    {_delivery, _acknowledged} =
+      deliver_and_ack!(certificate_successor, staged_peer, rotate_at)
+
+    assert {:ok, certificate_committed} =
+             BeamPeerGrants.commit_successor(
+               node.id,
+               certificate_successor.generation,
+               now: rotate_at
+             )
+
+    assert certificate_committed.state == :active
+    assert Repo.get!(Grant, committed.id).state == :superseded
+    assert {:ok, current_credential} = Orchard.NodeCredentials.current(node.id, now: rotate_at)
+    assert current_credential.generation == staged_credential.generation
+  end
+
+  test "KAP-82 successor acknowledgement cannot replace cutover after predecessor expiry", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, initial, now} = pending_grant!(trust_root, authorization_root)
+    peer = authenticated_peer!(node.id)
+    {_delivery, _acknowledged} = deliver_and_ack!(initial, peer, now)
+
+    Repo.update_all(from(grant in Grant, where: grant.id == ^initial.id),
+      set: [issued_at: DateTime.add(now, -3_600, :second)]
+    )
+
+    assert {:ok, successor} = BeamPeerGrants.stage_successor(node.id, now: now)
+    assert {:ok, delivery} = BeamPeerGrants.deliver(delivery_request(successor), peer, now: now)
+    expires_at = DateTime.add(now, 1, :second)
+
+    Repo.update_all(from(grant in Grant, where: grant.id == ^initial.id),
+      set: [expires_at: expires_at]
+    )
+
+    assert :ok =
+             BeamDisconnectObligations.reconcile_once(
+               now: expires_at,
+               cookie_setter: fn _peer, _cookie -> true end,
+               connected?: fn _peer -> false end
+             )
+
+    assert Repo.get!(Grant, initial.id).state == :expired
+    assert {:ok, acknowledged} = acknowledge_delivery(delivery, peer, now)
+    assert acknowledged.state == :staged
+    assert {:ok, []} = Nodes.activation_probe_runtime_endpoint_targets()
+  end
+
+  test "KAP-82 credential overlap expiry disconnects an established predecessor transport", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, initial, now} = pending_grant!(trust_root, authorization_root)
+    peer_identity = authenticated_peer!(node.id)
+    {_delivery, _acknowledged} = deliver_and_ack!(initial, peer_identity, now)
+    assert {:ok, credential} = Orchard.NodeCredentials.current(node.id, now: now)
+
+    Repo.update_all(
+      from(generation in Orchard.NodeCredentials.Generation,
+        where: generation.id == ^credential.id
+      ),
+      set: [renew_after_at: now]
+    )
+
+    assert {:ok, renewal_csr} = PKI.generate_csr(credential.cluster_id, node.id)
+
+    assert {:ok, staged} =
+             Orchard.NodeCredentials.stage_renewal(node.id, renewal_csr.csr_pem, now: now)
+
+    deadline = DateTime.add(now, 1, :second)
+
+    Repo.update_all(
+      from(generation in Orchard.NodeCredentials.Generation,
+        where: generation.id == ^staged.id
+      ),
+      set: [overlap_ends_at: deadline]
+    )
+
+    peer = String.to_atom(initial.node_beam_name)
+    caller = self()
+
+    assert :ok =
+             BeamDisconnectObligations.reconcile_once(
+               now: deadline,
+               connected?: fn ^peer -> true end,
+               cookie_setter: fn ^peer, cookie when is_atom(cookie) -> true end,
+               disconnect: fn ^peer ->
+                 send(caller, :overlap_disconnect_attempted)
+                 false
+               end,
+               registry: Process.get(:connection_registry)
+             )
+
+    assert_received :overlap_disconnect_attempted
+    assert Repo.get!(Grant, initial.id).state == :expired
+
+    assert [%{reason: "credential_overlap_expired", state: :attempted}] =
+             BeamDisconnectObligations.list_open(node.id)
+  end
+
+  test "KAP-82 credential revocation atomically revokes its grant and retries disconnect", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, initial, now} = pending_grant!(trust_root, authorization_root)
+    peer_identity = authenticated_peer!(node.id)
+    {_delivery, _acknowledged} = deliver_and_ack!(initial, peer_identity, now)
+    assert {:ok, credential} = Orchard.NodeCredentials.current(node.id, now: now)
+
+    assert {:ok, [_revoked]} =
+             Orchard.NodeCredentials.revoke(node.id, "compromised private key", now: now)
+
+    assert Repo.get!(Grant, initial.id).state == :revoked
+    assert [obligation] = BeamDisconnectObligations.list_open(node.id)
+    assert obligation.grant_id == initial.id
+    assert obligation.credential_generation_id == credential.id
+    assert obligation.reason == "credential_revoked"
+
+    peer = String.to_atom(initial.node_beam_name)
+    caller = self()
+    {:ok, connected} = Agent.start_link(fn -> true end)
+    cookie_setter = fn ^peer, cookie when is_atom(cookie) -> true end
+
+    assert :ok =
+             BeamDisconnectObligations.reconcile_once(
+               now: now,
+               connected?: fn ^peer -> Agent.get(connected, & &1) end,
+               cookie_setter: cookie_setter,
+               disconnect: fn ^peer ->
+                 send(caller, :disconnect_attempted)
+                 false
+               end,
+               registry: Process.get(:connection_registry)
+             )
+
+    assert_received :disconnect_attempted
+
+    assert [%{state: :attempted, attempt_count: 1}] =
+             BeamDisconnectObligations.list_open(node.id)
+
+    assert :ok =
+             BeamDisconnectObligations.reconcile_once(
+               now: DateTime.add(now, 1, :second),
+               connected?: fn ^peer -> Agent.get(connected, & &1) end,
+               cookie_setter: cookie_setter,
+               disconnect: fn ^peer ->
+                 Agent.update(connected, fn _current -> false end)
+                 true
+               end,
+               registry: Process.get(:connection_registry)
+             )
+
+    assert BeamDisconnectObligations.list_open(node.id) == []
+  end
+
+  test "KAP-82 decommission atomically removes certificate and grant authority", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, initial, now} = pending_grant!(trust_root, authorization_root)
+    peer_identity = authenticated_peer!(node.id)
+    {_delivery, _acknowledged} = deliver_and_ack!(initial, peer_identity, now)
+
+    assert {:ok, %{node: decommissioning}} =
+             Lifecycle.execute(
+               :decommission,
+               node.id,
+               %{reason: "operator decommission"},
+               now: now
+             )
+
+    assert decommissioning.state == :decommissioning
+    assert Repo.get!(Grant, initial.id).state == :revoked
+
+    assert {:error, :node_credential_not_found} =
+             Orchard.NodeCredentials.current(node.id, now: now)
+
+    assert [%{reason: "credential_revoked", state: :pending}] =
+             BeamDisconnectObligations.list_open(node.id)
   end
 
   test "SPEC.md §7.5.0 Controller application initializes grant authority before admission", %{
@@ -452,12 +909,8 @@ defmodule Orchard.BeamPeerGrantsTest do
     {winner_node, winner_grant} = winner
 
     Sandbox.unboxed_run(Repo, fn ->
-      assert {:ok, _delivery} =
-               BeamPeerGrants.deliver(
-                 delivery_request(winner_grant),
-                 authenticated_peer!(winner_node.id),
-                 now: now
-               )
+      {_delivery, _acknowledged} =
+        deliver_and_ack!(winner_grant, authenticated_peer!(winner_node.id), now)
 
       assert Repo.aggregate(Grant, :count, :id) == 1
       assert Repo.get!(Grant, winner_grant.id).state == :active
@@ -722,7 +1175,12 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert first.encoded_secret == retry.encoded_secret
     assert first.secret_hash == retry.secret_hash
     assert first.encoded_secret =~ ~r/\A[A-Za-z0-9_-]{43}\z/
-    assert Repo.get!(Grant, grant.id).state == :active
+    assert Repo.get!(Grant, grant.id).state == :pending_delivery
+    assert {:ok, acknowledged} = acknowledge_delivery(first, peer, now)
+    assert acknowledged.state == :active
+
+    assert {:ok, same_acknowledgement} = acknowledge_delivery(first, peer, now)
+    assert same_acknowledgement.id == acknowledged.id
   end
 
   test "SPEC.md §7.5.0 Controller derives one nonsecret exact Distribution launch scope", %{
@@ -731,16 +1189,8 @@ defmodule Orchard.BeamPeerGrantsTest do
   } do
     {node, grant, now} = pending_grant!(trust_root, authorization_root)
 
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(
-               %{
-                 grant_id: grant.id,
-                 generation: grant.generation,
-                 controller_id: grant.controller_id
-               },
-               authenticated_peer!(node.id),
-               now: now
-             )
+    {_delivery, _acknowledged} =
+      deliver_and_ack!(grant, authenticated_peer!(node.id), now)
 
     assert {:ok, material} =
              BeamPeerGrants.distribution_launch_material(grant.id, now: now)
@@ -766,12 +1216,8 @@ defmodule Orchard.BeamPeerGrantsTest do
   } do
     {node, grant, now} = pending_grant!(trust_root, authorization_root)
 
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(
-               delivery_request(grant),
-               authenticated_peer!(node.id),
-               now: now
-             )
+    {_delivery, _acknowledged} =
+      deliver_and_ack!(grant, authenticated_peer!(node.id), now)
 
     Process.put(:launch_database_now, now)
 
@@ -799,7 +1245,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     request = delivery_request(grant)
     peer = authenticated_peer!(node.id)
 
-    assert {:ok, _delivery} = BeamPeerGrants.deliver(request, peer, now: now)
+    {_delivery, _acknowledged} = deliver_and_ack!(grant, peer, now)
 
     launch_observer = lock_observer(:launch)
 
@@ -820,8 +1266,8 @@ defmodule Orchard.BeamPeerGrantsTest do
                test_lock_observer: delivery_observer
              )
 
-    assert lock_order(:launch) == [:grant, :node, :enrollment, :controller]
-    assert lock_order(:delivery) == [:grant, :node, :enrollment, :controller]
+    assert lock_order(:launch) == [:node, :grant, :enrollment, :controller]
+    assert lock_order(:delivery) == [:node, :grant, :enrollment, :controller]
   end
 
   test "SPEC.md §7.5.0 a non-operational Controller cannot deliver a pending grant", %{
@@ -892,7 +1338,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert response.generation == grant.generation
     assert response.encoded_secret =~ ~r/\A[A-Za-z0-9_-]{43}\z/
     assert response.secret_hash == grant.secret_hash
-    assert Repo.get!(Grant, grant.id).state == :active
+    assert Repo.get!(Grant, grant.id).state == :pending_delivery
     assert %DateTime{} = Repo.get!(Grant, grant.id).delivered_at
   end
 
@@ -1048,14 +1494,8 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     assert {:ok, []} = Nodes.activation_probe_runtime_endpoint_targets()
 
-    request = %{
-      grant_id: grant.id,
-      generation: grant.generation,
-      controller_id: grant.controller_id
-    }
-
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(request, authenticated_peer!(node.id), now: now)
+    {_delivery, _acknowledged} =
+      deliver_and_ack!(grant, authenticated_peer!(node.id), now)
 
     assert {:ok, [target]} = Nodes.activation_probe_runtime_endpoint_targets()
     assert target.transport == :beam
@@ -1332,6 +1772,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:error, :beam_peer_grant_expired} =
              BeamClient.connect(target,
                current_node: String.to_atom(controller_name),
+               connection_incarnation_registry: Process.get(:connection_registry),
                test_database_now: fn -> Process.get(:connect_database_now) end,
                connector: fn node ->
                  send(caller, {:peer_connected, node})
@@ -1350,7 +1791,8 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     peer = String.to_atom(target.address)
     assert_received {:peer_connected, ^peer}
-    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    revoked_cookie = RevokedCookie.value()
+    assert_received {:peer_cookie_set, ^peer, ^revoked_cookie}
     assert_received {:peer_disconnected, ^peer}
   end
 
@@ -1403,7 +1845,8 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     peer = String.to_atom(target.address)
     assert_received {:peer_connected, ^peer}
-    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    revoked_cookie = RevokedCookie.value()
+    assert_received {:peer_cookie_set, ^peer, ^revoked_cookie}
     assert_received {:peer_disconnected, ^peer}
   end
 
@@ -1456,7 +1899,8 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     peer = String.to_atom(target.address)
     assert_received {:peer_connected, ^peer}
-    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    revoked_cookie = RevokedCookie.value()
+    assert_received {:peer_cookie_set, ^peer, ^revoked_cookie}
     assert_received {:peer_disconnected, ^peer}
   end
 
@@ -1497,7 +1941,8 @@ defmodule Orchard.BeamPeerGrantsTest do
              )
 
     peer = String.to_atom(target.address)
-    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    revoked_cookie = RevokedCookie.value()
+    assert_received {:peer_cookie_set, ^peer, ^revoked_cookie}
     assert_received {:peer_disconnected, ^peer}
   end
 
@@ -1518,12 +1963,17 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     connection = %BeamClient{
       authenticated_peer: authenticated_peer!(target.node_id),
+      connection_id: 1,
       node: node(),
       server_module: AuthenticatedStatusServer,
       target: target
     }
 
-    assert {:ok, %{runtime_health: %{ready: true}}} = BeamClient.status(connection, [])
+    assert {:ok, %{runtime_health: %{ready: true}}} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: Process.get(:connection_registry)
+             )
+
     assert Repo.get!(Node, target.node_id).state == :active
   end
 
@@ -1550,16 +2000,7 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     peer = authenticated_peer!(node.id)
 
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(
-               %{
-                 grant_id: grant.id,
-                 generation: grant.generation,
-                 controller_id: grant.controller_id
-               },
-               peer,
-               now: now
-             )
+    {_delivery, _acknowledged} = deliver_and_ack!(grant, peer, now)
 
     assert {:ok, [target]} = Nodes.activation_probe_runtime_endpoint_targets()
     observed_at = DateTime.utc_now()
@@ -2335,7 +2776,154 @@ defmodule Orchard.BeamPeerGrantsTest do
                test_lock_observer: lock_observer(:activation)
              )
 
-    assert lock_order(:activation) == [:grant, :node, :enrollment, :controller]
+    assert lock_order(:activation, 5) == [:node, :credential, :grant, :enrollment, :controller]
+  end
+
+  test "KAP-82 replacement after response receipt fences the stale observation commit", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    registry = start_supervised!({MutableConnectionRegistry, connection_id: 41})
+
+    connection = %BeamClient{
+      authenticated_peer: authenticated_peer!(node.id),
+      connection_id: 41,
+      connection_incarnation_registry: registry,
+      node: node(),
+      server_module: AuthenticatedStatusServer,
+      target: target
+    }
+
+    assert {:error, :beam_peer_observation_rejected} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: registry,
+               before_authenticated_observation_commit: fn ->
+                 MutableConnectionRegistry.replace(registry, 42)
+               end
+             )
+
+    persisted = Repo.get!(Node, node.id)
+    assert persisted.state == :admitted
+    assert persisted.last_heartbeat_at == nil
+    assert DispatchCapacity.get_capacity_evidence(node.id) == nil
+  end
+
+  test "KAP-82 unchanged-authority reconnect accepts only the replacement connection", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    registry = start_supervised!({MutableConnectionRegistry, connection_id: 51})
+
+    original = %BeamClient{
+      authenticated_peer: peer,
+      connection_id: 51,
+      connection_incarnation_registry: registry,
+      node: node(),
+      server_module: AuthenticatedStatusServer,
+      target: target
+    }
+
+    assert {:ok, _observed} =
+             BeamClient.status(original, connection_incarnation_registry: registry)
+
+    assert :ok = MutableConnectionRegistry.replace(registry, 52)
+
+    assert {:error, :connection_incarnation_not_current} =
+             BeamClient.status(original, connection_incarnation_registry: registry)
+
+    replacement = %{original | connection_id: 52}
+
+    assert {:ok, _observed} =
+             BeamClient.status(replacement, connection_incarnation_registry: registry)
+  end
+
+  test "KAP-82 conflicting incarnation remains rejected until native connection replacement", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node_record = Repo.get!(Node, target.node_id)
+    {:ok, connection_id} = Agent.start_link(fn -> 81 end)
+
+    registry =
+      start_supervised!(
+        {Orchard.RuntimeEndpoint.ConnectionIncarnation,
+         name: nil,
+         role: :controller,
+         monitor: fn _enabled, _opts -> :ok end,
+         connection_id_provider: fn _peer -> Agent.get(connection_id, & &1) end}
+      )
+
+    connection = %BeamClient{
+      authenticated_peer: authenticated_peer!(node_record.id),
+      connection_id: 81,
+      connection_incarnation_registry: registry,
+      node: node(),
+      server_module: SelectedIncarnationStatusServer,
+      target: target
+    }
+
+    first = Base.url_encode64(<<9::128>>, padding: false)
+    conflict = Base.url_encode64(<<10::128>>, padding: false)
+
+    assert {:ok, _observed} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: registry,
+               incarnation: first
+             )
+
+    assert {:error, :connection_incarnation_not_current} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: registry,
+               incarnation: conflict
+             )
+
+    assert {:error, :connection_incarnation_not_current} =
+             BeamClient.status(connection,
+               connection_incarnation_registry: registry,
+               incarnation: conflict
+             )
+
+    Agent.update(connection_id, fn _old -> 82 end)
+    send(registry, {:nodeup, node(), %{connection_id: 82}})
+    assert {:ok, 82} = ConnectionIncarnation.connection_id(node(), registry)
+    replacement = %{connection | connection_id: 82}
+
+    assert {:ok, _observed} =
+             BeamClient.status(replacement,
+               connection_incarnation_registry: registry,
+               incarnation: conflict
+             )
+  end
+
+  test "KAP-82 version skew without a connection incarnation fails closed", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    registry = start_supervised!({MutableConnectionRegistry, connection_id: 61})
+
+    connection = %BeamClient{
+      authenticated_peer: authenticated_peer!(node.id),
+      connection_id: 61,
+      connection_incarnation_registry: registry,
+      node: node(),
+      server_module: MissingIncarnationStatusServer,
+      target: target
+    }
+
+    assert {:error, :beam_connection_incarnation_invalid} =
+             BeamClient.status(connection, connection_incarnation_registry: registry)
+
+    persisted = Repo.get!(Node, node.id)
+    assert persisted.state == :admitted
+    assert persisted.last_heartbeat_at == nil
   end
 
   test "SPEC.md §7.5.0 authenticated activation revalidates the authorization root", %{
@@ -2416,6 +3004,7 @@ defmodule Orchard.BeamPeerGrantsTest do
   defp authenticated_status(node, overrides) do
     Map.merge(
       %{
+        agent_connection_incarnation: @connection_incarnation,
         node_metadata: %{
           node_id: node.id,
           display_name: node.display_name,
@@ -2501,19 +3090,32 @@ defmodule Orchard.BeamPeerGrantsTest do
   defp active_grant_target!(trust_root, authorization_root) do
     {node, grant, now} = pending_grant!(trust_root, authorization_root)
 
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(
-               %{
-                 grant_id: grant.id,
-                 generation: grant.generation,
-                 controller_id: grant.controller_id
-               },
-               authenticated_peer!(node.id),
-               now: now
-             )
+    {_delivery, _acknowledged} =
+      deliver_and_ack!(grant, authenticated_peer!(node.id), now)
 
     assert {:ok, [target]} = Nodes.activation_probe_runtime_endpoint_targets()
     {grant, target}
+  end
+
+  defp deliver_and_ack!(grant, peer, now) do
+    assert {:ok, delivery} = BeamPeerGrants.deliver(delivery_request(grant), peer, now: now)
+    assert {:ok, acknowledged} = acknowledge_delivery(delivery, peer, now)
+    {delivery, acknowledged}
+  end
+
+  defp acknowledge_delivery(delivery, peer, now) do
+    BeamPeerGrants.acknowledge_persisted(
+      %{
+        grant_id: delivery.grant_id,
+        generation: delivery.generation,
+        controller_id: delivery.controller_id,
+        installation_id: "11111111-1111-4111-8111-111111111111",
+        local_identity_generation_id: "22222222-2222-4222-8222-222222222222",
+        secret_hash: delivery.secret_hash
+      },
+      peer,
+      now: now
+    )
   end
 
   defp pending_grant!(trust_root, authorization_root) do
@@ -2551,6 +3153,21 @@ defmodule Orchard.BeamPeerGrantsTest do
     }
   end
 
+  defp authenticated_peer_for_credential(credential) do
+    result = credential.certificate_result
+    assert {:ok, certificate} = CertificateIdentity.from_pem(result["node_certificate_pem"])
+
+    %AuthenticatedPeer{
+      node_id: credential.node_id,
+      node_uri_san: result["node_uri_san"],
+      enrollment_id: credential.enrollment_id,
+      certificate_identifier: credential.certificate_identifier,
+      certificate_serial: certificate.serial,
+      certificate_fingerprint: certificate.fingerprint,
+      runtime_trust_spki_sha256: result["runtime_trust_spki_sha256"]
+    }
+  end
+
   defp delivery_request(grant) do
     %{
       grant_id: grant.id,
@@ -2568,8 +3185,8 @@ defmodule Orchard.BeamPeerGrantsTest do
     end
   end
 
-  defp lock_order(operation) do
-    for _index <- 1..4 do
+  defp lock_order(operation, count \\ 4) do
+    for _index <- 1..count do
       assert_receive {:grant_lock, ^operation, lock_name}
       lock_name
     end
