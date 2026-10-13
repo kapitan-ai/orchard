@@ -61,7 +61,8 @@ def _tiny_session() -> Any:
     # Every token needs its own id. When "[UNK]" shared id 0 with "t0", the
     # tokenizer kept one of the two at random per process, and mlx-lm's
     # detokenizer probe failed whenever "[UNK]" was the one dropped.
-    vocab = {"[UNK]": 0, **{f"t{i}": i for i in range(1, 64)}}
+    vocab = {f"t{i}": i for i in range(1, 64)}
+    vocab["[UNK]"] = 0
     # Check before serialization can hide a duplicate by dropping either token.
     assert len(vocab) == len(set(vocab.values())) == 64
     backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
