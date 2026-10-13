@@ -132,7 +132,8 @@ defmodule Orchard.Node.WorkerProcess do
        adapter: RuntimeAdapter.impl(),
        adapter_state: nil,
        capability_snapshot: nil,
-       # Resolved on the first load, then kept for this Worker's lifetime.
+       # Resolved on a load; the first successful policy is kept for this
+       # Worker's lifetime, and a failed one is tried again on the next load.
        launch_options: :unresolved,
        loaded?: false,
        manager: manager,

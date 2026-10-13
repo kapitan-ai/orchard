@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Per-model strict-prefix mode
-The Node Agent SHALL enable strict-prefix checkpoint reuse only for a model whose exact `model_id@version` has the `strict_prefix` prefix-cache mode in the Node's per-model Worker settings. It SHALL resolve each Worker's settings once, in the order global defaults, global settings, exact model override, and SHALL keep that launch policy for the life of the Worker. It SHALL refuse a strict-prefix policy before starting the Worker unless the backend is `mlx`, the generation mode is `stream` and the memory-budget mode is `observe`, and it SHALL NOT rewrite any setting to make a policy valid. Models without the override SHALL keep their existing settings.
+The Node Agent SHALL enable strict-prefix checkpoint reuse only for a model whose exact `model_id@version` has the `strict_prefix` prefix-cache mode in the Node's per-model Worker settings. It SHALL resolve each Worker's settings in the order global defaults, global settings, exact model override, and SHALL keep the first successful launch policy for the life of the Worker. A failed resolution SHALL start no Worker and SHALL be tried again on the next load. It SHALL refuse a strict-prefix policy before starting the Worker unless the backend is `mlx`, the generation mode is `stream` and the memory-budget mode is `observe`, and it SHALL NOT rewrite any setting to make a policy valid. Models without the override SHALL keep their existing settings.
 
 #### Scenario: Other models on the same Node
 - **WHEN** one model has the strict-prefix override and another model on the same Node does not

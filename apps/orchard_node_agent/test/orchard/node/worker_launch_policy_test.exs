@@ -144,6 +144,20 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
              WorkerLaunchPolicy.resolve(ref("org/other", "v1"), overrides, globals)
   end
 
+  test "resolve refuses strict_prefix on another backend even without an override" do
+    globals =
+      Keyword.merge(@globals,
+        backend: "tensorfold",
+        prefix_cache_mode: "strict_prefix",
+        generation_mode: "stream",
+        strict_prefix_slot_bytes: 1,
+        strict_prefix_budget_bytes: 1
+      )
+
+    assert {:error, message} = WorkerLaunchPolicy.resolve(ref("org/a", "v1"), %{}, globals)
+    assert message =~ "strict_prefix requires the mlx backend"
+  end
+
   test "strict-prefix settings need the strict_prefix mode", %{dir: dir} do
     entry = Map.put(@strict_entry, "prefix_cache_mode", "kv")
     {:ok, overrides} = load!(dir, [entry])
@@ -173,6 +187,9 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
         {"a missing model id", [%{"version" => "v1"}], "non-empty model_id and version"},
         {"an entry that sets nothing", [%{"model_id" => "org/a", "version" => "v1"}],
          "org/a@v1: the entry sets no Worker settings"},
+        {"an empty strict_prefix block",
+         [%{"model_id" => "org/a", "version" => "v1", "strict_prefix" => %{}}],
+         "org/a@v1: strict_prefix needs slot_bytes and budget_bytes"},
         {"unknown entry keys", [Map.put(@strict_entry, "executable", "/bin/sh")],
          ~s(unknown keys ["executable"])},
         {"unknown strict keys", [put_in(@strict_entry, ["strict_prefix", "slotz"], 1)],

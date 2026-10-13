@@ -287,8 +287,8 @@ defmodule Orchard.Node.WorkerProcessTest do
     assert response.resident_fingerprint_match == false
   end
 
-  # Launch-policy tests change the Node's cached settings; put back whatever
-  # the application published at boot.
+  # Some tests change the Node's cached launch settings; every test puts back
+  # whatever the application published at boot.
   setup do
     key = {Orchard.Node, :worker_launch_overrides}
     previous = :persistent_term.get(key, :absent)

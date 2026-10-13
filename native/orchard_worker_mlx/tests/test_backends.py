@@ -663,6 +663,21 @@ def test_mlx_backend_strict_prefix_reports_slots_and_budget_before_load() -> Non
     assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
 
 
+@pytest.mark.parametrize("mode", ["disabled", "strict_prefix"])
+def test_mlx_backend_records_no_fingerprints_without_a_fingerprint_cache(mode: str) -> None:
+    config = (
+        _strict_prefix_load_config()
+        if mode == "strict_prefix"
+        else PrefixCacheLoadConfig(mode="disabled")
+    )
+    backend = _make_mlx_backend(prefix_cache_config=config)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    backend.record_fingerprint(_fingerprint(1))
+
+    assert backend.get_fingerprints() == []
+
+
 def test_mlx_backend_kv_mode_still_advertises_prefix_cache() -> None:
     backend = _make_mlx_backend(prefix_cache_config=PrefixCacheLoadConfig(mode="kv"))
 

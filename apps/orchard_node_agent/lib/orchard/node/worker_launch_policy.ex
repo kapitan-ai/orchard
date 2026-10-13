@@ -212,6 +212,9 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
 
   defp parse_strict(nil, _where), do: {:ok, []}
 
+  defp parse_strict(strict, where) when map_size(strict) == 0,
+    do: {:error, "#{where}: strict_prefix needs slot_bytes and budget_bytes"}
+
   defp parse_strict(strict, where) when is_map(strict) do
     with :ok <- known_keys(strict, @strict_keys, "#{where} strict_prefix"),
          {:ok, slots} <- strict_int(strict, "slots", 1..@max_slots, where),
@@ -281,8 +284,12 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
     slot_bytes = options[:strict_prefix_slot_bytes]
     budget_bytes = options[:strict_prefix_budget_bytes]
 
-    # The backend is checked for every override in validate_override_backend.
+    # validate_override_backend already refuses overrides on other backends;
+    # this keeps resolve/3 correct for any caller.
     cond do
+      options[:backend] != "mlx" ->
+        {:error, "strict_prefix requires the mlx backend, got #{inspect(options[:backend])}"}
+
       options[:generation_mode] != "stream" ->
         {:error, "strict_prefix requires generation_mode stream"}
 

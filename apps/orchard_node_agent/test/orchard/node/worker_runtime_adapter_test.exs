@@ -581,6 +581,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   test "a model without an override gets the same Worker argv as before per-model settings" do
     # Older Workers accept exactly this argv: it is the list worker_cli_args
     # produced for default settings before per-model launch policies existed.
+    # The literal list pins it; the comparison below checks the resolved path.
     {:ok, options} =
       WorkerLaunchPolicy.resolve(
         %ModelRef{model_id: "test/model", version: "v1"},
@@ -592,6 +593,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       WorkerRuntimeAdapter.worker_cli_args(
         Keyword.merge(options, socket_path: "/tmp/worker.sock", log_path: "/tmp/worker.log")
       )
+
+    if Node.worker_prefix_cache_mode() == "kv" and Node.worker_generation_mode() == "batch" do
+      assert Enum.take(args, 12) == [
+               "--socket-path",
+               "/tmp/worker.sock",
+               "--backend",
+               "mlx",
+               "--log-file",
+               "/tmp/worker.log",
+               "--prefix-cache-mode",
+               "kv",
+               "--prefix-cache-max-entries",
+               "8",
+               "--prefix-cache-max-bytes",
+               "0"
+             ]
+
+      refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
+    end
 
     assert args ==
              WorkerRuntimeAdapter.worker_cli_args(
@@ -623,6 +643,35 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
     assert flag_value(args, "--prefix-cache-mode") in ["disabled", "kv", "trie"]
+  end
+
+  test "SPEC.md §7.5.3 strict-prefix load telemetry records the mode and its settings" do
+    handler = "strict-prefix-load-telemetry-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:orchard, :node, :worker_runtime, :load, :start],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:load_start, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    launched_worker_args(@strict_launch_options ++ [launch_policy_version: 1])
+
+    assert_receive {:load_start, metadata}
+    assert metadata.prefix_cache_mode == "strict_prefix"
+    assert metadata.launch_policy_version == 1
+
+    assert metadata.strict_prefix == %{
+             strict_prefix_slots: 1,
+             strict_prefix_slot_bytes: 1024,
+             strict_prefix_budget_bytes: 2048
+           }
   end
 
   test "Workers start without the spike's strict-prefix enabling variable" do
