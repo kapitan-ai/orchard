@@ -36,6 +36,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.TensorFoldProjection
   alias Orchard.Node.WorkerCapabilityEvidence
+  alias Orchard.Node.WorkerLaunchPolicy
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.PathUtils
 
@@ -51,6 +52,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
+  @strict_prefix_mode WorkerLaunchPolicy.strict_prefix_mode()
+  # The strict-prefix spike enabled reuse for every Worker through this
+  # inherited variable. Workers start without it, so a leftover value in the
+  # Node's environment cannot turn reuse on for every model.
+  @worker_env [{~c"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", false}]
   @default_score_prefix_cache_timeout_ms 150
   @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
 
@@ -291,6 +297,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         Node.worker_memory_budget_overhead_bytes()
       )
 
+    # Only a per-model launch policy sets these (Orchard.Node.WorkerLaunchPolicy).
+    strict_prefix_options =
+      Keyword.take(opts, Keyword.keys(WorkerLaunchPolicy.strict_prefix_flags()))
+
     load_meta = %{
       model_id: model_ref.model_id,
       version: model_ref.version,
@@ -305,6 +315,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       memory_budget_mode: memory_budget_mode,
       memory_budget_utilization: memory_budget_utilization,
       memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+      launch_policy_version: Keyword.get(opts, :launch_policy_version),
+      prefix_cache_mode: prefix_cache_mode,
+      strict_prefix: Map.new(strict_prefix_options),
       adapter: __MODULE__
     }
 
@@ -339,7 +352,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           auto_max_concurrent_generations: auto_max_concurrent_generations,
           memory_budget_mode: memory_budget_mode,
           memory_budget_utilization: memory_budget_utilization,
-          memory_budget_overhead_bytes: memory_budget_overhead_bytes
+          memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+          strict_prefix_options: strict_prefix_options
         })
       end
 
@@ -504,19 +518,26 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          auto_max_concurrent_generations: auto_max_concurrent_generations,
          memory_budget_mode: memory_budget_mode,
          memory_budget_utilization: memory_budget_utilization,
-         memory_budget_overhead_bytes: memory_budget_overhead_bytes
+         memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+         strict_prefix_options: strict_prefix_options
        }) do
     {:ok, port, os_pid} =
-      start_worker_port(executable, socket_path, backend, log_path,
-        prefix_cache_mode: prefix_cache_mode,
-        prefix_cache_max_entries: prefix_cache_max_entries,
-        prefix_cache_max_bytes: prefix_cache_max_bytes,
-        generation_mode: generation_mode,
-        max_concurrent_generations: max_concurrent_generations,
-        auto_max_concurrent_generations: auto_max_concurrent_generations,
-        memory_budget_mode: memory_budget_mode,
-        memory_budget_utilization: memory_budget_utilization,
-        memory_budget_overhead_bytes: memory_budget_overhead_bytes
+      start_worker_port(
+        executable,
+        socket_path,
+        backend,
+        log_path,
+        [
+          prefix_cache_mode: prefix_cache_mode,
+          prefix_cache_max_entries: prefix_cache_max_entries,
+          prefix_cache_max_bytes: prefix_cache_max_bytes,
+          generation_mode: generation_mode,
+          max_concurrent_generations: max_concurrent_generations,
+          auto_max_concurrent_generations: auto_max_concurrent_generations,
+          memory_budget_mode: memory_budget_mode,
+          memory_budget_utilization: memory_budget_utilization,
+          memory_budget_overhead_bytes: memory_budget_overhead_bytes
+        ] ++ strict_prefix_options
       )
 
     runtime_params = %{
@@ -759,15 +780,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       Integer.to_string(prefix_cache_max_bytes)
     ]
 
-    if extended_generation_memory_flags?(
-         generation_mode,
-         max_concurrent_generations,
-         auto_max_concurrent_generations,
-         memory_budget_mode,
-         normalized_memory_budget_utilization,
-         memory_budget_overhead_bytes
-       ) do
+    # A strict-prefix Worker always gets explicit generation and memory flags,
+    # because the Worker's own defaults are batch and observe.
+    if prefix_cache_mode == @strict_prefix_mode or
+         extended_generation_memory_flags?(
+           generation_mode,
+           max_concurrent_generations,
+           auto_max_concurrent_generations,
+           memory_budget_mode,
+           normalized_memory_budget_utilization,
+           memory_budget_overhead_bytes
+         ) do
       base_args ++
+        strict_prefix_args(prefix_cache_mode, opts) ++
         [
           "--generation-mode",
           to_string(generation_mode),
@@ -804,6 +829,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         :binary,
         :exit_status,
         {:line, 4096},
+        {:env, @worker_env},
         args: args
       ])
 
@@ -815,6 +841,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     {:ok, port, os_pid}
   end
+
+  # Written as --flag=value, so a reply marker that starts with "-" is read as
+  # the flag's value rather than as another option.
+  defp strict_prefix_args(@strict_prefix_mode, opts) do
+    Enum.flat_map(WorkerLaunchPolicy.strict_prefix_flags(), fn {key, flag} ->
+      case Keyword.get(opts, key) do
+        nil -> []
+        value -> ["#{flag}=#{value}"]
+      end
+    end)
+  end
+
+  defp strict_prefix_args(_prefix_cache_mode, _opts), do: []
 
   defp normalize_memory_budget_utilization(value) when is_float(value), do: value
   defp normalize_memory_budget_utilization(value) when is_integer(value), do: value / 1

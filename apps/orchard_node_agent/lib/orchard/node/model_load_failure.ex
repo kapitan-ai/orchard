@@ -261,6 +261,14 @@ defmodule Orchard.Node.ModelLoadFailure do
         "model runtime supervision is unavailable on this node"
       )
 
+  def from_reason({:worker_launch_policy_invalid, _message}),
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_launch_policy_invalid",
+        "node Worker settings for this model are invalid; see the node agent log"
+      )
+
   def from_reason({:worker_exited, _status}),
     do:
       new(

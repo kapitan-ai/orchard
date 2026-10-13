@@ -32,6 +32,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.InferenceEvent.{Completed, Failed, OutputTextDelta, TokenDelta}
+  alias Orchard.Node
+  alias Orchard.Node.WorkerLaunchPolicy
   alias Orchard.Node.WorkerRuntimeAdapter
 
   @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
@@ -498,6 +500,189 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       args = launched_worker_args(extra)
       assert flag_value(args, "--auto-max-concurrent-generations") == expected
     end
+  end
+
+  @strict_launch_options [
+    prefix_cache_mode: "strict_prefix",
+    generation_mode: "stream",
+    max_concurrent_generations: "auto",
+    auto_max_concurrent_generations: 3,
+    memory_budget_mode: "observe",
+    memory_budget_utilization: 0.9,
+    memory_budget_overhead_bytes: 1_073_741_824,
+    strict_prefix_slots: 1,
+    strict_prefix_slot_bytes: 1024,
+    strict_prefix_budget_bytes: 2048
+  ]
+
+  test "SPEC.md §7.5.3 a strict-prefix launch writes explicit generation, memory and strict flags" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        [socket_path: "/tmp/worker.sock", backend: "mlx", log_path: "/tmp/worker.log"] ++
+          @strict_launch_options
+      )
+
+    assert flag_value(args, "--prefix-cache-mode") == "strict_prefix"
+    # The Worker's own defaults are batch and observe, so both are written.
+    assert flag_value(args, "--generation-mode") == "stream"
+    assert flag_value(args, "--memory-budget-mode") == "observe"
+    assert "--strict-prefix-slots=1" in args
+    assert "--strict-prefix-slot-bytes=1024" in args
+    assert "--strict-prefix-budget-bytes=2048" in args
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix-reply-marker"))
+  end
+
+  test "a strict-prefix launch writes its flags even when every other setting is a default" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "mlx",
+        log_path: "/tmp/worker.log",
+        prefix_cache_mode: "strict_prefix",
+        strict_prefix_slot_bytes: 1024,
+        strict_prefix_budget_bytes: 1024
+      )
+
+    assert flag_value(args, "--generation-mode") == "batch"
+    assert flag_value(args, "--memory-budget-mode") == "observe"
+    assert "--strict-prefix-budget-bytes=1024" in args
+  end
+
+  test "a reply marker that starts with a dash stays the value of its flag" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        [socket_path: "/tmp/worker.sock", backend: "mlx", log_path: "/tmp/worker.log"] ++
+          @strict_launch_options ++ [strict_prefix_reply_marker: "-assistant"]
+      )
+
+    assert "--strict-prefix-reply-marker=-assistant" in args
+  end
+
+  test "strict-prefix flags are written only for the strict_prefix mode" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "mlx",
+        log_path: "/tmp/worker.log",
+        strict_prefix_slot_bytes: 1024
+      )
+
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
+  end
+
+  test "SPEC.md §7.5.3 load_model forwards strict-prefix launch options to the Worker" do
+    args = launched_worker_args(@strict_launch_options ++ [strict_prefix_reply_marker: "<|r|>"])
+
+    assert flag_value(args, "--prefix-cache-mode") == "strict_prefix"
+    assert "--strict-prefix-budget-bytes=2048" in args
+    assert "--strict-prefix-reply-marker=<|r|>" in args
+  end
+
+  test "a model without an override gets the same Worker argv as before per-model settings" do
+    # Older Workers accept exactly this argv: it is the list worker_cli_args
+    # produced for the default Worker settings before per-model launch
+    # policies existed. Resolve against explicit defaults so the literal pin
+    # runs whatever config/test.exs sets.
+    defaults = [
+      backend: "mlx",
+      prefix_cache_mode: "kv",
+      prefix_cache_max_entries: 8,
+      prefix_cache_max_bytes: 0,
+      generation_mode: "batch",
+      max_concurrent_generations: "auto",
+      auto_max_concurrent_generations: 3,
+      memory_budget_mode: "observe",
+      memory_budget_utilization: 0.9,
+      memory_budget_overhead_bytes: 1_073_741_824
+    ]
+
+    {:ok, options} =
+      WorkerLaunchPolicy.resolve(%ModelRef{model_id: "test/model", version: "v1"}, %{}, defaults)
+
+    assert WorkerRuntimeAdapter.worker_cli_args(
+             Keyword.merge(options, socket_path: "/tmp/worker.sock", log_path: "/tmp/worker.log")
+           ) == [
+             "--socket-path",
+             "/tmp/worker.sock",
+             "--backend",
+             "mlx",
+             "--log-file",
+             "/tmp/worker.log",
+             "--prefix-cache-mode",
+             "kv",
+             "--prefix-cache-max-entries",
+             "8",
+             "--prefix-cache-max-bytes",
+             "0"
+           ]
+  end
+
+  test "a model without an override resolves to exactly the Node's global Worker settings" do
+    globals = Keyword.put(Node.worker_launch_globals(), :backend, "mlx")
+
+    {:ok, options} =
+      WorkerLaunchPolicy.resolve(%ModelRef{model_id: "test/model", version: "v1"}, %{}, globals)
+
+    assert Keyword.delete(options, :launch_policy_version) == globals
+  end
+
+  test "a model without an override launches with only flags an older Worker accepts" do
+    {:ok, options} =
+      WorkerLaunchPolicy.resolve(
+        %ModelRef{model_id: "test/model", version: "v1"},
+        %{},
+        Node.worker_launch_globals()
+      )
+
+    args = launched_worker_args(Keyword.delete(options, :backend))
+
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
+    assert flag_value(args, "--prefix-cache-mode") in ["disabled", "kv", "trie"]
+  end
+
+  test "SPEC.md §7.5.3 strict-prefix load telemetry records the mode and its settings" do
+    handler = "strict-prefix-load-telemetry-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:orchard, :node, :worker_runtime, :load, :start],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:load_start, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    launched_worker_args(@strict_launch_options ++ [launch_policy_version: 1])
+
+    assert_receive {:load_start, metadata}
+    assert metadata.prefix_cache_mode == "strict_prefix"
+    assert metadata.launch_policy_version == 1
+
+    assert metadata.strict_prefix == %{
+             strict_prefix_slots: 1,
+             strict_prefix_slot_bytes: 1024,
+             strict_prefix_budget_bytes: 2048
+           }
+  end
+
+  test "Workers start without the spike's strict-prefix enabling variable" do
+    previous = System.get_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS")
+    System.put_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", "enabled")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", previous),
+        else: System.delete_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS")
+    end)
+
+    assert launched_worker_output(
+             ~s(printf '%s' "${ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS-unset}"),
+             []
+           ) == "unset"
   end
 
   test "get_status maps prompt token id support from worker status proto" do
@@ -1218,11 +1403,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   # Launches a fake Worker through the real load_model path; it records its
   # arguments and exits, so loading fails after the arguments are captured.
   defp launched_worker_args(extra_opts) do
+    ~s(printf '%s\\n' "$@")
+    |> launched_worker_output(extra_opts)
+    |> String.split("\n", trim: true)
+  end
+
+  # Runs `command` as the fake Worker and returns what it wrote to stdout.
+  defp launched_worker_output(command, extra_opts) do
     root = Path.join("/tmp", "ofw-#{System.unique_integer([:positive])}")
     capture = Path.join(root, "args")
     executable = Path.join(root, "worker")
     File.mkdir_p!(Path.join([root, "models", "test", "model", "v1"]))
-    File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"#{capture}\"\n")
+    File.write!(executable, "#!/bin/sh\n#{command} > \"#{capture}\"\n")
     File.chmod!(executable, 0o700)
     on_exit(fn -> File.rm_rf!(root) end)
 
@@ -1239,16 +1431,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                ] ++ extra_opts
              )
 
-    capture |> File.read!() |> String.split("\n", trim: true)
+    File.read!(capture)
   end
 
+  # Strict-prefix flags are single `--flag=value` arguments, so look up the
+  # argument after the flag rather than pairing arguments.
   defp flag_value(args, flag) do
-    args
-    |> Enum.chunk_every(2)
-    |> Enum.find_value(fn
-      [^flag, value] -> value
-      _other -> nil
-    end)
+    case Enum.find_index(args, &(&1 == flag)) do
+      nil -> nil
+      index -> Enum.at(args, index + 1)
+    end
   end
 
   defp score_request(request_id) do

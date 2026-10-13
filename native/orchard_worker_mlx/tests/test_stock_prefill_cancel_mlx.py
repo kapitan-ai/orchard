@@ -58,7 +58,10 @@ def _tiny_session() -> Any:
         )
     )
     mx.eval(model.parameters())
-    vocab = {f"t{i}": i for i in range(64)}
+    # Every token needs its own id. When "[UNK]" shared id 0 with "t0", the
+    # tokenizer kept one of the two at random per process, and mlx-lm's
+    # detokenizer probe failed whenever "[UNK]" was the one dropped.
+    vocab = {f"t{i}": i for i in range(1, 64)}
     vocab["[UNK]"] = 0
     backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
     tokenizer = TokenizerWrapper(PreTrainedTokenizerFast(tokenizer_object=backend))

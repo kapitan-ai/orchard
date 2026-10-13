@@ -237,6 +237,13 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     end
   end
 
+  test "SPEC.md §12.3 an invalid per-model launch policy -> RUNTIME_UNAVAILABLE" do
+    f = ModelLoadFailure.from_reason({:worker_launch_policy_invalid, "org/m@v1: details"})
+    assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+    assert f.code == "worker_launch_policy_invalid"
+    assert f.message == "node Worker settings for this model are invalid; see the node agent log"
+  end
+
   test "SPEC.md §12.3 worker_load_failed with insufficient_memory -> RESOURCE_EXHAUSTED" do
     f = ModelLoadFailure.from_reason({:worker_load_failed, "insufficient_memory", "detail"})
     assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED

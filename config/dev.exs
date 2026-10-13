@@ -773,6 +773,10 @@ config :orchard_node_agent,
   runtime:
     node_runtime_defaults
     |> Keyword.merge(worker_settings)
+    |> Keyword.put(
+      :worker_model_overrides_file,
+      System.get_env("ORCHARD_WORKER_MODEL_OVERRIDES_FILE")
+    )
     |> Keyword.merge(
       worker_ready_timeout_ms:
         env_positive_int.(
