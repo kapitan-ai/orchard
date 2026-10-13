@@ -41,9 +41,16 @@ Prefill progress bridging (Task 5):
     during prefill with ``(processed_tokens, total_tokens)``.  This module
     bridges the synchronous callback into yielded ``progress`` events by
     queuing updates in a request-local deque and draining them before each
-    token delta.  Prefill cancel is NOT cleanly interruptible; upstream
-    ``generate_step()`` has no cancel hook.  Cancellation applies only after
-    control returns from prefill (i.e., during decode).
+    token delta.
+
+Prefill cancellation (stream mode):
+    Upstream ``generate_step()`` has no cancel hook, but it calls the
+    progress callback after evaluating each prefill chunk.  In stream mode
+    the callback raises an internal exception at an intermediate chunk
+    boundary once the request is cancelled, so prefill stops within about
+    one chunk.  The exception ends the stream loop, and the normal
+    end-of-stream path emits the ``cancelled`` terminal.  The shared batch
+    runtime keeps its own cancellation and is not interrupted this way.
 
 MLX cache hygiene policy:
     Stream mode calls ``mx.synchronize()`` then ``session.clear_cache()`` once
@@ -1930,6 +1937,42 @@ def _drain_prefill_progress(
         }
 
 
+class _PrefillCancelled(Exception):
+    """Raised from the progress callback to stop a cancelled prefill."""
+
+
+class _PrefillCancelGuard:
+    """Progress callback wrapper that stops prefill for a cancelled request.
+
+    ``inner`` runs first, so a strict-prefix capture at this boundary
+    completes before the stop.  Only intermediate callbacks stop prefill:
+    the final ``(total, total)`` callback follows the first sampled token,
+    and the decode stride handles cancellation from there.
+    """
+
+    def __init__(self, cancel_event: threading.Event, inner: Callable[[int, int], None]) -> None:
+        self._cancel_event = cancel_event
+        self.inner = inner
+
+    def __call__(self, processed: int, total: int) -> None:
+        self.inner(processed, total)
+        if (
+            self._cancel_event.is_set()
+            and isinstance(processed, int)
+            and isinstance(total, int)
+            and processed < total
+        ):
+            raise _PrefillCancelled
+
+
+def _until_prefill_cancelled(stream: Any) -> Iterator[Any]:
+    """Yield from *stream*, ending quietly when prefill was cancelled."""
+    try:
+        yield from stream
+    except _PrefillCancelled:
+        return
+
+
 def _sample_current_memory_bytes_fail_open(deps: GenerationDeps) -> int | None:
     """Best-effort process-memory sample from the optional runtime seam."""
     probe = deps.current_memory_bytes
@@ -2418,10 +2461,9 @@ def generate_events(
     terminal still leaves the latest lower bound on the stream. Counters never
     decrease, and the terminal ``completed`` usage remains the exact total.
 
-    NOTE(task-5): Prefill cancel is NOT cleanly interruptible. Upstream
-    ``generate_step()`` has no cancel hook. Cancellation applies only after
-    control returns from prefill (i.e., during decode). This is a known
-    limitation documented rather than worked around.
+    In stream mode a cancel during prefill stops at the next intermediate
+    prefill chunk boundary (see "Prefill cancellation" in the module notes).
+    A cancel after the last prompt token is checked on the decode stride.
 
     Raises ``BackendError`` for setup-time failures (invalid prompt, etc.).
     """
@@ -2502,6 +2544,8 @@ def generate_events(
             lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
             request_prompt_cache = lookup_result.prompt_cache
             stream_prompt_ids = lookup_result.stream_prompt_ids
+        if not deps.uses_shared_batch_runtime:
+            stream_progress_callback = _PrefillCancelGuard(cancel_event, stream_progress_callback)
 
         stream_kwargs: dict[str, Any] = {
             "max_tokens": max_output_tokens,
@@ -2565,7 +2609,12 @@ def generate_events(
                 reported_output_tokens = output_tokens
                 yield _usage_event(input_tokens, output_tokens)
 
-            for response in stream:
+            # A cancelled prefill ends the loop early; the end-of-stream path
+            # below then sees the cancel and emits the cancelled terminal.
+            responses = (
+                stream if deps.uses_shared_batch_runtime else _until_prefill_cancelled(stream)
+            )
+            for response in responses:
                 drained_prefill = bool(progress_queue)
                 yield from _drain_prefill_progress(
                     progress_queue,

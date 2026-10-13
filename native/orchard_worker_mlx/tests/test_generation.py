@@ -7721,3 +7721,115 @@ def test_cache_log_lookup_failed_via_stats_delta(caplog: pytest.LogCaptureFixtur
 
     log = _find_cache_log(caplog)
     assert log["lookup_status"] == "lookup_failed"
+
+
+# ===========================================================================
+# Prefill cancellation at chunk boundaries (SPEC.md §12.4)
+# ===========================================================================
+
+
+def _chunked_prefill_stream(
+    *,
+    chunks: int,
+    cancel: threading.Event,
+    record: list[str],
+    cancel_after_chunk: int | None = None,
+    cancel_before_final: bool = False,
+) -> Callable[..., Any]:
+    """Mirror mlx-lm 0.31.3 ``generate_step``: chunk callbacks, then the final one."""
+
+    def stream(model: Any, tokenizer: Any, prompt_ids: list[int], **kwargs: Any) -> Any:
+        callback = kwargs["prompt_progress_callback"]
+        total = chunks * 4 + 1
+        callback(0, total)
+        for chunk in range(1, chunks + 1):
+            record.append(f"chunk{chunk}")
+            if cancel_after_chunk == chunk:
+                cancel.set()
+            callback(chunk * 4, total)
+        if cancel_before_final:
+            cancel.set()
+        callback(total, total)
+        record.append("token")
+        yield FakeGenerationResponse(text="a", token=10)
+        yield FakeGenerationResponse(text="b", token=11, finish_reason="stop")
+
+    return stream
+
+
+def test_spec_12_4_cancel_during_prefill_stops_at_the_next_chunk_boundary() -> None:
+    cancel = threading.Event()
+    record: list[str] = []
+    deps = _make_deps(
+        stream_generate=_chunked_prefill_stream(
+            chunks=5, cancel=cancel, record=record, cancel_after_chunk=2
+        )
+    )
+
+    events = _collect_events(_make_fake_session(), _make_fake_request(), deps, cancel)
+
+    assert record == ["chunk1", "chunk2"]
+    assert not [e for e in events if e["kind"] == "output_text_delta"]
+    terminals = [e for e in events if e["kind"] in ("failed", "completed")]
+    assert terminals == [events[-1]]
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_spec_12_4_cancel_at_the_final_prefill_callback_uses_the_decode_check() -> None:
+    cancel = threading.Event()
+    record: list[str] = []
+    deps = _make_deps(
+        stream_generate=_chunked_prefill_stream(
+            chunks=3, cancel=cancel, record=record, cancel_before_final=True
+        )
+    )
+
+    events = _collect_events(_make_fake_session(), _make_fake_request(), deps, cancel)
+
+    assert record == ["chunk1", "chunk2", "chunk3", "token"]
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_spec_12_4_shared_batch_runtime_prefill_is_not_interrupted() -> None:
+    cancel = threading.Event()
+    record: list[str] = []
+    stream = _chunked_prefill_stream(chunks=3, cancel=cancel, record=record, cancel_after_chunk=1)
+    deps = GenerationDeps(
+        stream_generate=stream,
+        make_sampler=lambda **_kwargs: MagicMock(),
+        uses_shared_batch_runtime=True,
+    )
+
+    events = _collect_events(_make_fake_session(), _make_fake_request(), deps, cancel)
+
+    assert record == ["chunk1", "chunk2", "chunk3", "token"]
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_prefill_cancel_does_not_swallow_other_stream_errors() -> None:
+    def broken_stream(model: Any, tokenizer: Any, prompt_ids: list[int], **kwargs: Any) -> Any:
+        kwargs["prompt_progress_callback"](4, 9)
+        raise RuntimeError("metal failure")
+        yield  # pragma: no cover
+
+    deps = _make_deps(stream_generate=broken_stream)
+
+    with pytest.raises(RuntimeError, match="metal failure"):
+        _collect_events(_make_fake_session(), _make_fake_request(), deps)
+
+
+def test_prefill_cancel_still_clears_the_session_cache() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    cancel = threading.Event()
+    deps = _make_deps(
+        stream_generate=_chunked_prefill_stream(
+            chunks=3, cancel=cancel, record=[], cancel_after_chunk=1
+        )
+    )
+
+    events = _collect_events(
+        _make_fake_session(clear_cache=clear_mock), _make_fake_request(), deps, cancel
+    )
+
+    assert events[-1]["code"] == "cancelled"
+    clear_mock.assert_called()

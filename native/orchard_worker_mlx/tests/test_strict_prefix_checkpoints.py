@@ -255,6 +255,12 @@ def _deps(stream: Any) -> GenerationDeps:
     )
 
 
+def _progress_hook(call: dict[str, Any]) -> Any:
+    """Return the progress callback inside the stream-mode prefill cancel guard."""
+    callback = call["prompt_progress_callback"]
+    return getattr(callback, "inner", callback)
+
+
 def _run(session: Any, prompt_ids: list[int], stream: _FaithfulStream) -> list[dict[str, Any]]:
     return list(
         generate_events(session, _request(prompt_ids), threading.Event(), deps=_deps(stream))
@@ -825,7 +831,7 @@ def test_cold_request_captures_the_boundary_before_the_reply_prompt() -> None:
     assert events[-1]["kind"] == "completed"
     [call] = stream.calls
     assert call["prompt_ids"] == TURN_1
-    assert isinstance(call["prompt_progress_callback"], CaptureHook)
+    assert isinstance(_progress_hook(call), CaptureHook)
     assert [(p, t) for p, t, _ in stream.callback_log] == [
         (0, 13),
         (4, 13),
@@ -882,7 +888,7 @@ def test_no_checkpoint_is_taken_when_no_boundary_precedes_the_reply_prompt() -> 
     _run(_session(store), [1, 2, *MARKER, 3], stream)
 
     [call] = stream.calls
-    assert not isinstance(call["prompt_progress_callback"], CaptureHook)
+    assert not isinstance(_progress_hook(call), CaptureHook)
     assert store.stats().stores == 0
 
 
@@ -965,7 +971,7 @@ def test_setting_off_leaves_the_stream_call_unchanged() -> None:
         assert events[-1]["kind"] == "completed"
         [call] = stream.calls
         assert "prompt_cache" not in call
-        assert not isinstance(call["prompt_progress_callback"], CaptureHook)
+        assert not isinstance(_progress_hook(call), CaptureHook)
         assert call["prompt_ids"] == TURN_1
 
 
@@ -997,7 +1003,7 @@ def test_setting_off_keeps_the_trim_cache_path(
     prefix_cache.store.assert_called_once()
     [call] = stream.calls
     assert call["prompt_ids"] == TURN_1
-    assert not isinstance(call["prompt_progress_callback"], CaptureHook)
+    assert not isinstance(_progress_hook(call), CaptureHook)
     assert not [r for r in caplog.records if "strict_prefix_checkpoint" in r.getMessage()]
 
 
@@ -1007,3 +1013,41 @@ class _FaithfulStreamWithoutCache(_FaithfulStream):
     ) -> Iterator[_Response]:
         self.calls.append({"prompt_ids": list(prompt_ids), **kwargs})
         yield _Response(text="ok", token=GENERATED_TOKEN, finish_reason="stop")
+
+
+class _CancellingStream(_FaithfulStream):
+    """Faithful stream that cancels the request at one prefill boundary."""
+
+    def __init__(self, cancel: threading.Event, cancel_at_processed: int) -> None:
+        super().__init__()
+        self._cancel = cancel
+        self._cancel_at = cancel_at_processed
+
+    def __call__(
+        self, _model: Any, _tokenizer: Any, prompt_ids: list[int], **kwargs: Any
+    ) -> Iterator[_Response]:
+        callback = kwargs["prompt_progress_callback"]
+
+        def cancel_then_report(processed: int, total: int) -> None:
+            if processed == self._cancel_at:
+                self._cancel.set()
+            callback(processed, total)
+
+        kwargs["prompt_progress_callback"] = cancel_then_report
+        yield from super().__call__(_model, _tokenizer, prompt_ids, **kwargs)
+
+
+def test_cancel_at_the_capture_boundary_keeps_the_checkpoint() -> None:
+    """A prefill cancelled at the capture boundary still retains its checkpoint."""
+    store = _store()
+    cancel = threading.Event()
+    stream = _CancellingStream(cancel, cancel_at_processed=8)
+
+    events = list(generate_events(_session(store), _request(TURN_1), cancel, deps=_deps(stream)))
+
+    assert events[-1]["code"] == "cancelled"
+    assert [p for p, _t, _s in stream.callback_log] == [0, 4, 8]
+    assert store.stats().stores == 1
+    lookup = store.lookup(TURN_2)
+    assert lookup.matched_length == 8
+    assert _state(lookup.prompt_cache) == _reference_state(TURN_1[:8])
