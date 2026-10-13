@@ -21,6 +21,7 @@ from orchard_worker_mlx.prefix_cache import (
     TriePrefixCache,
 )
 from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
     SUPPORTED_LAYER_TYPES,
     SUPPORTED_MLX_LM_COMMIT,
     SUPPORTED_MLX_LM_VERSION,
@@ -38,7 +39,6 @@ DEFAULT_PREFILL_STEP_SIZE = 2048
 # Prefix-cache load configuration
 # ---------------------------------------------------------------------------
 
-STRICT_PREFIX_MODE = "strict_prefix"
 # Modes that keep a trim-based prefix cache with cache-affinity fingerprints.
 FINGERPRINT_PREFIX_CACHE_MODES = frozenset({"kv", "trie"})
 _VALID_PREFIX_CACHE_MODES = (
@@ -110,6 +110,16 @@ class PrefixCacheLoadConfig:
                 "max_fingerprint_buffer_size must be <= "
                 f"{_MAX_FINGERPRINT_BUFFER_SIZE}, got {self.max_fingerprint_buffer_size}"
             )
+
+    @property
+    def status_caps(self) -> tuple[int, int]:
+        """Configured maximums reported in prefix-cache status: entries and bytes.
+
+        For strict-prefix checkpoints these are the slots and the budget.
+        """
+        if self.strict_prefix is not None:
+            return (self.strict_prefix.slots, self.strict_prefix.budget_bytes)
+        return (self.max_entries, self.max_bytes)
 
     @property
     def uses_fingerprints(self) -> bool:

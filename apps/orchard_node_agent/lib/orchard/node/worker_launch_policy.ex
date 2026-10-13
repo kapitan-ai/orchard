@@ -38,18 +38,24 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
   ]
   @max_slots 8
   @uint64_max 18_446_744_073_709_551_615
-  @strict_option_keys [
-    :strict_prefix_slots,
-    :strict_prefix_slot_bytes,
-    :strict_prefix_budget_bytes,
-    :strict_prefix_reply_marker
+  # Launch option to Worker CLI flag. The adapter writes exactly these.
+  @strict_prefix_flags [
+    strict_prefix_slots: "--strict-prefix-slots",
+    strict_prefix_slot_bytes: "--strict-prefix-slot-bytes",
+    strict_prefix_budget_bytes: "--strict-prefix-budget-bytes",
+    strict_prefix_reply_marker: "--strict-prefix-reply-marker"
   ]
+  @strict_option_keys Keyword.keys(@strict_prefix_flags)
 
   @type overrides :: %{optional({String.t(), String.t()}) => keyword()}
 
   @doc "Version of the resolved launch policy, recorded in every resolved option list."
   @spec policy_version() :: pos_integer()
   def policy_version, do: @policy_version
+
+  @doc "Strict-prefix launch options and the Worker CLI flag each one becomes."
+  @spec strict_prefix_flags() :: [{atom(), String.t()}]
+  def strict_prefix_flags, do: @strict_prefix_flags
 
   @doc """
   Reads and validates the per-model settings file. `nil` or an empty path
@@ -72,16 +78,28 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
   """
   @spec resolve(ModelRef.t(), overrides(), keyword()) :: {:ok, keyword()} | {:error, String.t()}
   def resolve(%ModelRef{model_id: model_id, version: version}, overrides, globals) do
+    override = Map.get(overrides, {model_id, version}, [])
+
     options =
       globals
-      |> Keyword.merge(Map.get(overrides, {model_id, version}, []))
+      |> Keyword.merge(override)
       |> Keyword.put(:launch_policy_version, @policy_version)
 
-    case validate_options(options) do
-      :ok -> {:ok, options}
+    with :ok <- validate_override_backend(override, globals[:backend]),
+         :ok <- validate_options(options) do
+      {:ok, options}
+    else
       {:error, message} -> {:error, "#{model_id}@#{version}: #{message}"}
     end
   end
+
+  # Other backends, such as the TensorFold experiment, own Node-wide Worker
+  # settings and check them at boot, so per-model overrides would bypass them.
+  defp validate_override_backend([], _backend), do: :ok
+  defp validate_override_backend(_override, "mlx"), do: :ok
+
+  defp validate_override_backend(_override, backend),
+    do: {:error, "per-model overrides require the mlx backend, got #{inspect(backend)}"}
 
   @doc "Resolves every override against the global settings, returning the first error."
   @spec validate_all(overrides(), keyword()) :: :ok | {:error, String.t()}
@@ -159,17 +177,27 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
   end
 
   defp parse_modes(entry, where) do
-    Enum.reduce_while(@modes, {:ok, []}, fn {key, option, allowed}, {:ok, acc} ->
-      case Map.fetch(entry, key) do
-        :error ->
-          {:cont, {:ok, acc}}
-
-        {:ok, value} ->
-          if value in allowed,
-            do: {:cont, {:ok, [{option, value} | acc]}},
-            else: {:halt, {:error, "#{where}: #{key} must be one of #{Enum.join(allowed, "|")}"}}
+    Enum.reduce_while(@modes, {:ok, []}, fn mode, {:ok, acc} ->
+      case parse_mode(entry, mode, where) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, option} -> {:cont, {:ok, [option | acc]}}
+        {:error, _message} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp parse_mode(entry, {key, option, allowed}, where) do
+    case Map.fetch(entry, key) do
+      :error -> {:ok, nil}
+      {:ok, value} when is_binary(value) -> mode_value(value, key, option, allowed, where)
+      {:ok, _value} -> {:error, "#{where}: #{key} must be one of #{Enum.join(allowed, "|")}"}
+    end
+  end
+
+  defp mode_value(value, key, option, allowed, where) do
+    if value in allowed,
+      do: {:ok, {option, value}},
+      else: {:error, "#{where}: #{key} must be one of #{Enum.join(allowed, "|")}"}
   end
 
   defp parse_strict(nil, _where), do: {:ok, []}
@@ -212,9 +240,16 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
   defp strict_marker(strict, where) do
     case Map.get(strict, "reply_marker") do
       nil -> {:ok, nil}
-      marker when is_binary(marker) and marker != "" -> {:ok, marker}
+      marker when is_binary(marker) and marker != "" -> marker_without_nul(marker, where)
       _marker -> {:error, "#{where}: strict_prefix.reply_marker must be a non-empty string"}
     end
+  end
+
+  # A NUL byte cannot be passed as a Worker argument.
+  defp marker_without_nul(marker, where) do
+    if String.contains?(marker, <<0>>),
+      do: {:error, "#{where}: strict_prefix.reply_marker must not contain a NUL byte"},
+      else: {:ok, marker}
   end
 
   defp validate_options(options) do

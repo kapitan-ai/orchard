@@ -32,6 +32,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.InferenceEvent.{Completed, Failed, OutputTextDelta, TokenDelta}
+  alias Orchard.Node
+  alias Orchard.Node.WorkerLaunchPolicy
   alias Orchard.Node.WorkerRuntimeAdapter
 
   @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
@@ -524,10 +526,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     # The Worker's own defaults are batch and observe, so both are written.
     assert flag_value(args, "--generation-mode") == "stream"
     assert flag_value(args, "--memory-budget-mode") == "observe"
-    assert flag_value(args, "--strict-prefix-slots") == "1"
-    assert flag_value(args, "--strict-prefix-slot-bytes") == "1024"
-    assert flag_value(args, "--strict-prefix-budget-bytes") == "2048"
-    refute "--strict-prefix-reply-marker" in args
+    assert "--strict-prefix-slots=1" in args
+    assert "--strict-prefix-slot-bytes=1024" in args
+    assert "--strict-prefix-budget-bytes=2048" in args
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix-reply-marker"))
   end
 
   test "a strict-prefix launch writes its flags even when every other setting is a default" do
@@ -543,7 +545,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     assert flag_value(args, "--generation-mode") == "batch"
     assert flag_value(args, "--memory-budget-mode") == "observe"
-    assert flag_value(args, "--strict-prefix-budget-bytes") == "1024"
+    assert "--strict-prefix-budget-bytes=1024" in args
+  end
+
+  test "a reply marker that starts with a dash stays the value of its flag" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        [socket_path: "/tmp/worker.sock", backend: "mlx", log_path: "/tmp/worker.log"] ++
+          @strict_launch_options ++ [strict_prefix_reply_marker: "-assistant"]
+      )
+
+    assert "--strict-prefix-reply-marker=-assistant" in args
   end
 
   test "strict-prefix flags are written only for the strict_prefix mode" do
@@ -562,16 +574,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     args = launched_worker_args(@strict_launch_options ++ [strict_prefix_reply_marker: "<|r|>"])
 
     assert flag_value(args, "--prefix-cache-mode") == "strict_prefix"
-    assert flag_value(args, "--strict-prefix-budget-bytes") == "2048"
-    assert flag_value(args, "--strict-prefix-reply-marker") == "<|r|>"
+    assert "--strict-prefix-budget-bytes=2048" in args
+    assert "--strict-prefix-reply-marker=<|r|>" in args
   end
 
   test "a model without an override launches with only flags an older Worker accepts" do
     {:ok, options} =
-      Orchard.Node.WorkerLaunchPolicy.resolve(
+      WorkerLaunchPolicy.resolve(
         %ModelRef{model_id: "test/model", version: "v1"},
         %{},
-        Orchard.Node.worker_launch_globals()
+        Node.worker_launch_globals()
       )
 
     args = launched_worker_args(Keyword.delete(options, :backend))
@@ -1345,13 +1357,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     File.read!(capture)
   end
 
+  # Strict-prefix flags are single `--flag=value` arguments, so look up the
+  # argument after the flag rather than pairing arguments.
   defp flag_value(args, flag) do
-    args
-    |> Enum.chunk_every(2)
-    |> Enum.find_value(fn
-      [^flag, value] -> value
-      _other -> nil
-    end)
+    case Enum.find_index(args, &(&1 == flag)) do
+      nil -> nil
+      index -> Enum.at(args, index + 1)
+    end
   end
 
   defp score_request(request_id) do

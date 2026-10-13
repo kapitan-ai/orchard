@@ -16,7 +16,11 @@ from orchard_worker_mlx.capabilities import (
     installed_distribution_version,
     mlx_capabilities,
 )
-from orchard_worker_mlx.strict_prefix_checkpoints import StrictPrefixCheckpointStore
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
+    STRICT_PREFIX_SCORING_DISABLED,
+    StrictPrefixCheckpointStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -472,8 +476,9 @@ class MLXBackend:
                 getattr(session, "prefix_cache_fingerprints", []) if session is not None else []
             )
 
-        config_max_entries = _status_uint32(getattr(self._prefix_cache_config, "max_entries", 0))
-        config_max_bytes = _status_uint64(getattr(self._prefix_cache_config, "max_bytes", 0))
+        caps = getattr(self._prefix_cache_config, "status_caps", (0, 0))
+        config_max_entries = _status_uint32(caps[0])
+        config_max_bytes = _status_uint64(caps[1])
 
         if session is None:
             return _base_prefix_cache_status(
@@ -707,7 +712,7 @@ class MLXBackend:
     def record_fingerprint(self, fingerprint: str) -> None:
         if not valid_cache_affinity_fingerprint(fingerprint):
             return
-        if _prefix_cache_mode(self._prefix_cache_config) == _STRICT_PREFIX_MODE:
+        if _prefix_cache_mode(self._prefix_cache_config) == STRICT_PREFIX_MODE:
             return
 
         with self._lock:
@@ -853,9 +858,6 @@ def _default_batch_runtime_factory() -> Callable[[Any], Any]:
     return BatchGeneratorRuntime
 
 
-_STRICT_PREFIX_MODE = "strict_prefix"
-
-
 def _prefix_cache_mode(prefix_cache_config: Any) -> str:
     mode = getattr(prefix_cache_config, "mode", "")
     return mode if isinstance(mode, str) else ""
@@ -867,12 +869,12 @@ def _scores_fingerprints(prefix_cache_config: Any) -> bool:
     Strict-prefix checkpoints are keyed by exact token prefixes, which the
     Controller's bounded-prefix fingerprint cannot identify (SPEC.md 7.5.3).
     """
-    return _prefix_cache_mode(prefix_cache_config) not in ("disabled", _STRICT_PREFIX_MODE)
+    return bool(getattr(prefix_cache_config, "uses_fingerprints", True))
 
 
 def _score_disabled_message(prefix_cache_config: Any) -> str:
-    if _prefix_cache_mode(prefix_cache_config) == _STRICT_PREFIX_MODE:
-        return "strict-prefix checkpoints do not score cache-affinity fingerprints"
+    if _prefix_cache_mode(prefix_cache_config) == STRICT_PREFIX_MODE:
+        return STRICT_PREFIX_SCORING_DISABLED
     return "prefix cache disabled by config"
 
 
@@ -892,14 +894,14 @@ def _strict_prefix_status(
         stats = store.stats()
     except Exception as exc:
         return _base_prefix_cache_status(
-            implementation=_STRICT_PREFIX_MODE,
+            implementation=STRICT_PREFIX_MODE,
             configured_max_bytes=budget_bytes,
             status_code="error",
             status_message=f"strict-prefix checkpoint stats read failed: {exc}",
             session_started_unix_ms=session_started_unix_ms,
         )
     return BackendPrefixCacheStatus(
-        implementation=_STRICT_PREFIX_MODE,
+        implementation=STRICT_PREFIX_MODE,
         enabled=True,
         entry_count=_status_uint32(stats.retained),
         total_bytes=_status_uint64(stats.reserved_bytes),

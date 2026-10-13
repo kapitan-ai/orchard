@@ -653,6 +653,15 @@ def test_mlx_backend_strict_prefix_advertises_no_prefix_cache_and_does_not_score
     assert "strict-prefix" in score["status_message"]
 
 
+def test_mlx_backend_strict_prefix_reports_slots_and_budget_before_load() -> None:
+    backend = _make_mlx_backend(prefix_cache_config=_strict_prefix_load_config(budget_bytes=8192))
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "unavailable"
+    assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
+
+
 def test_mlx_backend_kv_mode_still_advertises_prefix_cache() -> None:
     backend = _make_mlx_backend(prefix_cache_config=PrefixCacheLoadConfig(mode="kv"))
 

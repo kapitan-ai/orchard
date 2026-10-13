@@ -100,7 +100,7 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
   end
 
   for {name, change, expected} <- [
-        {"a non-mlx backend", {:global, :backend, "stub"}, "requires the mlx backend"},
+        {"a non-mlx backend", {:global, :backend, "stub"}, "require the mlx backend"},
         {"enforce memory mode", {:entry, "memory_budget_mode", "enforce"},
          "requires memory_budget_mode observe"},
         {"disabled memory mode", {:entry, "memory_budget_mode", "disabled"},
@@ -126,6 +126,22 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
       assert message =~ unquote(expected)
       assert WorkerLaunchPolicy.validate_all(overrides, globals) == {:error, message}
     end
+  end
+
+  test "per-model overrides need the mlx backend, so they cannot bypass other backends' checks",
+       %{dir: dir} do
+    entry = %{"model_id" => "org/small", "version" => "v1", "prefix_cache_mode" => "kv"}
+    {:ok, overrides} = load!(dir, [entry])
+    globals = Keyword.put(@globals, :backend, "tensorfold")
+
+    assert {:error, message} =
+             WorkerLaunchPolicy.resolve(ref("org/small", "v1"), overrides, globals)
+
+    assert message =~ ~s(per-model overrides require the mlx backend, got "tensorfold")
+
+    # A model without an override on that Node is unaffected.
+    assert {:ok, _options} =
+             WorkerLaunchPolicy.resolve(ref("org/other", "v1"), overrides, globals)
   end
 
   test "strict-prefix settings need the strict_prefix mode", %{dir: dir} do
@@ -167,6 +183,11 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
          "strict_prefix.slots must be between 1 and 8"},
         {"an empty reply marker", [put_in(@strict_entry, ["strict_prefix", "reply_marker"], "")],
          "reply_marker must be a non-empty string"},
+        {"a reply marker with a NUL byte",
+         [put_in(@strict_entry, ["strict_prefix", "reply_marker"], "a" <> <<0>>)],
+         "reply_marker must not contain a NUL byte"},
+        {"a non-string mode", [Map.put(@strict_entry, "prefix_cache_mode", 1)],
+         "prefix_cache_mode must be one of"},
         {"a duplicate model", [@strict_entry, @strict_entry], "duplicate entry for org/qwen@v1"}
       ] do
     test "load refuses #{name}", %{dir: dir} do

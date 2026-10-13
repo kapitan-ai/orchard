@@ -10,12 +10,12 @@ from orchard_worker_mlx import __version__
 from orchard_worker_mlx.service import serve
 from orchard_worker_mlx.strict_prefix_checkpoints import (
     DEFAULT_REPLY_MARKER,
+    STRICT_PREFIX_MODE,
     StrictPrefixCheckpointConfig,
 )
 
 _LOG_FORMAT = "[%(levelname)s] %(name)s %(message)s"
 
-STRICT_PREFIX_MODE = "strict_prefix"
 # The spike enabled strict-prefix reuse through this inherited variable.  The
 # Node Agent now launches Workers without it; a Worker that still sees it was
 # started by an older Node, so it refuses instead of enabling reuse for every
@@ -69,7 +69,11 @@ def strict_prefix_config_from_args(args: argparse.Namespace) -> StrictPrefixChec
         slots=1 if args.strict_prefix_slots is None else args.strict_prefix_slots,
         slot_bytes=args.strict_prefix_slot_bytes,
         budget_bytes=args.strict_prefix_budget_bytes,
-        reply_marker=args.strict_prefix_reply_marker or DEFAULT_REPLY_MARKER,
+        reply_marker=(
+            DEFAULT_REPLY_MARKER
+            if args.strict_prefix_reply_marker is None
+            else args.strict_prefix_reply_marker
+        ),
     )
 
 

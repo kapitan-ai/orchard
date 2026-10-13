@@ -36,6 +36,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.TensorFoldProjection
   alias Orchard.Node.WorkerCapabilityEvidence
+  alias Orchard.Node.WorkerLaunchPolicy
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.PathUtils
 
@@ -52,12 +53,6 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
   @strict_prefix_mode "strict_prefix"
-  @strict_prefix_option_keys [
-    :strict_prefix_slots,
-    :strict_prefix_slot_bytes,
-    :strict_prefix_budget_bytes,
-    :strict_prefix_reply_marker
-  ]
   # The strict-prefix spike enabled reuse for every Worker through this
   # inherited variable. Workers start without it, so a leftover value in the
   # Node's environment cannot turn reuse on for every model.
@@ -303,7 +298,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       )
 
     # Only a per-model launch policy sets these (Orchard.Node.WorkerLaunchPolicy).
-    strict_prefix_options = Keyword.take(opts, @strict_prefix_option_keys)
+    strict_prefix_options =
+      Keyword.take(opts, Keyword.keys(WorkerLaunchPolicy.strict_prefix_flags()))
 
     load_meta = %{
       model_id: model_ref.model_id,
@@ -319,6 +315,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       memory_budget_mode: memory_budget_mode,
       memory_budget_utilization: memory_budget_utilization,
       memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+      launch_policy_version: Keyword.get(opts, :launch_policy_version),
       adapter: __MODULE__
     }
 
@@ -843,17 +840,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     {:ok, port, os_pid}
   end
 
+  # Written as --flag=value, so a reply marker that starts with "-" is read as
+  # the flag's value rather than as another option.
   defp strict_prefix_args(@strict_prefix_mode, opts) do
-    [
-      {"--strict-prefix-slots", :strict_prefix_slots},
-      {"--strict-prefix-slot-bytes", :strict_prefix_slot_bytes},
-      {"--strict-prefix-budget-bytes", :strict_prefix_budget_bytes},
-      {"--strict-prefix-reply-marker", :strict_prefix_reply_marker}
-    ]
-    |> Enum.flat_map(fn {flag, key} ->
+    Enum.flat_map(WorkerLaunchPolicy.strict_prefix_flags(), fn {key, flag} ->
       case Keyword.get(opts, key) do
         nil -> []
-        value -> [flag, to_string(value)]
+        value -> ["#{flag}=#{value}"]
       end
     end)
   end

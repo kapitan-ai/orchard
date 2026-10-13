@@ -1500,9 +1500,12 @@ and `strict_prefix` (`slots` 1 to 8, default 1; `slot_bytes`; `budget_bytes`;
 optional `reply_marker`, default `<|im_start|>assistant`). Unknown keys and
 duplicate models are refused.
 
-The Node Agent checks the file when it starts and refuses to start when the
-file is invalid. A strict-prefix entry must state these settings itself; the
-Node never changes a setting to make an entry valid:
+Settings an entry omits come from the global Worker settings. The Node Agent
+checks the file when it starts and refuses to start when the file is invalid.
+Any entry needs `ORCHARD_WORKER_BACKEND=mlx`, because other backends own their
+Worker settings for the whole Node. For a strict-prefix model, the resolved
+settings must meet these rules; the Node never changes a setting to make an
+entry valid:
 
 - `ORCHARD_WORKER_BACKEND` must be `mlx`.
 - `generation_mode` must be `stream`.

@@ -332,15 +332,20 @@ defmodule Orchard.Node do
   """
   @spec load_worker_launch_policy!() :: :ok
   def load_worker_launch_policy! do
-    path = runtime_value(:worker_model_overrides_file, nil)
-
-    with {:ok, overrides} <- WorkerLaunchPolicy.load(path),
-         :ok <- WorkerLaunchPolicy.validate_all(overrides, worker_launch_globals()) do
+    with {:ok, overrides} <- read_worker_launch_overrides(),
+         :ok <- validate_worker_launch_overrides(overrides) do
       :persistent_term.put(@worker_launch_overrides_key, overrides)
     else
       {:error, message} -> raise "invalid ORCHARD_WORKER_MODEL_OVERRIDES_FILE: #{message}"
     end
   end
+
+  # With no overrides there is nothing to check, and the global settings are
+  # evaluated at model load as before.
+  defp validate_worker_launch_overrides(overrides) when map_size(overrides) == 0, do: :ok
+
+  defp validate_worker_launch_overrides(overrides),
+    do: WorkerLaunchPolicy.validate_all(overrides, worker_launch_globals())
 
   @doc """
   Returns the fixed launch options for one model's Worker: global settings,
@@ -350,7 +355,7 @@ defmodule Orchard.Node do
   def worker_launch_options(%ModelRef{} = model_ref) do
     overrides =
       case :persistent_term.get(@worker_launch_overrides_key, :not_loaded) do
-        :not_loaded -> load_worker_launch_overrides()
+        :not_loaded -> read_worker_launch_overrides()
         overrides -> {:ok, overrides}
       end
 
@@ -359,7 +364,7 @@ defmodule Orchard.Node do
     end
   end
 
-  defp load_worker_launch_overrides do
+  defp read_worker_launch_overrides do
     WorkerLaunchPolicy.load(runtime_value(:worker_model_overrides_file, nil))
   end
 

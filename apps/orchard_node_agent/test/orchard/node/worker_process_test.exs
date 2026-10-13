@@ -13,7 +13,9 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.Node
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
+  alias Orchard.Node.WorkerLaunchPolicy
   alias Orchard.Node.WorkerProcess
 
   defmodule ConcurrentRuntimeAdapter do
@@ -320,7 +322,7 @@ defmodule Orchard.Node.WorkerProcessTest do
         assert opts[:prefix_cache_mode] == "strict_prefix"
         assert opts[:generation_mode] == "stream"
         assert opts[:strict_prefix_budget_bytes] == 1024
-        assert opts[:launch_policy_version] == Orchard.Node.WorkerLaunchPolicy.policy_version()
+        assert opts[:launch_policy_version] == WorkerLaunchPolicy.policy_version()
         assert opts[:owner] == pid
       end
     )
@@ -362,9 +364,45 @@ defmodule Orchard.Node.WorkerProcessTest do
       fn ->
         assert_raise RuntimeError,
                      ~r/invalid ORCHARD_WORKER_MODEL_OVERRIDES_FILE: .*memory_budget_mode observe/,
-                     fn -> Orchard.Node.load_worker_launch_policy!() end
+                     fn -> Node.load_worker_launch_policy!() end
       end
     )
+  after
+    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+  end
+
+  test "with no settings file the Node starts without evaluating global Worker settings" do
+    with_runtime_config(
+      [worker_model_overrides_file: nil, worker_generation_mode: "not-a-mode"],
+      fn ->
+        assert :ok = Node.load_worker_launch_policy!()
+        assert :persistent_term.get({Orchard.Node, :worker_launch_overrides}) == %{}
+      end
+    )
+  after
+    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+  end
+
+  test "the Node uses the settings it checked at boot until it loads them again" do
+    first = write_overrides!([@strict_override])
+
+    with_runtime_config([worker_backend: "mlx", worker_model_overrides_file: first], fn ->
+      Node.load_worker_launch_policy!()
+      model_ref = %ModelRef{model_id: "test/buffer-model", version: "v1"}
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(Node.runtime_config(), :worker_model_overrides_file, write_overrides!([]))
+      )
+
+      assert {:ok, cached} = Node.worker_launch_options(model_ref)
+      assert cached[:prefix_cache_mode] == "strict_prefix"
+
+      Node.load_worker_launch_policy!()
+      assert {:ok, reloaded} = Node.worker_launch_options(model_ref)
+      refute reloaded[:prefix_cache_mode] == "strict_prefix"
+    end)
   after
     :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end

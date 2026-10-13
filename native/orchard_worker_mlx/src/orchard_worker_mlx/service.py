@@ -26,6 +26,10 @@ from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
 )
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
+    STRICT_PREFIX_SCORING_DISABLED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +68,7 @@ _PREFIX_CACHE_UINT64_FIELDS = (
 )
 # Strict-prefix checkpoint fields (SPEC.md 7.5.3): checked and sent only for the
 # strict_prefix implementation; absent or None means zero.
-_CHECKPOINT_IMPLEMENTATION = "strict_prefix"
+_CHECKPOINT_IMPLEMENTATION = STRICT_PREFIX_MODE
 _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS = ("checkpoint_uncertain_count",)
 _PREFIX_CACHE_OPTIONAL_UINT64_FIELDS = ("checkpoint_retained_bytes",)
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
@@ -381,12 +385,10 @@ def _prefix_cache_scoring_disabled(prefix_cache_config: Any | None) -> bool:
 
 
 def _prefix_cache_caps(prefix_cache_config: Any | None) -> tuple[int, int]:
-    strict_prefix = getattr(prefix_cache_config, "strict_prefix", None)
-    if _status_string(getattr(prefix_cache_config, "mode", "")) == _CHECKPOINT_IMPLEMENTATION:
-        return (
-            _status_uint32(getattr(strict_prefix, "slots", 0)),
-            _status_uint64(getattr(strict_prefix, "budget_bytes", 0)),
-        )
+    # PrefixCacheLoadConfig.status_caps reports slots and budget for strict-prefix.
+    caps = getattr(prefix_cache_config, "status_caps", None)
+    if isinstance(caps, tuple) and len(caps) == 2:
+        return (_status_uint32(caps[0]), _status_uint64(caps[1]))
     return (
         _status_uint32(getattr(prefix_cache_config, "max_entries", 0)),
         _status_uint64(getattr(prefix_cache_config, "max_bytes", 0)),
@@ -713,9 +715,9 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             return runtime_pb2.ScorePrefixCacheResponse(
                 status_code="disabled",
                 status_message=(
-                    "strict-prefix checkpoints do not score cache-affinity fingerprints"
-                    if not _prefix_cache_disabled(self._prefix_cache_config)
-                    else "prefix cache disabled by config"
+                    "prefix cache disabled by config"
+                    if _prefix_cache_disabled(self._prefix_cache_config)
+                    else STRICT_PREFIX_SCORING_DISABLED
                 ),
                 resident_fingerprint_match=False,
                 score_tier="unknown",

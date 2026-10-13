@@ -367,6 +367,10 @@ def test_main_defaults_strict_prefix_slots_and_reply_marker(monkeypatch) -> None
             ("--prefix-cache-mode", "kv", "--strict-prefix-slot-bytes", "100"),
             "--strict-prefix-slot-bytes require --prefix-cache-mode strict_prefix",
         ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--strict-prefix-reply-marker", ""),
+            "reply_marker must be a non-empty string",
+        ),
     ],
 )
 def test_main_refuses_unusable_strict_prefix_settings(
