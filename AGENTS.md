@@ -281,6 +281,7 @@ Rules:
 - Do not introduce an alternate Python toolchain without updating `mise.toml`,
   `docs/tooling.md`, this guide, and the relevant project config.
 - Native helper changes SHOULD include tests for both protocol correctness and failure handling.
+- `native/orchard_tensorfold_http` is a default-off experiment that Orchard no longer develops. It is deliberately not in required CI or `make setup`. Run its tests when you change that package or shared code it depends on. A failure that shows a real break of the `SPEC.md` §7.2.9 experiment contract blocks the merge. See its README for the reason.
 
 ### Swift/macOS app workflow
 
