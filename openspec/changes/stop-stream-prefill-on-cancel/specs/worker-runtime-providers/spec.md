@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Stream-mode prefill stops at the next chunk boundary on cancel
-When the MLX-LM Worker runs in stream mode and a request is cancelled during prefill, the Worker SHALL stop the prefill at the next intermediate prefill chunk boundary and end the request with exactly one `cancelled` terminal (SPEC.md §12.4). A cancel after the last prompt token SHALL be handled on the decode cancel stride. The shared batch runtime SHALL keep its own cancellation behavior.
+When the MLX-LM Worker runs in stream mode and a request is cancelled before its last prefill chunk, the Worker SHALL stop the prefill at the next intermediate prefill chunk boundary and end the request with exactly one `cancelled` terminal (SPEC.md §12.4). A cancel during the last prefill chunk or after prefill SHALL be handled on the decode cancel stride, so a reply that ends before the next stride check can still complete. The shared batch runtime SHALL keep its own cancellation behavior.
 
 #### Scenario: Cancel during a long prefill
-- **WHEN** the cancel event is set while the Worker is prefilling a prompt in stream mode
-- **THEN** no further prefill chunk is evaluated after the next chunk boundary, no output is emitted, and the request ends as `cancelled`
+- **WHEN** the cancel event is set while the Worker is prefilling a prompt in stream mode, before its last prefill chunk
+- **THEN** no further prefill chunk is evaluated after the next intermediate chunk boundary, no output is emitted, and the request ends as `cancelled`
 
 #### Scenario: Worker serves the next request
 - **WHEN** a prefill was stopped by a cancel
