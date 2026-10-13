@@ -49,9 +49,11 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
   end
 
   # The Node maps each code to its category (model_load_failure_test.exs).
-  # This checks both Controller transports keep the Node code, that dispatch
-  # evidence records the category code with the Node code as raw source, and
-  # that both categories are retried on another node.
+  # This checks that both Controller transports keep the Node code and
+  # category, that InferenceAttemptFailure (the normalizer the dispatcher uses
+  # for model-load evidence) records the category code, and that both
+  # categories are retried on another node. It does not run the dispatcher's
+  # raw_source_code handling, which this change does not touch.
   test "SPEC.md §5.8 retries the categories the Node assigns to strict-prefix and memory refusals" do
     for {code, node_category, category} <- [
           {"strict_prefix_runtime_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
