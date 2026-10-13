@@ -51,6 +51,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
+  @strict_prefix_mode "strict_prefix"
+  @strict_prefix_option_keys [
+    :strict_prefix_slots,
+    :strict_prefix_slot_bytes,
+    :strict_prefix_budget_bytes,
+    :strict_prefix_reply_marker
+  ]
+  # The strict-prefix spike enabled reuse for every Worker through this
+  # inherited variable. Workers start without it, so a leftover value in the
+  # Node's environment cannot turn reuse on for every model.
+  @worker_env [{~c"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", false}]
   @default_score_prefix_cache_timeout_ms 150
   @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
 
@@ -291,6 +302,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         Node.worker_memory_budget_overhead_bytes()
       )
 
+    # Only a per-model launch policy sets these (Orchard.Node.WorkerLaunchPolicy).
+    strict_prefix_options = Keyword.take(opts, @strict_prefix_option_keys)
+
     load_meta = %{
       model_id: model_ref.model_id,
       version: model_ref.version,
@@ -339,7 +353,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           auto_max_concurrent_generations: auto_max_concurrent_generations,
           memory_budget_mode: memory_budget_mode,
           memory_budget_utilization: memory_budget_utilization,
-          memory_budget_overhead_bytes: memory_budget_overhead_bytes
+          memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+          strict_prefix_options: strict_prefix_options
         })
       end
 
@@ -504,19 +519,26 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          auto_max_concurrent_generations: auto_max_concurrent_generations,
          memory_budget_mode: memory_budget_mode,
          memory_budget_utilization: memory_budget_utilization,
-         memory_budget_overhead_bytes: memory_budget_overhead_bytes
+         memory_budget_overhead_bytes: memory_budget_overhead_bytes,
+         strict_prefix_options: strict_prefix_options
        }) do
     {:ok, port, os_pid} =
-      start_worker_port(executable, socket_path, backend, log_path,
-        prefix_cache_mode: prefix_cache_mode,
-        prefix_cache_max_entries: prefix_cache_max_entries,
-        prefix_cache_max_bytes: prefix_cache_max_bytes,
-        generation_mode: generation_mode,
-        max_concurrent_generations: max_concurrent_generations,
-        auto_max_concurrent_generations: auto_max_concurrent_generations,
-        memory_budget_mode: memory_budget_mode,
-        memory_budget_utilization: memory_budget_utilization,
-        memory_budget_overhead_bytes: memory_budget_overhead_bytes
+      start_worker_port(
+        executable,
+        socket_path,
+        backend,
+        log_path,
+        [
+          prefix_cache_mode: prefix_cache_mode,
+          prefix_cache_max_entries: prefix_cache_max_entries,
+          prefix_cache_max_bytes: prefix_cache_max_bytes,
+          generation_mode: generation_mode,
+          max_concurrent_generations: max_concurrent_generations,
+          auto_max_concurrent_generations: auto_max_concurrent_generations,
+          memory_budget_mode: memory_budget_mode,
+          memory_budget_utilization: memory_budget_utilization,
+          memory_budget_overhead_bytes: memory_budget_overhead_bytes
+        ] ++ strict_prefix_options
       )
 
     runtime_params = %{
@@ -759,15 +781,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       Integer.to_string(prefix_cache_max_bytes)
     ]
 
-    if extended_generation_memory_flags?(
-         generation_mode,
-         max_concurrent_generations,
-         auto_max_concurrent_generations,
-         memory_budget_mode,
-         normalized_memory_budget_utilization,
-         memory_budget_overhead_bytes
-       ) do
+    # A strict-prefix Worker always gets explicit generation and memory flags,
+    # because the Worker's own defaults are batch and observe.
+    if prefix_cache_mode == @strict_prefix_mode or
+         extended_generation_memory_flags?(
+           generation_mode,
+           max_concurrent_generations,
+           auto_max_concurrent_generations,
+           memory_budget_mode,
+           normalized_memory_budget_utilization,
+           memory_budget_overhead_bytes
+         ) do
       base_args ++
+        strict_prefix_args(prefix_cache_mode, opts) ++
         [
           "--generation-mode",
           to_string(generation_mode),
@@ -804,6 +830,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         :binary,
         :exit_status,
         {:line, 4096},
+        {:env, @worker_env},
         args: args
       ])
 
@@ -815,6 +842,23 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     {:ok, port, os_pid}
   end
+
+  defp strict_prefix_args(@strict_prefix_mode, opts) do
+    [
+      {"--strict-prefix-slots", :strict_prefix_slots},
+      {"--strict-prefix-slot-bytes", :strict_prefix_slot_bytes},
+      {"--strict-prefix-budget-bytes", :strict_prefix_budget_bytes},
+      {"--strict-prefix-reply-marker", :strict_prefix_reply_marker}
+    ]
+    |> Enum.flat_map(fn {flag, key} ->
+      case Keyword.get(opts, key) do
+        nil -> []
+        value -> [flag, to_string(value)]
+      end
+    end)
+  end
+
+  defp strict_prefix_args(_prefix_cache_mode, _opts), do: []
 
   defp normalize_memory_budget_utilization(value) when is_float(value), do: value
   defp normalize_memory_budget_utilization(value) when is_integer(value), do: value / 1

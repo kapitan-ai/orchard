@@ -27,6 +27,7 @@ defmodule Orchard.Node.WorkerProcess do
           adapter: module(),
           adapter_state: term(),
           capability_snapshot: WorkerCapabilityEvidence.snapshot() | nil,
+          launch_options: {:ok, keyword()} | {:error, String.t()},
           loaded?: boolean(),
           manager: pid(),
           model_ref: ModelRef.t(),
@@ -131,6 +132,8 @@ defmodule Orchard.Node.WorkerProcess do
        adapter: RuntimeAdapter.impl(),
        adapter_state: nil,
        capability_snapshot: nil,
+       # Resolved once, so this Worker keeps one launch policy for its lifetime.
+       launch_options: Node.worker_launch_options(model_ref),
        loaded?: false,
        manager: manager,
        model_ref: model_ref,
@@ -151,12 +154,21 @@ defmodule Orchard.Node.WorkerProcess do
     {:reply, :already_loaded, state}
   end
 
+  def handle_call(
+        {:ensure_loaded, %EnsureModelLoadedRequest{}, _load_timeout_ms},
+        _from,
+        %{launch_options: {:error, message}} = state
+      ) do
+    {:reply, {:error, {:worker_launch_policy_invalid, message}}, state}
+  end
+
   def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}, load_timeout_ms}, _from, state) do
     state = invalidate_capability_snapshot(state)
+    {:ok, launch_options} = state.launch_options
 
-    case state.adapter.load_model(state.model_ref,
-           owner: self(),
-           load_timeout_ms: load_timeout_ms
+    case state.adapter.load_model(
+           state.model_ref,
+           Keyword.merge(launch_options, owner: self(), load_timeout_ms: load_timeout_ms)
          ) do
       {:ok, adapter_state} ->
         {:reply, :loaded, %{state | loaded?: true, adapter_state: adapter_state}}

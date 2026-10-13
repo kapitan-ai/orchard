@@ -75,7 +75,12 @@ defmodule Orchard.Node.WorkerProcessTest do
     end
 
     @impl true
-    def load_model(%ModelRef{} = model_ref, _opts) do
+    def load_model(%ModelRef{} = model_ref, opts) do
+      case Orchard.Node.runtime_config()[:test_worker_process_launch_options_pid] do
+        pid when is_pid(pid) -> send(pid, {:launch_options, opts})
+        _other -> :ok
+      end
+
       {:ok, %{model_ref: model_ref, generations: %{}}}
     end
 
@@ -278,6 +283,90 @@ defmodule Orchard.Node.WorkerProcessTest do
     assert response.status_code == "model_not_loaded"
     assert response.score_tier == "unknown"
     assert response.resident_fingerprint_match == false
+  end
+
+  defp write_overrides!(models) do
+    path =
+      Path.join(System.tmp_dir!(), "worker-overrides-#{System.unique_integer([:positive])}.json")
+
+    File.write!(path, IO.iodata_to_binary(:json.encode(%{"version" => 1, "models" => models})))
+    on_exit(fn -> File.rm(path) end)
+    path
+  end
+
+  @strict_override %{
+    "model_id" => "test/buffer-model",
+    "version" => "v1",
+    "prefix_cache_mode" => "strict_prefix",
+    "generation_mode" => "stream",
+    "memory_budget_mode" => "observe",
+    "strict_prefix" => %{"slot_bytes" => 1024, "budget_bytes" => 1024}
+  }
+
+  test "SPEC.md §7.5.3 a Worker loads with its resolved per-model launch options" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_backend: "mlx",
+        worker_model_overrides_file: write_overrides!([@strict_override]),
+        test_worker_process_launch_options_pid: self()
+      ],
+      fn ->
+        :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+        pid = start_worker_process!()
+        assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+        assert_receive {:launch_options, opts}
+        assert opts[:prefix_cache_mode] == "strict_prefix"
+        assert opts[:generation_mode] == "stream"
+        assert opts[:strict_prefix_budget_bytes] == 1024
+        assert opts[:launch_policy_version] == Orchard.Node.WorkerLaunchPolicy.policy_version()
+        assert opts[:owner] == pid
+      end
+    )
+  after
+    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+  end
+
+  test "SPEC.md §7.5.3 an invalid launch policy refuses the load before the Worker starts" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_backend: "mlx",
+        worker_model_overrides_file:
+          write_overrides!([Map.put(@strict_override, "generation_mode", "batch")]),
+        test_worker_process_launch_options_pid: self()
+      ],
+      fn ->
+        :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+        pid = start_worker_process!()
+
+        assert {:error, {:worker_launch_policy_invalid, message}} =
+                 WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+        assert message =~ "test/buffer-model@v1: strict_prefix requires generation_mode stream"
+        refute_received {:launch_options, _opts}
+      end
+    )
+  after
+    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+  end
+
+  test "the Node refuses to load an invalid per-model settings file at boot" do
+    with_runtime_config(
+      [
+        worker_backend: "mlx",
+        worker_model_overrides_file:
+          write_overrides!([Map.put(@strict_override, "memory_budget_mode", "enforce")])
+      ],
+      fn ->
+        assert_raise RuntimeError,
+                     ~r/invalid ORCHARD_WORKER_MODEL_OVERRIDES_FILE: .*memory_budget_mode observe/,
+                     fn -> Orchard.Node.load_worker_launch_policy!() end
+      end
+    )
+  after
+    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "score_prefix_cache returns unsupported_version when adapter has no score hook" do

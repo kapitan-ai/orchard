@@ -500,6 +500,72 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     end
   end
 
+  @strict_launch_options [
+    prefix_cache_mode: "strict_prefix",
+    generation_mode: "stream",
+    max_concurrent_generations: "auto",
+    auto_max_concurrent_generations: 3,
+    memory_budget_mode: "observe",
+    memory_budget_utilization: 0.9,
+    memory_budget_overhead_bytes: 1_073_741_824,
+    strict_prefix_slots: 1,
+    strict_prefix_slot_bytes: 1024,
+    strict_prefix_budget_bytes: 2048
+  ]
+
+  test "SPEC.md §7.5.3 a strict-prefix launch writes explicit generation, memory and strict flags" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        [socket_path: "/tmp/worker.sock", backend: "mlx", log_path: "/tmp/worker.log"] ++
+          @strict_launch_options
+      )
+
+    assert flag_value(args, "--prefix-cache-mode") == "strict_prefix"
+    # The Worker's own defaults are batch and observe, so both are written.
+    assert flag_value(args, "--generation-mode") == "stream"
+    assert flag_value(args, "--memory-budget-mode") == "observe"
+    assert flag_value(args, "--strict-prefix-slots") == "1"
+    assert flag_value(args, "--strict-prefix-slot-bytes") == "1024"
+    assert flag_value(args, "--strict-prefix-budget-bytes") == "2048"
+    refute "--strict-prefix-reply-marker" in args
+  end
+
+  test "strict-prefix flags are written only for the strict_prefix mode" do
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        socket_path: "/tmp/worker.sock",
+        backend: "mlx",
+        log_path: "/tmp/worker.log",
+        strict_prefix_slot_bytes: 1024
+      )
+
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
+  end
+
+  test "SPEC.md §7.5.3 load_model forwards strict-prefix launch options to the Worker" do
+    args = launched_worker_args(@strict_launch_options ++ [strict_prefix_reply_marker: "<|r|>"])
+
+    assert flag_value(args, "--prefix-cache-mode") == "strict_prefix"
+    assert flag_value(args, "--strict-prefix-budget-bytes") == "2048"
+    assert flag_value(args, "--strict-prefix-reply-marker") == "<|r|>"
+  end
+
+  test "Workers start without the spike's strict-prefix enabling variable" do
+    previous = System.get_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS")
+    System.put_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", "enabled")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", previous),
+        else: System.delete_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS")
+    end)
+
+    assert launched_worker_output(
+             ~s(printf '%s' "${ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS-unset}"),
+             []
+           ) == "unset"
+  end
+
   test "get_status maps prompt token id support from worker status proto" do
     with_worker_runtime_server(PromptTokenIdsSupportEndpoint, fn channel ->
       assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
@@ -1218,11 +1284,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   # Launches a fake Worker through the real load_model path; it records its
   # arguments and exits, so loading fails after the arguments are captured.
   defp launched_worker_args(extra_opts) do
+    ~s(printf '%s\\n' "$@")
+    |> launched_worker_output(extra_opts)
+    |> String.split("\n", trim: true)
+  end
+
+  # Runs `command` as the fake Worker and returns what it wrote to stdout.
+  defp launched_worker_output(command, extra_opts) do
     root = Path.join("/tmp", "ofw-#{System.unique_integer([:positive])}")
     capture = Path.join(root, "args")
     executable = Path.join(root, "worker")
     File.mkdir_p!(Path.join([root, "models", "test", "model", "v1"]))
-    File.write!(executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"#{capture}\"\n")
+    File.write!(executable, "#!/bin/sh\n#{command} > \"#{capture}\"\n")
     File.chmod!(executable, 0o700)
     on_exit(fn -> File.rm_rf!(root) end)
 
@@ -1239,7 +1312,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                ] ++ extra_opts
              )
 
-    capture |> File.read!() |> String.split("\n", trim: true)
+    File.read!(capture)
   end
 
   defp flag_value(args, flag) do
