@@ -9,8 +9,21 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
 ## Supported development platform
 
-Source development is currently supported on Apple Silicon macOS.
-The accepted Linux Controller profile is a Milestone 8 target, not an operational setup described by this guide.
+Apple Silicon macOS remains the only supported source-development platform.
+Ubuntu 24.04 x86_64 additionally has an explicitly unmanaged, unsupported, and
+unqualified source-development compatibility workflow for a developer-owned
+checkout, disposable local development PostgreSQL, and the existing all-in-one
+`make dev` command.
+This compatibility workflow is not the accepted KAP-95 Ubuntu single-host
+composition and does not satisfy KAP-103 appliance qualification, production
+Node admission, systemd/cgroup custody, reboot/recovery, packaging, or support
+gates.
+The Repository Owner accepted the bounded model-free `kapitan` result at exact
+commit `b18e648ed6e791b8a4a2d4f1e8a89c2ada67b57b`; that acceptance does not
+broaden this workflow's unsupported and unqualified status or authorize real
+inference or appliance work.
+The accepted Linux Controller profile remains a Milestone 8 target, not an
+operational setup described by this guide.
 Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions remain the macOS implementation baseline and migration inputs rather than portable Orchard control-plane core requirements.
 
 ## Prerequisites
@@ -35,6 +48,44 @@ pg_isready -h "${PGHOST-localhost}" -p "${PGPORT-5432}"
 The dev config defaults to `PGUSER=postgres`, `PGPASSWORD=postgres`,
 `PGHOST=localhost`, `PGPORT=5432`, and `PGDATABASE=orchard_dev`.
 Either create that local role with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an existing local superuser before running `make dev`.
+
+For the bounded Ubuntu compatibility workflow, use a disposable PostgreSQL
+container bound only to loopback instead of installing or reusing a host
+database service. Pin the approved image by digest, use ephemeral storage, keep
+the generated development password in an owner-only temporary file, and remove
+the container and file after the foreground Orchard process stops. Set
+`PGHOST=127.0.0.1`, the selected loopback `PGPORT`, and a disposable
+`PGDATABASE` when running `make dev`. This database is development state only;
+it is not Orchard-managed PostgreSQL and provides no KAP-99 or KAP-103 evidence.
+
+The repeatable copy/paste workflow is:
+
+```bash
+ORCHARD_VERIFY_MODE=1 \
+ORCHARD_WORKER_BACKEND=stub \
+scripts/with-disposable-dev-postgres.sh --port 55432 -- make dev
+```
+
+The accepted PostgreSQL 17.11 image must already be cached at
+`postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995`
+with image ID
+`sha256:79bd7c99e923138f136f8009d6bffa66e21e9d4fda5c0c561b00fc9c90cfe537`.
+The helper refuses pulls, image drift, an occupied port, or an existing helper
+container. It binds `127.0.0.1` only, uses tmpfs and automatic container
+removal, and keeps PostgreSQL container-init variables separate from Orchard's
+client `PG*` variables. Its owner-only generated password and pre-state record
+exist only in a private temporary directory. Exit and signal traps stop the
+container and fail unless the listener, container, any volume mount, and
+temporary state are absent afterward. Set `ORCHARD_DEV_POSTGRES_PORT` or pass
+`--port` to select another loopback port after checking local conflicts.
+
+The helper deliberately does not wrap or change `make dev`, install PostgreSQL,
+reuse an existing database, retain database contents, or establish production
+authority. Test its orchestration without a container or network pull using:
+
+```bash
+scripts/test-with-disposable-dev-postgres.sh
+```
 
 ## Quick Start
 
@@ -81,6 +132,14 @@ entrypoint for source development. It creates the dev database if missing, runs
 migrations, and starts `iex -S mix phx.server` with the dev gRPC port set to
 **50071** (avoiding conflict with the packaged BEAM on 50061).
 
+On Ubuntu compatibility hosts, set `ORCHARD_VERIFY_MODE=1` to disable asset
+watchers and `ORCHARD_WORKER_BACKEND=stub` for a model-free smoke. Do not import
+or activate a provider or model. The all-in-one gRPC target is a loopback-only
+development compatibility path: it creates no production trust, and successful
+status observation does not enroll or admit a Node or authorize scheduling.
+The generated Node UUID under `tmp/dev` is checkout-local development state and
+must not be reused as production identity.
+
 The controller listens on `http://localhost:4000` and the node-agent
 gRPC server on `127.0.0.1:50071`.
 Copy the API Token printed by `api-keys create` into
@@ -98,6 +157,14 @@ credential for the same Model on `/v1`. See `../apps/orchard_cli/README.md` for
 the full `orchardctl models access` and `orchardctl models routing-policy`
 surface, and `decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
 for the decision record.
+
+For a model-free Ubuntu compatibility smoke, verify `/health/live`, the Console
+overview and models pages, the unauthenticated `/v1/models` rejection, and the
+loopback-only Node Agent listener. Confirm the development database has no
+trusted Node or admission-candidate rows and no Worker process was launched.
+`/health/ready` remains `503` in the default plaintext source-development mode
+because the legacy readiness contract requires the public API HTTPS check; that
+expected result is not appliance readiness evidence.
 
 ## Phase 0 observability acceptance probe
 
@@ -359,6 +426,8 @@ Accepted two-Mac smoke evidence is summarized in `docs/decisions/0001-runtime-en
 Leave `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` unset or set it to `beam` for the default split-role BEAM path.
 Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` only when intentionally opting into the gRPC compatibility path on port `50071`.
 All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the single-host gRPC default.
+
+The Ubuntu single-host source-development profile has a separate, inert preparation path. After `bin/orchard-source-installation prepare`, run `bin/orchard-source-composition prepare` with exact `ORCHARD_SOURCE_DEV_CONTROLLER_UUID`, `ORCHARD_SOURCE_DEV_NODE_UUID`, and `ORCHARD_SOURCE_DEV_PRIVATE_IPV4` values. The command accepts only distinct UUIDs and an RFC1918 non-loopback IPv4 address, then writes root-owned composition metadata plus role-specific environment files. It does not create enrollment, admission, certificates, Peer Grants, PostgreSQL state, or activation authority. The generated systemd units remain default-off; a privileged preflight must validate a separately authorized activation record and current role-custody artifacts before systemd can start either unprivileged role. This source foundation is unqualified and is not a supported installation workflow.
 
 The BEAM source-dev env surface is separate from the legacy gRPC compatibility target surface.
 `ORCHARD_RUNTIME_CLIENT_TARGETS` remains gRPC compatibility-only and accepts only `host:port` targets.

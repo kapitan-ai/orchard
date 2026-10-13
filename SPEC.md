@@ -10,6 +10,12 @@ Within that profile, the app-installed all-in-one topology and the validated sou
 Current Controller-bearing installations require operator-provided external Postgres, Managed Database Mode remains future Milestone 6 work, and Active/Standby operation remains a Milestone 7 target.
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
+The separately accepted `ubuntu_24_04_x86_64_single_host` contract target composes a Controller, locally managed PostgreSQL, a distinct local Node Agent, and separately qualified Worker Runtimes on exact Ubuntu Server 24.04 LTS x86_64.
+It remains unimplemented and unsupported until its Milestone 9 implementation and qualification gates pass.
+The distinct `linux_unmanaged_source_development_compatibility` workflow permits a developer-owned checkout on Ubuntu 24.04 x86_64 to run the existing all-in-one source command against a disposable local development PostgreSQL instance for model-free compatibility testing.
+It is unsupported and unqualified, creates no production trust or capacity authority, and does not satisfy or replace any `ubuntu_24_04_x86_64_single_host` implementation or qualification gate.
+The Repository Owner accepted the bounded KAP-110 compatibility milestone on 2026-09-21 at exact commit `b18e648ed6e791b8a4a2d4f1e8a89c2ada67b57b`.
+That acceptance is limited to the model-free workflow demonstrated on `kapitan`; it does not authorize or prove appliance qualification, production identity or admission, Peer Grants, scheduling or capacity, PostgreSQL 16 appliance behavior, systemd or cgroup enforcement, provider or model activation, inference, KAP-103, packaging, publication, deployment, release, or support.
 
 Named Console authentication and shared management authorization in §10.11 are an accepted implementation target, not currently implemented behavior or a completed command-family migration.
 The current pre-cutover baseline still uses shared Console Basic Auth and anonymous Console audit actors, and the credential family still includes local Controller-runtime CLI authority.
@@ -66,6 +72,28 @@ Accepted platform-expansion target:
    * final Linux distribution format, host manager, managed Postgres, and Linux accelerator Nodes remain deferred
    * support SHALL NOT be declared before Milestone 8 acceptance completes
 
+Accepted contract-only distribution target:
+
+5. **Ubuntu 24.04 single-host source-development composition**
+
+   * exactly Ubuntu Server 24.04 LTS x86_64
+   * 1 Controller, 1 locally managed PostgreSQL 16 cluster, 1 separately enrolled and admitted local Node Agent, and zero or more separately qualified Node Agent-owned Worker Runtimes
+   * the Controller Host is not schedulable without the distinct local Node satisfying every Node eligibility gate
+   * same-host Controller-to-Node communication uses the production private-network identity and Peer Grant contract without loopback, localhost-trust, shared-cookie, or automatic-fallback shortcuts
+   * exactly one canonical source-development installation and one Controller are permitted per host; source preparation is default-off and creates no product identity, database cluster, admission, provider, model, or capacity
+   * implementation, exact-host qualification, release, deployment, publication, and support remain separately gated
+
+Unmanaged development compatibility workflow, not a deployment or distribution profile:
+
+6. **Ubuntu 24.04 unmanaged all-in-one source development**
+
+   * a contributor runs the existing foreground `make dev` or `mise exec -- bin/dev` command from a developer-owned checkout and pinned developer toolchain
+   * development PostgreSQL is contributor-owned or disposable, and the Controller HTTP and local Node Agent gRPC compatibility listeners remain loopback-only
+   * the local Node identity and other generated state remain development-only checkout state; locality, static configuration, and successful observation establish no production identity, enrollment, admission, Peer Grant, scheduling, placement, or capacity authority
+   * model-free validation uses no provider or model activation and runs no inference
+   * this workflow does not provide root-owned singleton custody, fixed appliance roots, systemd or cgroup enforcement, managed credentials, reboot or recovery evidence, packaging, qualification, or support
+   * it neither satisfies nor replaces the accepted Ubuntu single-host composition or its KAP-95/KAP-103 gates
+
 ### 1.2 Core design rules
 
 * No Kubernetes.
@@ -81,6 +109,7 @@ Accepted platform-expansion target:
 * First-party Orchard Controller and Node Agent source-dev services SHALL use BEAM Distribution as the default live Controller-to-Node Agent Runtime Endpoint transport when the endpoint is an admitted first-party Orchard service.
 * Source-dev split-role `bin/dev-controller` and `bin/dev-node-agent` SHALL default to BEAM Runtime Endpoint transport when `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` is unset.
 * Source-dev gRPC compatibility remains available on port `50071` through explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out.
+* The unmanaged all-in-one Linux source-development compatibility workflow MAY retain the existing loopback-only gRPC compatibility path on port `50071`; that path MUST NOT be interpreted as production admission, authentication, or Runtime Endpoint qualification.
 * Accepted two-Mac smoke evidence SHALL remain recorded before and after BEAM Runtime Endpoint transport is promoted as the source-dev default.
 * When BEAM Runtime Endpoint transport is selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
 * Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list; explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets.
@@ -183,6 +212,23 @@ Other Ubuntu releases, distributions, architectures, libc implementations, init 
 The candidates SHALL remain separate from the Linux Controller profile and from every CUDA, ROCm, vLLM, model, and Serving Profile qualification.
 Defining, packaging, installing, or testing either candidate SHALL NOT establish Linux Node or runtime-provider support, and evidence for one candidate SHALL NOT qualify the other.
 
+The accepted `ubuntu_24_04_x86_64_single_host` distribution and acceptance profile SHALL reuse only the exact Ubuntu Server 24.04 LTS x86_64 host tuple above.
+It SHALL compose the portable Controller, a locally managed PostgreSQL 16 cluster, one separately enrolled and admitted `ubuntu_24_04_x86_64_node`, and only separately qualified Worker Runtime providers.
+It SHALL NOT broaden either Linux Node candidate, qualify Ubuntu 26.04 or generic Linux, or imply a runtime provider, model, Serving Profile, release, deployment, publication, or support claim.
+Its contract is normative before implementation; its implementation and qualification remain gated by the synchronized OpenSpec capabilities, the applicable production credential lifecycle, KAP-18 and KAP-26 boundaries, exact-host evidence, and an explicit support decision.
+
+`linux_unmanaged_source_development_compatibility` is a contributor workflow, not a platform, distribution, runtime-provider, or acceptance profile.
+It MAY run the portable applications together from a developer-owned Ubuntu 24.04 x86_64 checkout with developer-owned toolchains, repo-local development identity, loopback-only source transports, and disposable development PostgreSQL.
+Its baseline compatibility smoke MUST remain model-free, visibly unmanaged, unsupported, and unqualified; it MUST NOT create or imply production Node inventory, admission, credentials, Peer Grants, scheduling or capacity authority, provider or model activation, inference, root-owned custody, systemd or cgroup enforcement, packaging, or support.
+Evidence from this workflow MUST NOT satisfy the `ubuntu_24_04_x86_64_single_host`, Linux Controller, Linux Node, mixed-platform, or runtime-provider qualification gates.
+
+A separately authorized source-development inference proof of concept MAY temporarily add development-only provider wiring to this workflow for bounded direct-API and isolated coding-agent requests through Orchard's API, scheduler, Runtime Endpoint, and Worker Runtime boundaries.
+Such a proof MUST pin one source/runtime/model/tokenizer/hardware tuple, bind every added listener to loopback or an owner-only Unix socket, use only disposable development database and identity state, record every compatibility shortcut, and remove the provider, model, credentials, database, and temporary state afterward.
+For that proof only, an owner-invoked disposable wrapper MAY supervise a loopback provider process outside Node Agent child-process custody while the Node Agent continues to supervise the Worker Runtime adapter and own Orchard protocol operations; this exception is not available to any production, qualified, retained, or capacity-authoritative runtime.
+For the exact proof tuple only, its development-only Worker adapter MAY apply one pinned, versioned, artifact-bound parser to the raw ordered output of a legacy completions provider: it MAY discard reasoning without retention, classify complete validated model-native tool blocks under §7.5.2, emit only final answer text and normalized tool events, and fail closed on malformed, incomplete, unknown, unrequested, or ambiguous parser state. This exception changes neither the omitted public Request's normalization, rendering, hashing, capture identity, nor tool/stop ordering before provider normalization; it is unavailable to every retained, production, qualified, or non-exact runtime and creates no reasoning-support advertisement or negotiation authority.
+The proof SHALL distinguish ordinary end-to-end viability from coding-agent context evidence. A coding-agent context claim requires at least 131,072 rendered input tokens, including instructions, tool schemas, messages, history, tool results, and repository context, plus a separate bounded output reservation; an 8,192-token reservation therefore requires at least 139,264 total tokens. It MUST record actual rendered input, requested and effective output limits, compaction and overflow behavior, and reject oversized input rather than silently truncating it. Short repair requests need not fill the window, while any long-context request MUST test meaningful multi-position retrieval, updated or conflicting instructions, distant code dependencies, and tool-result continuity rather than allocation alone.
+It SHALL establish only that the exercised paths produced real responses and, where exercised, bounded client-side tool use; it MUST NOT establish production admission, trust, custody, scheduling or capacity authority, cancellation or native-cessation semantics, resource release, provider/model/platform or coding-agent qualification, reliability, performance, packaging, support, or appliance evidence.
+
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
 
@@ -266,6 +312,9 @@ Team SHALL remain API Client grouping metadata, without membership, authorizatio
 
 The accepted Console target SHALL authenticate a named Console Identity through a revocable Console Session under §10.11.
 Console Identity, non-interactive API Client, and Workspace-scoped Portal User SHALL remain distinct principals even when descriptive metadata matches.
+
+Under `ubuntu_24_04_x86_64_single_host`, Controller, PostgreSQL, Node Agent, and Worker Runtime SHALL run as distinct non-login identities with disjoint writable state, secrets, logs, units, cgroups, and retirement ownership.
+The root-owned source lifecycle coordinator MAY perform checkout, toolchain, database, and service lifecycle mechanics but SHALL NOT become a long-running product authority or issue Controller, Node, Worker, database-governance, admission, dispatch, or release decisions.
 
 The seeded Tenant `00000000-0000-0000-0000-000000000000` SHALL be the default Workspace.
 Its untouched built-in name `Legacy Single Tenant` SHALL display as `Default workspace`; a customized name SHALL be preserved and the stable default identity indicated separately.
@@ -554,6 +603,7 @@ Every other combination SHALL fail before the first Request write and MUST NOT r
 
 When both Chat Completions and Responses omit reasoning control, Orchard SHALL normalize the Request to `generation_policy = model_default`, `projection = legacy_blended`, and `source = omitted_public`.
 That omitted mode SHALL preserve the complete current legacy pipeline, including template rendering, Worker Runtime text processing, tool classification, stop-sequence behavior, Output Commitment, public blended output, capture, hashing, and replay.
+The exact disposable source-development inference proof in §1.4 is the sole exception: its artifact-bound development adapter MAY perform the post-provider normalization defined there without changing omitted-mode Request normalization, rendering, hashing, capture identity, or any ordinary or production pipeline.
 An omitted control MUST NOT silently enter the negotiated reasoning pipeline merely because a model, template, tokenizer, Worker Runtime, or Runtime Endpoint advertises reasoning support.
 For an omitted public control, the `body_hash` domain SHALL remain the exact pre-reasoning-control domain.
 The synthesized reasoning defaults and `%{mode: :legacy}` marker MUST NOT be added to that hash input, so an otherwise identical public body retains its existing idempotency and integrity identity.
@@ -913,6 +963,7 @@ Future Node support requires separate platform, distribution, runtime-provider, 
 The experimental `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node` candidates do not become schedulable from installation, systemd state, process identity, heartbeat, PID, cgroup, or inventory evidence.
 Their CPU, memory, disk, OS, kernel, network, and accelerator facts remain bounded observations until the existing Node admission, lifecycle, health, capability, capacity, and allocation contracts independently authorize use.
 NVIDIA/CUDA and AMD/ROCm observations SHALL retain distinct evidence provenance, and neither observation family SHALL imply a runtime-provider qualification.
+For `ubuntu_24_04_x86_64_single_host`, a ready local Controller and PostgreSQL cluster SHALL likewise create no local Node identity or capacity; the colocated Node remains separately enrolled, admitted, observed, authorized, healthy, and capacity-gated.
 
 A node record SHALL include:
 
@@ -931,6 +982,14 @@ A node record SHALL include:
 
 A Node's canonical production BEAM node name SHALL be null until validated private IPv4 inventory is recorded.
 Node Admission SHALL NOT authorize a Peer Grant, and no production Runtime Endpoint target or `admitted -> active` BEAM authorization SHALL proceed, while that canonical name is absent or unvalidated.
+
+A Node Enrollment MAY carry one administrator-issued admission preauthorization
+reference for its exact allocated Node. The durable Controller record, not the
+bundle field or possession of the bundle, SHALL be the admission authority.
+Preauthorization SHALL remain distinct from Bootstrap Token authority, Node
+Certificate enrollment, Runtime Endpoint authentication, BEAM connection
+authorization, Node activation, scheduling, placement, capacity observation,
+provider or model activation, and support qualification.
 
 Runtime Endpoint metadata MAY be observed before a trusted Node exists.
 An unreconciled first observation SHALL create or update a Runtime Endpoint Admission Candidate for admin review, not a Node row.
@@ -989,7 +1048,7 @@ decommissioning -> removed
 
 * `registered -> admitted`
 
-  * trigger: Admin API action
+  * trigger: explicit Admin API or local Controller-runtime action, or successful redemption of an exact current bundle-scoped admission preauthorization under §4.4.1
   * conditions: inventory captured, trust established, pool assigned, and required policy inputs supplied
   * effect: atomically persist an explicit Controller Dispatch Ceiling and approval provenance before the lifecycle transition; when the administrator omits the value, persist the explicit default `1`; before enforcement cutover the policy state is `approved_explicit`, and after enforcement cutover it is `enforcing`
 
@@ -1038,6 +1097,129 @@ Rejecting pending Node Admission SHALL persist a Node Admission Decision and SHA
 Rejected admission metadata SHALL include `decision = rejected`, actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, and audit event reference.
 For lifecycle-managed Node rows, rejection SHALL leave lifecycle as `provisioned` or `registered` and set the derived admission category to `rejected`.
 Re-admission after rejection SHALL require current trusted registration state plus either an explicit admin clear action or a new registration and trust event recorded in audit.
+
+#### 4.4.1 Bundle-scoped preauthorized Node Admission
+
+The Repository Owner accepted this KAP-28 contract on 2026-09-21 at exact
+commit `5544533123d494d3c124e3f5c44373db74be2c96`. Acceptance establishes the
+normative contract. The Repository Owner accepted the bounded KAP-109 source
+implementation and isolated PostgreSQL validation at exact commit
+`31b7186a46decf1edd609d3bdafeb7fd76d5d690` on 2026-09-21. The remaining
+exhaustive race, restart, mismatch, and same-host scenario matrix is deferred
+hardening and does not block KAP-100 from consuming this capability. Acceptance
+does not authorize real credential issuance, Enrollment or admission execution,
+host mutation, qualification, or support.
+
+Manual admission SHALL remain the default. The cluster SHALL persist one
+admission mode, either `manual` or `enrollment_preauthorized`, rather than infer
+it independently from each Controller's process configuration. In
+`enrollment_preauthorized` mode an administrator can authorize one future
+admission while issuing one exact Node Enrollment Bundle. Enabling that mode
+alone SHALL NOT authorize any Node. Issuance SHALL be a leader-only
+eligibility-changing action with the shared side-effect-free Action Preview,
+explicit confirmation, mutation-time revalidation, and cluster-scoped audit
+requirements. Redemption uses that already-confirmed immutable authorization
+and SHALL NOT require a second administrator interaction or preview.
+
+The durable preauthorization SHALL bind at least its own UUID and contract
+version; cluster, Enrollment, allocated Node, issuing Controller, and issuing
+administrator identities; issued and expiry times; the exact pool and routing
+policy identifiers and revisions; explicit Controller Dispatch Ceiling and
+non-empty capacity-policy reason; required inventory, compatibility, trust,
+and admission-policy predicates and revisions; dispatch-capacity phase and
+revision; Action Preview digest and confirmation evidence; issuing audit event;
+and one closed outcome state. Its expiry SHALL NOT exceed the Enrollment expiry.
+The bundle MAY contain its bounded non-secret identifier and immutable-policy
+digest, but SHALL contain no administrator credential, admission bearer,
+private key, certificate secret, Peer Grant, or other reusable authority.
+Client-supplied bundle fields SHALL NOT replace the durable record.
+
+The closed outcome states SHALL distinguish `authorized`,
+`consumed_admitted`, `consumed_pending_review`, `revoked`, and `expired`.
+Only `authorized` MAY permit admission-on-join. Controller-authoritative time
+determines expiry. A preauthorization already `revoked` or `expired` SHALL
+remain in that terminal state; when ordinary Enrollment remains valid, its
+redemption MAY still register the exact Node with a durable pending-review
+reason. Mode disablement or another admission-only drift observed while the
+record remains `authorized` SHALL consume it as `consumed_pending_review` when
+registration commits. Disabling the mode SHALL prevent new issuance and later
+automatic admission without changing a previously committed admission. Mode
+changes SHALL themselves require administrator authorization, Action Preview,
+confirmation, leader-only mutation, and cluster-scoped audit. Revocation or
+expiry after `consumed_admitted` SHALL NOT retroactively de-admit a Node; normal
+cordon, drain, decommission, certificate, and Peer Grant controls remain
+authoritative.
+
+Redemption SHALL revalidate Active leadership, mode enablement, Enrollment and
+preauthorization state, exact cluster and Node identity, Bootstrap Token and
+CSR key-possession proof, certificate issuance state, inventory, canonical
+private-address identity when production BEAM is requested, compatibility,
+pool and routing-policy references and revisions, dispatch-capacity phase and
+revision, required policy inputs, admission constraints, and audit
+availability. For the Ubuntu single-host profile, the accepted installation
+UUID, platform profile, and source-manifest identity MAY be bound compatibility
+inputs but SHALL NOT substitute for Node identity, enrollment proof, admission,
+or connection authorization. A remote Node SHALL use its own Node ID, key,
+certificate, canonical name, and, where applicable, distinct installation
+identity; no local identity may be cloned during expansion.
+
+When every condition remains valid, one leader-owned Postgres transaction
+SHALL consume the Enrollment and preauthorization and commit certificate
+issuance state, `provisioned -> registered -> admitted`, the Node Admission
+Decision, phase-derived Controller Dispatch Capacity policy, cluster-scoped
+audit evidence, and one initial `pending_delivery` Peer Grant record for every
+currently eligible Controller. The authorizing administrator remains the
+admission decision principal; the current Controller and redemption path are
+recorded separately as execution provenance. No grant secret is created or
+delivered by this transaction.
+
+When identity and enrollment checks permit registration but the record remains
+`authorized` and an admission-only predicate has expired or drifted, one
+transaction MAY commit only certificate issuance, Enrollment consumption,
+`provisioned -> registered`, `consumed_pending_review`, its bounded reason and
+audit evidence. When the record is already `expired` or `revoked`, the same
+registered pending-review outcome MAY commit but SHALL leave that terminal
+preauthorization state unchanged. Neither outcome may commit admission, a
+dispatch-capacity policy, or Peer Grant metadata. A failure of identity,
+Bootstrap Token, CSR, certificate, cluster, Node, or durable write authority
+SHALL follow the existing fail-closed Enrollment contract rather than use
+pending review as a trust bypass. Persistence failure SHALL roll back the
+complete attempted outcome.
+
+Transactions SHALL preserve this authority-first order: prove the existing
+leader write gate; lock the dispatch-capacity phase singleton; lock the durable
+admission-mode singleton; acquire the cluster Controller-membership transaction
+lock; lock eligible Controller-instance rows in stable Controller-ID order; and
+then lock the exact Enrollment, preauthorization, Node, policy, decision, grant,
+and audit parents in their documented stable order. Controller enrollment,
+retirement, and post-admission initial-grant creation SHALL use the same
+membership lock. Parent locks plus uniqueness constraints on one terminal
+preauthorization outcome, one admission policy, one admission decision for the
+exact preauthorization UUID, and each exact initial pair-grant generation SHALL
+serialize inserts that do not yet have rows to lock.
+
+The eligible Controller set SHALL be measured after the membership lock is held.
+A Controller enrolled after that linearization point SHALL use §7.5.0's separate
+leader-authorized initial-grant operation. A Controller retirement committed
+after admission SHALL apply the existing grant-revocation and retirement
+contract rather than change the admission snapshot retroactively. Concurrent
+exact redemptions SHALL have one committed winner. A retry with the same
+Enrollment, Node key, CSR fingerprint, and preauthorization SHALL return the
+same durable outcome without creating a second certificate, decision, policy,
+grant generation, or audit success. A divergent replay SHALL fail closed.
+Expiry, revocation, redemption, and mode-disable races SHALL be decided by
+Controller database time and current state observed after the applicable locks,
+never by request arrival time, process memory, connection incarnation,
+locality, or a previously rendered preview.
+
+Controller or Node restart SHALL reconstruct no authority from a PID, bundle
+copy, process-local state, socket, BEAM name, connection incarnation, or prior
+connection. Only the durable Enrollment, preauthorization, certificate,
+admission, policy, audit, and Peer Grant records plus current action-time
+evidence govern recovery. Human and machine-readable diagnostics SHALL
+distinguish manual registration, preauthorized admission,
+preauthorization-pending-review fallback, terminal preauthorization state, and
+conflicting replay without exposing secret material.
 
 ### 4.5 Node health model
 
@@ -1227,7 +1409,7 @@ Any later re-enrollment SHALL pass a new Node Admission and persist policy under
 Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL contain a non-negative Controller Dispatch Ceiling and an explicit policy state.
 The bounded `shadow_legacy` record SHALL deliberately contain a null ceiling, SHALL be distinct from a missing policy record, and SHALL never authorize the new production capacity semantics.
 The Controller Dispatch Ceiling is Controller-owned policy and SHALL NOT be inferred, copied, or backfilled from runtime telemetry.
-New Node Admission SHALL persist a Controller Dispatch Ceiling in the same transaction as admission, using an explicit value supplied by the administrator or the explicit default `1`.
+New Node Admission SHALL persist a Controller Dispatch Ceiling in the same transaction as admission, using an explicit value supplied by the administrator, an exact value already confirmed in a current bundle-scoped admission preauthorization under §4.4.1, or the explicit default `1` for manual admission when omitted.
 The cluster SHALL persist one durable dispatch-capacity enforcement phase with values `pre_cutover` and `enforcing`.
 The admission transaction SHALL lock and read that phase rather than infer cutover from policy rows, Controller version, transport, or cluster occupancy.
 While the phase is `pre_cutover`, new admission SHALL write `approved_explicit`; while the phase is `enforcing`, new admission SHALL write `enforcing` directly because every semantic consumer is already enforcing the shared evaluation.
@@ -1455,6 +1637,10 @@ For the experimental Linux Node candidate, one systemd system service SHALL supe
 The Agent SHALL hold a process-lifetime exclusive owner-only lock in the durable identity root and SHALL reject duplicate ownership before enrollment, Runtime Endpoint activation, or worker startup.
 systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT independently prove Orchard custody, native cessation, request-slot release, Resource Allocation release, or scheduling authority.
 Linux host lifecycle and capability mechanics SHALL remain behind platform adapters and MUST NOT add Linux or provider branches to the portable Node Agent contract.
+
+For the Ubuntu single-host profile, the Node Agent SHALL own Worker process custody through an allowlisted launcher that SHALL drop to the dedicated Worker identity before executing only an immutable provider named by the active source installation manifest.
+The launcher SHALL expose no shell, arbitrary-command, package, general service-manager, device-reconfiguration, or root authority.
+Agent stop or failure SHALL close the launch gate and require exact cleanup of the complete Node lifecycle cgroup before replacement, without treating process or cgroup emptiness as proof of public terminal delivery, native cessation, request-capacity release, or Resource Allocation release.
 
 ### 4.10 Local worker contract
 
@@ -2797,6 +2983,21 @@ Consequence codes describe expected effects accepted only through explicit param
 Confirmation requirements are explicit acknowledgements or typed values and MUST NOT bypass blockers.
 Action execution SHALL revalidate permissions, leadership and write-path availability, lifecycle state, health, active request count when relevant, and blockers at mutation time.
 
+Creating a bundle-scoped admission preauthorization is the eligibility-changing
+administrator action for §4.4.1. Its issuance preview SHALL show the exact Node,
+Enrollment, pool, routing policy, dispatch ceiling and phase, capacity-policy
+reason, expiry, bound revisions, blockers, consequences, and fallback behavior,
+and execution SHALL require explicit confirmation. Later exact redemption is
+execution of that durable authority and does not require a second human preview;
+it SHALL revalidate every bound and current predicate at mutation time and
+either commit the complete admitted outcome or the bounded pending-review
+outcome in §4.4.1. This exception to repeated interaction does not waive the
+preview, confirmation, authorization, leadership, audit, or revalidation
+contract. The preview and confirmation SHALL state that the Enrollment Bundle
+remains sensitive one-time credential material and that theft before first
+redemption can let the holder establish the allocated Node's key and reach the
+preauthorized admission outcome.
+
 Dispatch-capacity policy reads SHALL require a cluster-scoped `operator` or `admin` RoleBinding.
 Dispatch-capacity policy mutation and enforcement cutover SHALL require a cluster-scoped `admin` RoleBinding and SHALL be leader-only writes.
 Controller-instance reads SHALL require cluster `operator` or `admin`.
@@ -2989,6 +3190,12 @@ Node Admission Candidate review endpoints SHALL expose sanitized observed identi
 Admin admission execution SHALL require a registered trusted Node with inventory, pool, and required policy inputs.
 `POST /admin/v1/nodes/:node_id/admit` SHALL accept optional non-negative `controller_dispatch_ceiling`, a required non-empty `capacity_policy_reason`, `dry_run`, and any confirmation required by its Action Preview; it SHALL default the ceiling explicitly to `1` only when omitted and include the resolved value and phase-derived policy state in its Action Preview.
 Admission execution SHALL lock and read the durable enforcement phase, persist the explicit ceiling, approval actor, timestamp, and reason with the admission decision, and fail the entire transaction on policy or audit failure.
+The manual endpoint SHALL remain available and SHALL NOT infer preauthorization
+from certificate possession, a live connection, locality, Controller mode, or
+an Enrollment Bundle without an exact current durable record. Any future Admin
+or Console surface that issues or revokes a bundle-scoped preauthorization
+SHALL use the same §4.4.1 issuance, preview, confirmation, leader-only write,
+revalidation, and audit semantics as the local Controller-runtime CLI.
 Pending admission rejection SHALL persist a Node Admission Decision and audit event without deleting observed inventory.
 Clearing rejection SHALL require admin authority and SHALL persist an audit event.
 Admin admit and pending-admission reject endpoints SHALL support `dry_run` requests that return the shared Action Preview shape and follow the side-effect-free invariants in §7.3.1.
@@ -3197,6 +3404,11 @@ External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling history, request state, and operator-visible status.
 BEAM Distribution MUST NOT be treated as durable cluster truth.
 
+The Ubuntu single-host profile SHALL use §7.5.0 unchanged between its colocated Controller and Node Agent.
+Both canonical names SHALL contain their distinct complete UUID and the host's validated stable non-loopback RFC1918 IPv4 address.
+Loopback identity, localhost trust, static or shared cookies, certificate-only trust, address-only trust, and automatic gRPC fallback SHALL NOT satisfy the production relationship.
+The accepted credential-lifecycle decision, authenticated-connection amendment, and synchronized OpenSpec contracts SHALL govern this relationship. The completed local certificate and Peer Grant implementation is sufficient input for separately authorized same-host source implementation. Real KAP-84 mixed macOS/Linux evidence remains required for remote-topology and separation qualification; same-host implementation SHALL NOT represent KAP-82, KAP-84, or mixed-host behavior as globally qualified.
+
 #### 7.5.0 Production first-party BEAM identity and authorization
 
 The Production BEAM Operating Model SHALL use OTP TLS distribution with explicit peer verification on both endpoints.
@@ -3346,9 +3558,10 @@ Reconnect SHALL NOT resume output, retransmit an ambiguous Runtime Endpoint oper
 
 The Controller SHALL accept a production BEAM Node Agent observation only when the operation began and completed on the currently authenticated native BEAM connection and its captured certificate, local-identity, Peer Grant, and connection generations still equal current authority at commit time.
 A result from a disconnected, superseded, restarted, or reauthenticated connection SHALL be rejected as stale even when it claims the same persisted Node ID and BEAM name.
-Implementation SHALL first prove this fence deterministically with native BEAM connection identity plus current credential and grant generations.
+Implementation SHALL fence each authenticated observation with current credential and grant generations plus a random 128-bit process-ephemeral incarnation generated for the exact authenticated BEAM connection.
+The incarnation SHALL change on reconnect and Node Agent restart, SHALL never be persisted, and SHALL be cleared on disconnect, authority loss, and Controller restart.
 The deterministic matrix SHALL include connection replacement after response receipt but before durable commit, reconnect with unchanged credentials, Node restart, and Controller restart.
-No custom boot-incarnation field SHALL be added unless those tests demonstrate a concrete stale-observation escape and a separate OpenSpec amendment accepts a random ephemeral per-Agent-boot observation field that is not durable Node identity, a session ID, a replay key, or Worker allocation incarnation.
+The incarnation SHALL NOT become durable Node identity, authority by itself, a session ID, a replay key, an operation or output identity, or Worker allocation incarnation.
 Controller `N` and Node Agent `N-1` SHALL fail closed when either side cannot preserve the complete credential, grant, connection-generation, and no-replay contract; KAP-84 remains authoritative for real mixed macOS/Linux qualification.
 
 The gRPC/mTLS path SHALL remain available for enrollment, Node and Controller Certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit Runtime Endpoint compatibility, future external or non-BEAM adapters, and explicit operator opt-out.
@@ -3848,7 +4061,7 @@ Parser control markers are framing and MUST NOT be emitted as reasoning, final t
 The legacy pipeline SHALL retain its existing tool and stop ordering when the reasoning control is omitted.
 Tool argument byte preservation applies after provider normalization under §7.5.2; model-native wrappers are not public function arguments.
 
-Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
+Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline, except that the exact disposable source-development inference proof in §1.4 SHALL fail closed under its pinned artifact-bound parser and SHALL NOT make ambiguous or malformed bytes public.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
 Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
@@ -5152,6 +5365,14 @@ Every protected trust or transport operation SHALL recheck its applicable author
 Enrollment SHALL use enrollment authority and key-possession proof; certificate lifecycle and recovery SHALL use their explicitly authorized control or operator-recovery path; production BEAM SHALL additionally require current certificates, stable Node and Controller identity, applicable admission, canonical names and targets, an exact active Peer Grant, and current generations.
 Discovery, a PID, a live BEAM name, or previously valid connection state SHALL NOT reconstruct current authority.
 
+Bundle-scoped admission preauthorization SHALL NOT issue a Node Certificate,
+prove possession of the Node private key, authorize a control connection, or
+weaken any Enrollment check. Successful redemption SHALL establish certificate
+identity under the existing Enrollment contract before the same transaction may
+commit preauthorized admission. An admission preauthorization identifier or
+digest in a bundle is non-secret correlation evidence only; the Controller's
+exact durable record and current predicates remain authoritative.
+
 ### 10.6 Internal transport
 
 Certificate-backed node lifecycle RPC, production first-party BEAM Distribution, and current gRPC compatibility transports SHALL use:
@@ -5246,6 +5467,7 @@ Audit logs SHALL capture:
 * model import/activate/retire
 * routing policy changes
 * node admission/decommission
+* bundle-scoped admission preauthorization issuance, revocation, expiry observation, consumption, pending-review fallback, and conflicting replay
 * Node Admission Candidate rejection
 * Node Admission rejection clearance
 * node admission after rejection
@@ -5692,6 +5914,21 @@ CLI admission execution SHALL record actor type `operator` with bounded local Co
 For source-dev and packaged local use, node-admission CLI commands are local operator/admin commands that execute in the controller runtime context rather than proving Admin API bearer-token authorization.
 They SHALL still enforce the same leader-only write-path, admission, confirmation, cluster-scoped audit, and shared-presenter semantics as the Admin API.
 
+`orchardctl nodes enrollment create` MAY accept `--admit-on-join` only when the
+Controller's explicit admission mode is `enrollment_preauthorized`. That option
+SHALL require exact pool and routing-policy identifiers, optional non-negative
+`--controller-dispatch-ceiling` with explicit default `1`, non-empty
+`--capacity-policy-reason`, side-effect-free preview, `--yes` confirmation, and
+the complete §4.4.1 issuance checks. Mode enablement without the option SHALL
+still create a manual-admission Enrollment. `orchardctl nodes enrollment
+preauthorization revoke` SHALL require the exact Enrollment or
+preauthorization identifier, a non-empty reason, preview, confirmation,
+leader-only mutation, and cluster-scoped audit. Human and JSON join output SHALL
+distinguish `registered_pending_manual_admission`, `preauthorized_admitted`,
+and `preauthorization_consumed_pending_review` without exposing Bootstrap
+Tokens, private keys, certificate secrets, Peer Grants, administrator
+credentials, or reusable admission authority.
+
 Node lifecycle CLI commands SHALL provide side-effect-free `--dry-run` Action Preview output in stable human and JSON forms.
 Lifecycle execution SHALL enforce the preview's confirmation requirements, including `--yes`, consequence acknowledgement for drain and decommission, and a typed node id for decommission.
 Node lifecycle CLI commands use the same local controller-runtime authority boundary as node-admission CLI commands and SHALL enforce the same leader-only write-path, mutation-time revalidation, cluster-scoped audit, and shared-presenter semantics.
@@ -5728,6 +5965,156 @@ Successful initialization output SHOULD direct operators to provision named admi
 
 `orchardctl requests inspect` SHALL render a request's persisted scheduler explanation through the shared scheduler explanation reason-code contract in stable human and JSON forms.
 Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
+
+### 11.10 Ubuntu 24.04 Single-Host Distribution Contract
+
+The `ubuntu_24_04_x86_64_single_host` profile SHALL permit exactly one
+source-development Orchard installation and one Controller per host. Its
+root-owned canonical checkout SHALL be `/opt/orchard/source`; its fixed
+configuration, state, runtime, log, and backup roots SHALL be `/etc/orchard`,
+`/var/lib/orchard`, `/run/orchard`, `/var/log/orchard`, and
+`/var/backups/orchard`. Alternative checkout or state roots SHALL NOT define a
+second supported installation mode.
+
+The root-owned `/var/lib/orchard/install/manifest.json` SHALL bind one random
+installation UUID, Product Version, exact Git commit and tree, clean-checkout
+proof, dependency locks, pinned toolchain, generated-output drift status,
+and Worker Runtime protocol identity without containing reusable secrets. Inert
+source preparation SHALL record the exact Runtime Endpoint contract-artifact
+digest while declaring schema and Controller/Node compatibility support
+undeclared. Before activation, later accepted lifecycle work SHALL replace
+undeclared dimensions with explicit component and protocol versions, schema
+support, and supported upgrade bridges. Source preparation SHALL create only
+the canonical checkout, non-login accounts, fixed roots, and disabled unit
+definitions; it MUST NOT initialize PostgreSQL, create product identities,
+enroll or admit a Node, enable services, activate a provider or model, or
+publish capacity.
+
+The Repository Owner accepted the inert source-preparation implementation at
+exact commit `f928bc5522eda92a372d3a2422aecfb629762698` on 2026-09-20. That
+acceptance completes only this default-off foundation; it does not authorize
+real-host execution, activation, later composition work, or a support claim.
+
+Every preparing, mutating, or starting operation SHALL hold
+`/var/lib/orchard/install/lifecycle.lock` and prove exclusive ownership of the
+installation UUID, checkout, state roots, Controller process, service
+supervisor, required listeners, EPMD and canonical BEAM names, and PostgreSQL
+cluster. A second or conflicting checkout, installation/state identity, live
+Controller, lock owner, process supervisor, listener, EPMD/BEAM identity, or
+PostgreSQL cluster SHALL fail before mutation or start. Exact stale evidence MAY
+enter explicit `recovery_required`; live, foreign, replaced, or ambiguous
+evidence MUST NOT be killed, adopted, overwritten, or merged.
+
+Retirement SHALL disable the source-development units while retaining database
+files, identities, configuration, models, logs, backups, installation manifest,
+and lifecycle receipts. Re-preparation SHALL validate the retained installation
+UUID and state before start. Destructive purge and concurrent installation are
+outside the initial profile.
+
+The role identities SHALL be `orchard-controller`, `postgres`, `orchard-node`, and `orchard-worker`.
+No two roles SHALL share a writable state root, private key, Peer Grant, database credential, or generic service account.
+The fixed source/service/filesystem/port/cgroup manifest in `docs/platforms/ubuntu-single-host.md` is subordinate to and MUST remain consistent with this section and the synchronized OpenSpec capabilities.
+Required paths SHALL reject symlinks and ownership, mode, identity, or unexpected-content mismatches before mutation.
+A foreign process on a required listener SHALL cause bounded fail-closed diagnostics, not adoption or termination.
+
+Colocation SHALL NOT change the §4.4.1 admission contract. The local Node MAY
+use a bundle-scoped preauthorization only when it is bound to the exact local
+Node, Enrollment, cluster, accepted installation UUID, platform profile, and
+source-manifest identity and all ordinary certificate, inventory, policy,
+capacity, and private-network identity predicates remain current. The fixed
+checkout, lifecycle lock, local socket, systemd ownership, installation UUID,
+or shared host SHALL NOT authorize Enrollment, admission, a Peer Grant,
+Runtime Endpoint authentication, activation, or scheduling. A later remote
+Node uses a distinct Node and installation identity rather than inheriting or
+cloning the local preauthorization.
+
+The Repository Owner accepted the inert authenticated same-host Controller and
+Node source composition at exact commit
+`ed88a5313a9e57e5c541009c1f66dd8e9fef05ce` on 2026-09-21 under KAP-100. That
+acceptance covers exact installation, Controller, and Node identity binding;
+canonical private-address BEAM names; default-off PostgreSQL-to-Node ordering;
+role-custody and activation preflight; disabled same-host gRPC fallback; and
+deterministic isolated and database-backed source tests only. It does not
+qualify or authorize real-host activation, credential or Peer Grant issuance,
+Enrollment or admission, reboot and failure-order execution, Worker/provider/
+model activation, inference, remote or mixed-host topology, packaging, release,
+deployment, publication, or support. KAP-84 remains the later remote-topology
+qualification gate.
+
+The profile SHALL use the exact Ubuntu PostgreSQL 16 dependency closure locked by the source installation manifest.
+PostgreSQL SHALL retain the `postgres` service identity and engine-file ownership, listen only on its Unix-domain socket, and use a dedicated database, NOLOGIN owner, and distinct runtime, migration, and backup roles.
+The Controller SHALL receive no superuser, package, replication, tablespace, role-creation, or cluster-lifecycle authority.
+Exclusive compatible migration and durable schema identity SHALL precede Controller readiness; database availability alone SHALL NOT establish Controller readiness.
+Unavailable, corrupt, recovery-state, migration-conflicted, or full storage SHALL keep Controller readiness false and new scheduling and governance writes stopped without automatic replacement-cluster initialization or data deletion.
+
+The Repository Owner accepted the isolated source-managed PostgreSQL lifecycle
+implementation at exact commit `d23b654e0f9d5b8335204b64a4e16200e65fbbe5`
+on 2026-09-21 under KAP-99. That acceptance covers the source-only lifecycle and
+deterministic isolated fixtures; it does not qualify or authorize real-host
+PostgreSQL initialization or execution, host mutation, later composition work,
+publication, deployment, or support.
+
+Initialization and every mutating lifecycle operation SHALL serialize through the one root-owned installation lock and fsynced monotonic phase receipts.
+Startup ordering SHALL be PostgreSQL readiness, exclusive compatible migration, Controller readiness, then Node Agent; Worker startup SHALL require separate current authorization.
+Prepare, initialize, start, stop, drain, source-upgrade, rollback, backup,
+restore, retire, and re-prepare SHALL NOT claim one whole-host atomic
+transaction.
+An interrupted or failed phase SHALL either resume idempotently from exact inputs or enter `recovery_required` with unsafe dependants stopped and the local Node unschedulable.
+
+The Repository Owner accepted the bounded source-only integrated lifecycle,
+recovery, receipt, and redacted-diagnostics implementation at exact commit
+`715654ea9680376e5c8eb504433594a5af60fee1` on 2026-09-21 under KAP-102. That
+acceptance covers deterministic observation-driven phase validation, monotonic
+intent/state/terminal receipts, exact-evidence resume, fail-closed ambiguous or
+changed-evidence recovery, source upgrade and rollback compatibility binding,
+fenced restore evidence, and allowlisted offline diagnostics. It does not
+authorize or qualify real Ubuntu activation, PostgreSQL or credential/grant/
+Node mutation, reboot/crash-loop/interruption qualification, live cgroup or
+Worker enforcement, providers, models, inference, KAP-103, packaging, release,
+deployment, publication, or support.
+
+The host SHALL provide unified cgroup v2, at least 8 logical CPUs, at least 32 GiB RAM, and two Worker-excluded control CPUs.
+For physical RAM `M`, the appliance parent maximum SHALL be `M-max(4 GiB, 10% of M)` with non-overcommitted `MemoryMin` protection of 4 GiB for Controller, 4 GiB for PostgreSQL, and 1 GiB for the Agent-only leaf.
+With `W=M-max(4 GiB, 10% of M)-17 GiB`, the Node lifecycle cgroup SHALL have aggregate `MemoryMax=2 GiB+W` and no aggregate `MemoryHigh`; its disjoint Agent leaf SHALL have `MemoryHigh=1 GiB`, `MemoryMax=2 GiB`, and 1,024 tasks, while its Worker subtree SHALL have `MemoryMax=W`, no protected memory, and 7,168 tasks.
+CPU, memory, task, file/socket, I/O, and mutable-storage limits SHALL reserve operating-system and control-plane recovery headroom before any Worker budget is admitted.
+Initialization SHALL fail before service start when positive Worker capacity and every required reserve cannot be enforced.
+
+The Repository Owner accepted the inert model-free Worker custody and cgroup-v2
+source foundation at exact commit
+`2f8923b919001b1038248f292865f0ceaf014f08` on 2026-09-21 under KAP-101. That
+acceptance covers source-manifest custody binding, deterministic static budget
+calculation, disabled systemd resource boundaries, fail-closed metadata and
+custody classification, and isolated deterministic fixtures only. It does not
+qualify or authorize real-host cgroup or service enforcement, authenticated
+Worker execution, provider or model activation, inference, later program work,
+packaging, publication, deployment, or support. Process and cgroup evidence
+continues to have no KAP-18 or KAP-26 release authority.
+
+A complete backup SHALL cordon and drain the local Node, close ingress, and fence every Controller, Node, Worker, credential/grant, governance, and direct-database writer before taking a consistent database snapshot.
+Its checksummed manifest SHALL bind Product Version, source commit and tree, dependency and toolchain locks, schema and authorization contract, non-secret configuration, installation UUID, lifecycle receipts, and public identity metadata.
+It MUST NOT contain Controller or Node private keys, authorization roots, plaintext or hashed Peer Grants, or reusable database credentials.
+A successful backup-completion receipt SHALL require validation by restoring the database and corresponding local public-generation metadata as one coherent checkpoint into an isolated non-serving target.
+Missing or failed validation, or disagreement between database authority and local public-generation metadata, SHALL leave the backup incomplete.
+Restore SHALL target a stopped empty deployment, prove the source fenced, generate new role keys locally, and complete explicit certificate, authorization-root, replacement-grant, disconnect, and reconnect recovery before the stable identities become serving or schedulable.
+Historical restore SHALL NOT erase a durable authority cutover.
+
+Adding a remote Node SHALL use a new Node ID, key, certificate, canonical name, admission decision, and pair grant.
+Moving the Controller or database SHALL use explicit fenced migration and rotate names, addresses, certificates, grants, and writers where their contracts require it.
+Private keys, authorization roots, grants, and identities SHALL NOT be copied to create a concurrent clone.
+
+Qualification SHALL remain private, bounded, and bound to exact source commit/tree, dependency/toolchain locks, installation UUID, Ubuntu image, kernel, glibc, systemd, PostgreSQL, filesystem, cgroup, and command identities.
+It SHALL cover default-off clean source preparation; duplicate checkout, installation/state identity, process, lock, port, EPMD/BEAM, PostgreSQL, and supervisor refusal; each role unavailable; database unavailable, corrupt, and full; migration conflict and failure; permission and symlink negatives; authenticated local BEAM; resource pressure; reboot; source upgrade and rollback; backup and restore; retirement and re-preparation; diagnostics; one remote Node; Controller/database separation; and future packaging-handoff fencing.
+Raw host evidence SHALL remain private, diagnostics SHALL exclude secrets and request/model content, and static validation or one healthy boot SHALL NOT establish implementation completion, release, deployment, publication, or support.
+
+A future packaged distribution SHALL require a fresh accepted OpenSpec proposal
+and explicit fenced one-way handoff. It SHALL prevent concurrent source and
+packaged Controllers, preserve or deliberately rotate each identity under its
+own contract, import compatible retained state once, and record the authority
+cutover. This profile makes no current Debian package installation,
+qualification, publication, reproducibility, or support claim. Byte-for-byte
+BEAM or package reproducibility SHALL NOT block source-development qualification
+when exact Git tree, clean-checkout, dependency/toolchain lock, generated-output
+drift, and runtime receipt evidence pass.
 
 ---
 
@@ -5847,6 +6234,14 @@ The system SHALL guarantee:
 * no pinned placement is auto-evicted
 * quota reservations are always released on terminal reconciliation and never between attempts
 
+### 12.8 Ubuntu Single-Host Source-Development Failure Ordering
+
+For `ubuntu_24_04_x86_64_single_host`, PostgreSQL, migration, Controller, Node Agent, and Worker failures SHALL remain independently visible.
+A failed prerequisite SHALL leave every later dependant stopped or unschedulable; systemd active state, a live listener, a PID, a cgroup member, a lifecycle receipt, database availability, or a successful local probe SHALL NOT manufacture product readiness, authority, health, or released capacity.
+A stale listener, process, cgroup member, lifecycle owner, migration owner, or identity-root owner MAY enter recovery only when exact stale ownership is proved. A live, foreign, replaced, or ambiguous checkout, installation/state identity, Controller, supervisor, listener, port, EPMD/BEAM name, PostgreSQL cluster, or lock owner SHALL fail closed rather than be adopted or terminated.
+Controller or PostgreSQL recovery SHALL retain reserved headroom under simultaneous Worker pressure.
+Unresolved Worker execution or occupancy SHALL preserve the KAP-18/KAP-26 release and quarantine boundaries rather than being cleared from process exit.
+
 ---
 
 ## 13. Upgrade Strategy
@@ -5907,6 +6302,8 @@ Migration ownership SHALL be protected by advisory lock.
 For named authorization, the generic upgrade sequences below SHALL be constrained by §10.11's durable cutover/rollback states, compatible-writer evidence, host/service launch gates, ingress fencing, and isolation from the live post-cutover authority database.
 Console disablement alone SHALL NOT make an incompatible API, CLI, Portal, or direct-database writer safe to run.
 Downgrades without verifiable database isolation SHALL be unsupported, and an isolated historical environment SHALL NOT retain the COMPLETE credential-family claim.
+The app-owned mechanics below apply to the macOS native distribution profile.
+The Ubuntu single-host profile SHALL use §13.8 instead while retaining every shared authorization, writer, ingress, and rollback fence in this section.
 
 **Single-controller deployment**
 
@@ -5949,11 +6346,13 @@ An operation that requires Worker Unit, Resource Allocation, runtime incarnation
 
 ### 13.5 Worker upgrade
 
-Workers are bundled with node agent.
-Worker upgrade occurs through the app-owned Node Agent update lifecycle.
-No standalone worker upgrade path in v1.
+In the macOS native distribution profile, Workers are bundled with the Node Agent and upgrade through the app-owned Node Agent update lifecycle.
+The Ubuntu single-host profile MAY use an optional immutable Worker provider closure for custody, but its version SHALL remain pinned by the exact source installation manifest and it SHALL NOT upgrade independently of the coordinated §13.8 lifecycle.
+No standalone Worker upgrade path exists in v1.
 
 ### 13.6 Managed Postgres upgrade
+
+The container-image mechanics below apply to macOS Managed Database Mode.
 
 * minor version: replace container image, restart during maintenance window
 * major version: explicit backup/restore or pg_upgrade workflow
@@ -5969,6 +6368,33 @@ No standalone worker upgrade path in v1.
 * no active drain operations
 * all nodes at compatible starting versions
 * DB reachable and lockable
+
+### 13.8 Ubuntu Single-Host Upgrade And Rollback
+
+The Ubuntu source installation manifest SHALL prove source commit/tree,
+clean-checkout, dependency/toolchain locks, generated-output drift, schema,
+retained-state, authorization-contract, credential/grant, writer, audit,
+ingress, protocol, and durable-cutover compatibility before any mixed-version
+start or binary rollback.
+The composed maintenance sequence SHALL verify the manifest and preflight;
+cordon the local Node, stop admission, drain, and prove every applicable release
+condition; close ingress and stop Worker, Node Agent, Controller,
+credential/grant, governance, and direct-database writers while PostgreSQL
+remains available; create and validate the complete recovery checkpoint; stop
+PostgreSQL; move only the canonical checkout to the exact intended commit,
+refresh pinned dependencies and build without starting units or changing the
+installation UUID; establish PostgreSQL readiness; run exclusive compatible
+migration; establish Controller readiness; and only then reauthenticate,
+reconcile, and start the Node Agent. Worker activation and uncordon remain
+separately gated on fresh accepted evidence.
+PostgreSQL minor and major changes SHALL use the exact Ubuntu dependency and
+compatibility bridge declared by the source manifest, with explicit
+backup/restore or `pg_upgrade` for a declared major transition; the macOS
+container-image recipe in §13.6 SHALL NOT apply.
+Forward-only schema migration MAY make binary rollback unavailable.
+When compatibility cannot be proved, the appliance SHALL remain stopped or unschedulable and either roll forward or restore the complete pre-upgrade set into a fenced non-serving recovery deployment until §10.11.4 and §11.10 restoration gates pass.
+Reboot or interruption after any first side effect SHALL leave an exact nonterminal receipt and permit only exact resume, proven compatible rollback, or fenced restore.
+Rollback SHALL NOT erase durable authorization cutovers, start an incompatible writer against the live database, or activate copied role credentials.
 
 ---
 
@@ -6143,6 +6569,7 @@ Deliver:
 * macOS app-owned lifecycle behind a host adapter without claiming an unimplemented cross-process handover protocol
 * security-led migration of normal CLI command families to Controller-owned operations
 * Linux Controller platform profile with operator-provided external Postgres
+* normative contract for the exact Ubuntu 24.04 single-host profile without treating it as implemented or supported
 
 Acceptance:
 
@@ -6156,11 +6583,13 @@ Acceptance:
 * the mixed-platform acceptance profile proves a Linux Controller with external Postgres operating an admitted macOS Node under the macOS MLX Node runtime profile across trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure behavior
 * production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
+* acceptance of the Ubuntu single-host contract neither changes the Linux Controller support gate nor authorizes appliance implementation, host mutation, or support
 
-### Milestone 9 - Experimental Linux Node qualification
+### Milestone 9 - Experimental Linux Node and Ubuntu single-host qualification
 
 This milestone defines qualification work for the enumerated experimental `ubuntu_24_04_x86_64_node` and `ubuntu_26_04_x86_64_node` candidates.
-It does not declare general Linux, CUDA, ROCm, vLLM, model, or Serving Profile support.
+It also owns later implementation and qualification of the accepted `ubuntu_24_04_x86_64_single_host` contract target.
+It does not declare the appliance implemented or supported, or declare general Linux, CUDA, ROCm, vLLM, model, or Serving Profile support.
 
 Deliver:
 
@@ -6172,6 +6601,9 @@ Deliver:
 * model-free Linux process-group custody and mixed-version compatibility only after the applicable KAP-18 and KAP-26 contracts are accepted
 * a distinct `macos_controller_linux_node_model_free` acceptance profile run independently for each enumerated Linux Node candidate using a qualified macOS Controller `N` and that candidate at `N` and `N-1`, with independently captured evidence from every participating host
 * a separately gated one-H100 runtime-provider pilot only after every provider-neutral prerequisite passes
+* one canonical default-off Ubuntu single-host source-development installation, installation UUID, exclusive lifecycle ownership, and source manifest
+* socket-only locally managed PostgreSQL 16, authenticated local Controller-to-Node composition, cgroup-v2 isolation, durable lifecycle recovery, and redacted diagnostics under §11.10
+* exact-host model-free appliance qualification before any provider activation, followed by separately gated expansion/separation and bounded inference qualification
 
 Acceptance:
 
@@ -6189,6 +6621,12 @@ Acceptance:
 * for each enumerated candidate, the `macos_controller_linux_node_model_free` profile proves enrollment, admission, authenticated observation, exact unit/resource targeting, cancellation, drain, Agent restart, orphan handling, and peer isolation for both version pairings; evidence for one candidate does not qualify another, and unavailable direct private-network or macOS host evidence leaves that candidate's gate unmet
 * real-provider qualification, if separately authorized, remains one immutable H100/vLLM/model/profile tuple at concurrency one with no sibling or broader support claim
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before any Linux Node support claim
+* the Ubuntu single-host profile independently proves its exact source commit/tree, dependency/toolchain locks, single-install refusal, service, filesystem, port, cgroup, database, authenticated local BEAM, lifecycle, upgrade, rollback, backup, restore, retirement/re-preparation, diagnostics, future packaging-handoff fencing, and no-identity-cloning contracts on Ubuntu Server 24.04 LTS x86_64
+* appliance model-free qualification passes before provider/model activation; bounded inference additionally waits for the applicable KAP-18, KAP-26, and accepted provider gates
+* expansion adds one newly enrolled remote Node and separates Controller/database through fenced migration without copying private keys, identities, grants, or writers
+* an independent final review and explicit owner decision are required before any release, deployment, publication, or support claim
+
+The separately authorized unmanaged Linux source-development inference proof in §1.4 is not the Milestone 9 runtime-provider pilot, real-provider qualification, appliance bounded-inference qualification, or acceptance evidence for this milestone. Its proof-only custody exception and deferral of KAP-18, KAP-26, and provider gates do not apply to any Milestone 9 deliverable or acceptance criterion.
 
 ---
 

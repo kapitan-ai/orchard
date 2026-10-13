@@ -269,6 +269,30 @@ defmodule Orchard.RuntimeTransportTest do
                  end
   end
 
+  test "KAP-100 same-host Controller disables static Runtime Endpoint fallback", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" =>
+          "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+        "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+        "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+        "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => Path.join(support_root, "launch.json"),
+        "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+        "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "8444",
+        "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10",
+        "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
+          Path.join(support_root, "beam-authorization-root"),
+        "ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK" => "false"
+      })
+
+    refute config[:inference][:allow_static_runtime_target_fallback]
+    assert config[:runtime_endpoint][:beam][:cookie_file] == nil
+  end
+
   test "SPEC.md §8.3 a membership host that contradicts the BEAM node name fails closed", %{
     support_root: support_root
   } do

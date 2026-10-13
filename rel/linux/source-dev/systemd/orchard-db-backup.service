@@ -1,0 +1,19 @@
+[Unit]
+Description=Orchard source-development fenced PostgreSQL backup
+Requires=orchard-postgresql.service
+After=orchard-postgresql.service
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/orchard/postgresql/lifecycle.env
+ExecStart=/opt/orchard/source/bin/orchard-source-postgresql backup
+Slice=orchard-lifecycle.slice
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/orchard/install /var/lib/postgresql/16 /var/backups/orchard

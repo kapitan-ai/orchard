@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+config=/etc/orchard/controller/controller.env
+[ -f "$config" ] || {
+    printf 'orchard-controller: required configuration is absent: %s\n' "$config" >&2
+    exit 78
+}
+unset RELEASE_COOKIE RELEASE_NODE RELEASE_VM_ARGS RELEASE_REMOTE_VM_ARGS
+exec /opt/orchard/controller/releases/orchard_controller/bin/orchard_controller "$@"

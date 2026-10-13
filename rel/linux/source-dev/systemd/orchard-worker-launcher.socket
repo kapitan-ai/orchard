@@ -1,0 +1,14 @@
+[Unit]
+Description=Orchard source-development inert Worker launcher socket
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Socket]
+ListenStream=/run/orchard-worker/launcher.sock
+SocketUser=orchard-node
+SocketGroup=orchard-worker
+SocketMode=0660
+Service=orchard-worker-launcher.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=orchard-source-dev.target

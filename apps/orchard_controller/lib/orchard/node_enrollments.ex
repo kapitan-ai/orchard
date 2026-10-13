@@ -8,6 +8,7 @@ defmodule Orchard.NodeEnrollments do
   alias Orchard.ControlPlane
   alias Orchard.Governance
   alias Orchard.Governance.AuditWriter
+  alias Orchard.NodeAdmissionPreauthorizations
   alias Orchard.NodeCredentials
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.Nodes, as: NodeInventory
@@ -113,12 +114,22 @@ defmodule Orchard.NodeEnrollments do
 
   defp create_authorized(attrs, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
-    enrollment_id = Ecto.UUID.generate()
-    node_id = Ecto.UUID.generate()
+    preauthorization_preview = Keyword.get(opts, :preauthorization_preview)
+
+    preauthorization_confirmation_digest =
+      Keyword.get(opts, :preauthorization_confirmation_digest)
+
+    enrollment_id = preview_value(preauthorization_preview, :enrollment_id, Ecto.UUID.generate())
+    node_id = preview_value(preauthorization_preview, :node_id, Ecto.UUID.generate())
     generated_token = EnrollmentToken.generate()
 
     AuditWriter.transaction(fn ->
-      with {:ok, node} <- insert_provisioned_node(node_id, value(attrs, :node)),
+      with {:ok, preauthorization_context} <-
+             lock_preauthorization_issuance(
+               preauthorization_preview,
+               preauthorization_confirmation_digest
+             ),
+           {:ok, node} <- insert_provisioned_node(node_id, value(attrs, :node)),
            {:ok, enrollment} <-
              insert_enrollment(
                enrollment_id,
@@ -127,10 +138,18 @@ defmodule Orchard.NodeEnrollments do
                now,
                generated_token
              ),
-           {:ok, _audit} <- insert_pending_publication_audit(enrollment, attrs, now) do
+           {:ok, _audit} <- insert_pending_publication_audit(enrollment, attrs, now),
+           {:ok, preauthorization} <-
+             maybe_insert_preauthorization(
+               enrollment,
+               preauthorization_preview,
+               preauthorization_context,
+               now
+             ) do
         %{
           enrollment: Repo.preload(enrollment, :node),
-          bootstrap_token: generated_token.bootstrap_token
+          bootstrap_token: generated_token.bootstrap_token,
+          preauthorization: preauthorization
         }
       else
         {:error, reason} -> Repo.rollback(reason)
@@ -139,25 +158,103 @@ defmodule Orchard.NodeEnrollments do
     |> unwrap_transaction()
   end
 
+  defp lock_preauthorization_issuance(nil, nil), do: {:ok, nil}
+
+  defp lock_preauthorization_issuance(%{digest: digest} = preview, digest),
+    do: NodeAdmissionPreauthorizations.lock_issuance(preview)
+
+  defp lock_preauthorization_issuance(_preview, _digest),
+    do: {:error, :node_admission_preauthorization_confirmation_required}
+
+  defp maybe_insert_preauthorization(_enrollment, nil, nil, _now), do: {:ok, nil}
+
+  defp maybe_insert_preauthorization(enrollment, preview, context, now) do
+    NodeAdmissionPreauthorizations.insert_authorized(enrollment, preview, context, now)
+  end
+
+  defp preview_value(nil, _key, default), do: default
+  defp preview_value(%{record: record}, key, default), do: Map.get(record, key, default)
+
   defp redeem_transaction(id, request, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
 
-    AuditWriter.transaction(fn ->
-      with %Enrollment{} = enrollment <- lock_enrollment(id),
-           %Node{} = node <- lock_node(enrollment.node_id) do
-        redeem_locked(enrollment, node, request, now, opts)
-      else
-        _reason -> Repo.rollback(:node_enrollment_rejected)
-      end
-    end)
-    |> unwrap_transaction()
+    if NodeAdmissionPreauthorizations.exists_for_enrollment?(id) do
+      redeem_preauthorized_transaction(id, request, now, opts)
+    else
+      redeem_manual_transaction(id, request, now, opts)
+    end
   end
 
-  defp redeem_locked(enrollment, node, request, now, opts) do
+  defp redeem_manual_transaction(id, request, now, opts) do
+    result =
+      AuditWriter.transaction(fn -> redeem_manual_locked(id, request, now, opts) end)
+      |> unwrap_transaction()
+
+    case result do
+      {:error, :retry_preauthorized_redemption} ->
+        redeem_preauthorized_transaction(id, request, now, opts)
+
+      other ->
+        other
+    end
+  end
+
+  defp redeem_preauthorized_transaction(id, request, now, opts) do
+    with {:ok, request} <- preflight_preauthorized_redemption(id, request),
+         result <-
+           run_preauthorized_transaction_with_gate(id, request, now, opts) do
+      unwrap_transaction(result)
+    else
+      _reason -> {:error, :node_enrollment_rejected}
+    end
+  end
+
+  defp run_preauthorized_transaction_with_gate(id, request, now, opts) do
+    Orchard.DispatchCapacity.with_policy_mutation_gate(request.node_id, fn ->
+      AuditWriter.transaction(fn -> redeem_preauthorized_locked(id, request, now, opts) end)
+    end)
+  end
+
+  defp redeem_manual_locked(id, request, now, opts) do
+    with %Enrollment{} = enrollment <- lock_enrollment(id),
+         false <- NodeAdmissionPreauthorizations.exists_for_enrollment?(id),
+         %Node{} = node <- lock_node(enrollment.node_id) do
+      redeem_locked(enrollment, node, nil, nil, request, now, opts)
+    else
+      true -> Repo.rollback(:retry_preauthorized_redemption)
+      _reason -> Repo.rollback(:node_enrollment_rejected)
+    end
+  end
+
+  defp preflight_preauthorized_redemption(id, request) do
+    with %Enrollment{} = enrollment <- Repo.get(Enrollment, id),
+         :ok <- validate_redemption_bindings(enrollment, request),
+         true <- EnrollmentToken.verify(request.token, enrollment.token_hash),
+         {:ok, request} <- authorize_redemption_csr(enrollment, request),
+         true <- NodeAdmissionPreauthorizations.exists_for_enrollment?(id) do
+      {:ok, request}
+    else
+      _reason -> {:error, :node_enrollment_rejected}
+    end
+  end
+
+  defp redeem_preauthorized_locked(id, request, now, opts) do
+    with {:ok, context} <- NodeAdmissionPreauthorizations.lock_redemption_authority(),
+         %Enrollment{} = enrollment <- lock_enrollment(id),
+         preauthorization when not is_nil(preauthorization) <-
+           NodeAdmissionPreauthorizations.lock_for_enrollment(id),
+         %Node{} = node <- lock_node(enrollment.node_id) do
+      redeem_locked(enrollment, node, preauthorization, context, request, now, opts)
+    else
+      _reason -> Repo.rollback(:node_enrollment_rejected)
+    end
+  end
+
+  defp redeem_locked(enrollment, node, preauthorization, context, request, now, opts) do
     with :ok <- validate_redemption_bindings(enrollment, request),
          true <- EnrollmentToken.verify(request.token, enrollment.token_hash),
          {:ok, request} <- authorize_redemption_csr(enrollment, request) do
-      redeem_state(enrollment, node, request, now, opts)
+      redeem_state(enrollment, node, preauthorization, context, request, now, opts)
     else
       _reason -> Repo.rollback(:node_enrollment_rejected)
     end
@@ -170,7 +267,15 @@ defmodule Orchard.NodeEnrollments do
     end
   end
 
-  defp redeem_state(%Enrollment{state: :issued} = enrollment, node, request, now, opts) do
+  defp redeem_state(
+         %Enrollment{state: :issued} = enrollment,
+         node,
+         preauthorization,
+         context,
+         request,
+         now,
+         opts
+       ) do
     with :ok <- validate_first_redemption(enrollment, node, now),
          :ok <- run_fault_checkpoint(opts, :before_token_consumption),
          {:ok, pending} <- persist_pending_consumption(enrollment, request, now),
@@ -181,8 +286,19 @@ defmodule Orchard.NodeEnrollments do
          {:ok, _credential_generation} <-
            NodeCredentials.register_initial(updated, response, request.csr, now),
          {:ok, registered_node} <- register_node(node, request.runtime_endpoint, now),
-         {:ok, _candidate} <-
-           NodeInventory.ensure_pending_admission_candidate(registered_node),
+         {:ok, admission_response} <-
+           complete_admission(
+             preauthorization,
+             context,
+             updated,
+             registered_node,
+             request,
+             now,
+             opts
+           ),
+         :ok <- run_fault_checkpoint(opts, :after_admission_before_enrollment_finalization),
+         response <- Map.put(response, "admission", admission_response),
+         {:ok, updated} <- persist_issued_certificate(updated, response),
          {:ok, _audit} <- insert_consumed_audit(updated, response, now, opts) do
       response
     else
@@ -193,6 +309,8 @@ defmodule Orchard.NodeEnrollments do
   defp redeem_state(
          %Enrollment{state: :consumed} = enrollment,
          _node,
+         _preauthorization,
+         _context,
          request,
          now,
          _opts
@@ -204,8 +322,81 @@ defmodule Orchard.NodeEnrollments do
     end
   end
 
-  defp redeem_state(_enrollment, _node, _request, _now, _opts) do
+  defp redeem_state(_enrollment, _node, _preauthorization, _context, _request, _now, _opts) do
     Repo.rollback(:node_enrollment_rejected)
+  end
+
+  defp complete_admission(nil, nil, _enrollment, node, _request, _now, _opts) do
+    with {:ok, _candidate} <- NodeInventory.ensure_pending_admission_candidate(node) do
+      {:ok, %{"outcome" => "registered_pending_manual_admission"}}
+    end
+  end
+
+  defp complete_admission(
+         preauthorization,
+         context,
+         enrollment,
+         node,
+         request,
+         now,
+         opts
+       ) do
+    execution = %{
+      controller_id: enrollment.expected_controller_id,
+      csr_fingerprint: request.csr.csr_fingerprint
+    }
+
+    case NodeAdmissionPreauthorizations.classify(
+           preauthorization,
+           context,
+           request,
+           node,
+           now
+         ) do
+      {:admit, attrs} ->
+        admission_opts =
+          Keyword.merge(opts,
+            actor_type: preauthorization.issuing_actor_type,
+            actor_id: preauthorization.issuing_actor_id
+          )
+
+        with {:ok, result} <-
+               NodeInventory.admit_registered_node_locked(node, attrs, admission_opts),
+             {:ok, consumed} <-
+               NodeAdmissionPreauthorizations.consume_admitted(
+                 preauthorization,
+                 execution,
+                 now
+               ) do
+          {:ok,
+           %{
+             "outcome" => "preauthorized_admitted",
+             "preauthorization_id" => consumed.id,
+             "decision_id" => result.decision.id
+           }}
+        end
+
+      {:pending_review, reason} ->
+        with {:ok, _candidate} <- NodeInventory.ensure_pending_admission_candidate(node),
+             {:ok, consumed} <-
+               NodeAdmissionPreauthorizations.consume_pending_review(
+                 preauthorization,
+                 reason,
+                 execution,
+                 now
+               ) do
+          {:ok,
+           %{
+             "outcome" => "registered_pending_review",
+             "preauthorization_id" => consumed.id,
+             "reason" => Atom.to_string(reason),
+             "preauthorization_state" => Atom.to_string(consumed.state)
+           }}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp valid_resume?(enrollment, request, now) do
@@ -218,6 +409,8 @@ defmodule Orchard.NodeEnrollments do
         enrollment.csr_fingerprint == request.csr.csr_fingerprint and
         metadata["csr_fingerprint"] == request.csr.csr_fingerprint and
         metadata["public_key_fingerprint"] == request.csr.public_key_fingerprint and
+        metadata["preauthorization_id"] == request.preauthorization_id and
+        metadata["preauthorization_digest"] == request.preauthorization_digest and
         map_size(enrollment.certificate_result) > 0
     else
       _reason -> false
@@ -306,6 +499,8 @@ defmodule Orchard.NodeEnrollments do
       "algorithm" => "pkcs10-sha256",
       "csr_fingerprint" => request.csr.csr_fingerprint,
       "public_key_fingerprint" => request.csr.public_key_fingerprint,
+      "preauthorization_id" => request.preauthorization_id,
+      "preauthorization_digest" => request.preauthorization_digest,
       "resume_until" => enrollment |> resume_until(now) |> DateTime.to_iso8601(),
       "version" => 1
     }
@@ -375,18 +570,37 @@ defmodule Orchard.NodeEnrollments do
          token when is_binary(token) <- value(attrs, :token),
          csr_pem when is_binary(csr_pem) <- value(attrs, :csr_pem),
          true <- valid_csr_pem_size?(csr_pem),
-         {:ok, runtime_endpoint} <- normalize_runtime_endpoint(value(attrs, :runtime_endpoint)) do
+         {:ok, runtime_endpoint} <- normalize_runtime_endpoint(value(attrs, :runtime_endpoint)),
+         {:ok, preauthorization} <- normalize_preauthorization(attrs) do
       {:ok,
        %{
          cluster_id: cluster_id,
          controller_id: controller_id,
          csr_pem: csr_pem,
          node_id: node_id,
+         preauthorization_id: preauthorization.id,
+         preauthorization_digest: preauthorization.digest,
          runtime_endpoint: runtime_endpoint,
          token: token
        }}
     else
       _reason -> {:error, :node_enrollment_rejected}
+    end
+  end
+
+  defp normalize_preauthorization(attrs) do
+    case {value(attrs, :preauthorization_id), value(attrs, :preauthorization_digest)} do
+      {nil, nil} ->
+        {:ok, %{id: nil, digest: nil}}
+
+      {id, "sha256-" <> _digest = digest} when is_binary(id) ->
+        case Ecto.UUID.cast(id) do
+          {:ok, id} -> {:ok, %{id: id, digest: digest}}
+          :error -> {:error, :node_enrollment_rejected}
+        end
+
+      _other ->
+        {:error, :node_enrollment_rejected}
     end
   end
 

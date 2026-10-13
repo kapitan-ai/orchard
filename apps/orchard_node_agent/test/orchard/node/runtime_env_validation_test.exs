@@ -149,6 +149,25 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:listen_address][:host] == "0.0.0.0"
   end
 
+  test "KAP-100 disables the same-host gRPC listener without weakening BEAM identity" do
+    runtime =
+      read_runtime_config!(%{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_NODE_AGENT_LISTEN_HOST" => "10.77.0.10",
+        "ORCHARD_NODE_AGENT_GRPC_LISTENER_ENABLED" => "false",
+        "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR" => "/protected/peer-grant.json",
+        "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/launch.json",
+        "ORCHARD_BEAM_NODE_NAME" =>
+          "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.77.0.10"
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    refute runtime[:runtime_grpc_listener_enabled]
+    assert runtime[:listen_address][:host] == "10.77.0.10"
+    assert runtime[:grpc_security] == :plaintext_compatibility
+  end
+
   test "runtime.exs requires enrolled mTLS for packaged gRPC compatibility mode" do
     identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
 

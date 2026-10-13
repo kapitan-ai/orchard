@@ -692,8 +692,23 @@ defmodule Orchard.Nodes do
   defp admit_node_locked(node_id, attrs, opts) do
     with {:ok, authority} <- DispatchCapacity.lock_authority(),
          :ok <- ensure_pre_cutover_authority(authority),
-         {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts),
-         :ok <- ensure_node_admittable(node, attrs),
+         {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts) do
+      case admit_registered_node_locked(node, attrs, opts) do
+        {:ok, _result} = result -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  @doc false
+  @spec admit_registered_node_locked(Node.t(), map() | keyword(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def admit_registered_node_locked(%Node{} = node, attrs, opts) do
+    attrs = normalize_attrs(attrs)
+
+    with :ok <- ensure_node_admittable(node, attrs),
          {:ok, capacity_policy} <- resolve_admission_capacity_policy(attrs, opts),
          opts <- put_actor_opts(opts, capacity_policy),
          {:ok, candidate} <- get_or_create_candidate_for_node(node),
@@ -734,8 +749,6 @@ defmodule Orchard.Nodes do
          grants: grants,
          policy: policy
        }}
-    else
-      {:error, reason} -> Repo.rollback(reason)
     end
   end
 

@@ -158,12 +158,14 @@ current authority at commit. Results from a disconnected, superseded,
 restarted, or reauthenticated connection SHALL be rejected even if they claim
 the same persisted Node ID and BEAM name.
 
-Implementation SHALL first prove this fence with deterministic native BEAM
-tests. It SHALL NOT add a boot-incarnation field speculatively. If native
-connection identity plus generations cannot reject a demonstrated delayed
-observation, implementation SHALL stop until a separate OpenSpec amendment
-accepts a random ephemeral per-Agent-boot observation field that is not durable
-identity, a session ID, a replay key, or Worker allocation incarnation.
+Deterministic native BEAM tests proved that connection identity plus generations
+cannot reject a delayed observation across unchanged-authority reconnect. The
+separately accepted amendment therefore requires a random 128-bit
+process-ephemeral incarnation for each authenticated BEAM connection. It SHALL
+change on reconnect and Agent restart, SHALL never be persisted, and SHALL be
+cleared on disconnect, authority loss, and Controller restart. It SHALL NOT
+become durable identity, authority by itself, a session ID, a replay key, an
+operation or output identity, or Worker allocation incarnation.
 The deterministic matrix SHALL include connection replacement after response
 receipt but before durable commit, reconnect with unchanged credentials, Node
 restart, and Controller restart.

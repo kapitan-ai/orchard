@@ -1387,6 +1387,9 @@ if config_env() == :prod do
 
       node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
+      node_grpc_listener_enabled? =
+        env_bool.("ORCHARD_NODE_AGENT_GRPC_LISTENER_ENABLED", true)
+
       node_identity_root =
         System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
           Path.join([orchard_support_root, "config", "node-identity"])
@@ -1410,7 +1413,7 @@ if config_env() == :prod do
         raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"
       end
 
-      if grpc_security == :plaintext_compatibility and
+      if node_grpc_listener_enabled? and grpc_security == :plaintext_compatibility and
            not loopback_listen_host?.(node_agent_listen_host) do
         raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
       end
@@ -1435,6 +1438,7 @@ if config_env() == :prod do
               System.get_env("ORCHARD_NODE_IDENTITY_PATH") ||
                 Path.join([orchard_support_root, "data", "node-id"]),
             node_identity_root: node_identity_root,
+            runtime_grpc_listener_enabled: node_grpc_listener_enabled?,
             grpc_security: grpc_security,
             display_name: System.get_env("ORCHARD_NODE_DISPLAY_NAME"),
             listen_address: [

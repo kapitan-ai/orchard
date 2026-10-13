@@ -399,6 +399,9 @@ beam_peer_grant_descriptor =
 node_peer_grant_enabled? =
   not is_nil(beam_peer_grant_descriptor) and source_dev_role == :node_agent
 
+node_grpc_listener_enabled? =
+  env_bool.("ORCHARD_NODE_AGENT_GRPC_LISTENER_ENABLED", true)
+
 beam_peer_grant_node_name =
   if node_peer_grant_enabled? do
     env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||
@@ -523,7 +526,8 @@ config :orchard_controller,
         controller_inference_defaults,
         runtime_client_target: dev_runtime_client_target,
         runtime_client_targets: dev_runtime_targets,
-        allow_static_runtime_target_fallback: true,
+        allow_static_runtime_target_fallback:
+          env_bool.("ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK", true),
         tokenizer_executable:
           System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
             Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
@@ -575,6 +579,7 @@ config :orchard_node_agent,
     Keyword.merge(
       node_runtime_defaults,
       node_identity_root: dev_node_identity_root,
+      runtime_grpc_listener_enabled: node_grpc_listener_enabled?,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:

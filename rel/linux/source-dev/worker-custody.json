@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "profile": "ubuntu_24_04_x86_64_single_host",
+  "activation": "disabled",
+  "authority": "custody_only",
+  "minimum_host": {
+    "logical_cpus": 8,
+    "physical_memory_bytes": 34359738368,
+    "required_controllers": ["cpu", "cpuset", "io", "memory", "pids"],
+    "control_cpus": [0, 1]
+  },
+  "budgets": {
+    "os_reserve_min_bytes": 4294967296,
+    "os_reserve_percent": 10,
+    "fixed_non_worker_bytes": 18253611008,
+    "orchard_memory_min_bytes": 9663676416,
+    "orchard_tasks_max": 12544,
+    "controller": {
+      "memory_min_bytes": 4294967296,
+      "memory_high_bytes": 4294967296,
+      "memory_max_bytes": 6442450944,
+      "tasks_max": 2048
+    },
+    "postgresql": {
+      "memory_min_bytes": 4294967296,
+      "memory_high_bytes": 6442450944,
+      "memory_max_bytes": 8589934592,
+      "tasks_max": 2048
+    },
+    "node": {
+      "memory_min_bytes": 1073741824,
+      "fixed_memory_max_bytes": 2147483648,
+      "tasks_max": 8192
+    },
+    "agent": {
+      "memory_min_bytes": 1073741824,
+      "memory_high_bytes": 1073741824,
+      "memory_max_bytes": 2147483648,
+      "tasks_max": 1024
+    },
+    "workers": {
+      "tasks_max": 7168,
+      "cpu_weight": 100,
+      "io_weight": 100,
+      "shared_device_floor_percent": 50,
+      "mutable_storage_percent": 60
+    },
+    "lifecycle_helpers": {
+      "memory_max_bytes": 536870912,
+      "tasks_max": 256
+    }
+  },
+  "cgroups": {
+    "node": "orchard.slice/orchard-node-agent.service",
+    "agent": "orchard.slice/orchard-node-agent.service/agent",
+    "workers": "orchard.slice/orchard-node-agent.service/workers",
+    "worker_leaf_pattern": "worker/<unit>/<generation>"
+  },
+  "providers": []
+}

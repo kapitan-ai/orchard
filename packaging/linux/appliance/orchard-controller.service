@@ -1,0 +1,31 @@
+[Unit]
+Description=Orchard Controller
+Documentation=https://github.com/kapitan-ai/orchard
+Requires=orchard-db-migrate.service
+After=network-online.target orchard-db-migrate.service
+ConditionPathExists=/etc/orchard/appliance/initialized
+ConditionPathExists=/etc/orchard/controller/controller.env
+
+[Service]
+Type=simple
+User=orchard-controller
+Group=orchard-controller
+ExecStart=/opt/orchard/controller/bin/orchard-controller start
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+Slice=orchard-control.slice
+RuntimeDirectory=orchard-controller
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/orchard/controller /var/log/orchard/controller /run/orchard-controller

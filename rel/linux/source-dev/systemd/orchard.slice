@@ -1,0 +1,12 @@
+[Unit]
+Description=Orchard source-development composition boundary
+DefaultDependencies=no
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes
+MemoryMin=9G
+TasksMax=12544

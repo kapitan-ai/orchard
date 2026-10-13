@@ -131,6 +131,7 @@ defmodule Orchard.Repo.Migrations.NodeInventoryFoundationTest do
     Repo.query!("DROP TABLE IF EXISTS beam_disconnect_obligations")
     Repo.query!("DROP TABLE IF EXISTS beam_peer_grants")
     Repo.query!("DROP TABLE IF EXISTS node_credential_generations")
+    Repo.query!("DROP TABLE IF EXISTS node_admission_preauthorizations")
     Repo.query!("DROP TABLE IF EXISTS node_enrollments")
     Repo.query!("DROP TABLE IF EXISTS node_admission_decisions")
     Repo.query!("DROP TABLE IF EXISTS node_admission_candidates")

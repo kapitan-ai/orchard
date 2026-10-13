@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Pending Admission Is Explicit
-Orchard SHALL treat first-observed, provisioned, or registered nodes as pending admission until an authorized admin explicitly admits them.
+Orchard SHALL treat first-observed, provisioned, or registered nodes as pending admission until an authorized admin explicitly admits them or an exact current bundle-scoped preauthorization commits admission during successful Enrollment redemption.
 Pending admission SHALL be represented as an admission category derived from lifecycle and admission metadata, not as a new node lifecycle enum, unless `SPEC.md` is first updated to add such a lifecycle state.
-Pending nodes SHALL remain in `provisioned` or `registered` lifecycle states until admitted.
+Pending nodes SHALL remain in `provisioned` or `registered` lifecycle states until admitted; preauthorization SHALL NOT create a schedulable intermediate state or make observation equivalent to admission.
 First-observed Runtime Endpoint observations that do not match an existing provisioned placeholder or registered node SHALL be stored as observed admission candidates outside the node lifecycle state machine.
 Observed admission candidates SHALL NOT be represented as `provisioned` unless an admin-created placeholder or bootstrap exists.
 Observed admission candidates SHALL NOT be represented as `registered` unless `RegisterNode` or equivalent trust proof required by `SPEC.md` §4.4 has completed.

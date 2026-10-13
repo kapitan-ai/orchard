@@ -1,0 +1,9 @@
+[Unit]
+Description=Orchard appliance resource boundary
+DefaultDependencies=no
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes

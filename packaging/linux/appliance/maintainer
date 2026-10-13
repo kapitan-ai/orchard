@@ -1,0 +1,257 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'orchard appliance package lifecycle: %s\n' "$1" >&2
+    exit 1
+}
+
+root=${ORCHARD_PACKAGE_ROOT:-}
+simulate=${ORCHARD_SYSTEMD_SIMULATE:-0}
+package=${DPKG_MAINTSCRIPT_PACKAGE:-}
+version=${ORCHARD_MAINTSCRIPT_VERSION:-}
+phase=${ORCHARD_MAINTAINER_PHASE:-}
+
+[ -n "$package" ] || fail "DPKG_MAINTSCRIPT_PACKAGE is required"
+[ -n "$version" ] || fail "embedded package version is required"
+[ -n "$phase" ] || fail "ORCHARD_MAINTAINER_PHASE is required"
+
+if [ -n "$root" ]; then
+    [ "$simulate" = "1" ] || fail "relocated roots require simulated systemd"
+    case "$root" in /*) ;; *) fail "relocated root must be absolute" ;; esac
+    test_owner=$(id -un)
+    test_group=$(id -gn)
+fi
+
+assert_safe_components() {
+    path=$1
+    current=""
+    old_ifs=$IFS
+    IFS=/
+    set -- $path
+    IFS=$old_ifs
+    for component do
+        [ -n "$component" ] || continue
+        current="$current/$component"
+        [ ! -L "$current" ] || fail "refusing symlink path component $current"
+    done
+}
+
+ensure_account() {
+    name=$1
+    group=$2
+    home=$3
+    if [ -n "$root" ]; then
+        return
+    fi
+    if ! getent group "$group" >/dev/null; then
+        addgroup --system "$group"
+    fi
+    if ! getent passwd "$name" >/dev/null; then
+        adduser --system --ingroup "$group" --home "$home" --no-create-home --disabled-login "$name"
+    fi
+    account=$(getent passwd "$name")
+    actual_group=$(id -gn "$name")
+    actual_home=$(printf '%s' "$account" | cut -d: -f6)
+    actual_shell=$(printf '%s' "$account" | cut -d: -f7)
+    [ "$actual_group" = "$group" ] && [ "$actual_home" = "$home" ] ||
+        fail "existing $name account has incompatible group or home"
+    case "$actual_shell" in
+        /usr/sbin/nologin|/sbin/nologin|/bin/false) ;;
+        *) fail "$name must be a non-login account" ;;
+    esac
+}
+
+resolve_identity() {
+    owner=$1
+    group=$2
+    if [ -n "$root" ]; then
+        resolved_owner=$test_owner
+        resolved_group=$test_group
+    else
+        resolved_owner=$owner
+        resolved_group=$group
+    fi
+}
+
+ensure_directory() {
+    path="$root$1"
+    resolve_identity "$2" "$3"
+    mode=$4
+    assert_safe_components "$path"
+    if [ -e "$path" ] && [ ! -d "$path" ]; then
+        fail "refusing non-directory path $path"
+    fi
+    if [ -d "$path" ]; then
+        actual=$(stat -Lc '%U:%G:%a' "$path") || fail "cannot inspect $path"
+        expected="$resolved_owner:$resolved_group:$mode"
+        [ "$actual" = "$expected" ] || fail "$path is $actual, expected $expected"
+    else
+        install -d -o "$resolved_owner" -g "$resolved_group" -m "$mode" "$path"
+    fi
+}
+
+write_receipt() {
+    ensure_directory /var/lib/orchard/appliance root root 700
+    ensure_directory /var/lib/orchard/appliance/package-receipts root root 700
+    lock="$root/var/lib/orchard/appliance/lifecycle.lock"
+    assert_safe_components "$lock"
+    if [ -e "$lock" ]; then
+        [ -f "$lock" ] && [ ! -L "$lock" ] && [ "$(stat -Lc %h "$lock")" = "1" ] ||
+            fail "refusing unsafe appliance lifecycle lock $lock"
+    fi
+    : >> "$lock"
+    chmod 600 "$lock"
+    exec 9>"$lock"
+    flock -n 9 || fail "appliance lifecycle lock is already held"
+    receipt="$root/var/lib/orchard/appliance/package-receipts/$package.json"
+    generation=1
+    if [ -f "$receipt" ]; then
+        [ ! -L "$receipt" ] && [ "$(stat -Lc %h "$receipt")" = "1" ] ||
+            fail "refusing unsafe package receipt $receipt"
+        prior=$(sed -n 's/.*"generation":\([0-9][0-9]*\).*/\1/p' "$receipt")
+        case "$prior" in
+            ''|*[!0-9]*) fail "invalid retained package receipt $receipt" ;;
+            *) generation=$((prior + 1)) ;;
+        esac
+    elif [ -e "$receipt" ]; then
+        fail "refusing non-file package receipt $receipt"
+    fi
+    temporary="$receipt.new.$$"
+    umask 077
+    printf '{"schema_version":1,"generation":%s,"package":"%s","version":"%s","phase":"%s"}\n' \
+        "$generation" "$package" "$version" "$phase" > "$temporary"
+    chmod 600 "$temporary"
+    sync -f "$temporary"
+    mv -f "$temporary" "$receipt"
+    sync -f "$(dirname "$receipt")"
+
+    if [ "$package" = "orchard-appliance" ] && [ "$phase" = "postinst" ]; then
+        manifest="$root/usr/lib/orchard/appliance/compatibility.json"
+        assert_safe_components "$manifest"
+        [ -f "$manifest" ] && [ ! -L "$manifest" ] && [ "$(stat -Lc %h "$manifest")" = "1" ] ||
+            fail "refusing unsafe compatibility manifest $manifest"
+        admindir="$root/var/lib/dpkg"
+        jq -r '.packages[] | [.name, .version] | @tsv' "$manifest" |
+        while IFS="	" read -r required expected; do
+            actual=$(dpkg-query --admindir="$admindir" -W -f='${Version}' "$required" 2>/dev/null) ||
+                fail "required package $required is unavailable while recording compatibility"
+            [ "$actual" = "$expected" ] || fail "$required version $actual does not match $expected"
+        done
+        package_set="$root/var/lib/orchard/appliance/package-receipts/package-set.json"
+        if [ -e "$package_set" ]; then
+            [ -f "$package_set" ] && [ ! -L "$package_set" ] && [ "$(stat -Lc %h "$package_set")" = "1" ] ||
+                fail "refusing unsafe package-set receipt $package_set"
+        fi
+        package_set_temporary="$package_set.new.$$"
+        jq --argjson generation "$generation" '{
+          schema_version: 1,
+          generation: $generation,
+          profile: .profile,
+          product_version: .product_version,
+          source_commit: .source_commit,
+          packages: .packages,
+          activation: .activation,
+          support_status: .support_status
+        }' "$manifest" > "$package_set_temporary"
+        chmod 600 "$package_set_temporary"
+        sync -f "$package_set_temporary"
+        mv -f "$package_set_temporary" "$package_set"
+        sync -f "$(dirname "$package_set")"
+    fi
+}
+
+package_units() {
+    case "$package" in
+        orchard-appliance-tools) printf '%s\n' orchard-appliance.target ;;
+        orchard-controller) printf '%s\n' orchard-controller.service ;;
+        orchard-postgresql) printf '%s\n' orchard-postgresql.service orchard-db-migrate.service ;;
+        orchard-appliance)
+            printf '%s\n' orchard-appliance.target orchard-controller.service orchard-postgresql.service orchard-db-migrate.service orchard-node-agent.service
+            ;;
+        orchard-worker-foundation) ;;
+    esac
+}
+
+disable_units() {
+    stop=$1
+    package_units |
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        if [ -n "$root" ]; then
+            if [ -d "$root/etc/systemd/system" ]; then
+                find "$root/etc/systemd/system" -type l -name "$unit" -delete
+            fi
+            ensure_directory /run/orchard-appliance root root 700
+            [ "$stop" = "true" ] && printf 'stop:%s\n' "$unit" >> "$root/run/orchard-appliance/systemd-simulation.log"
+            printf 'disable:%s\n' "$unit" >> "$root/run/orchard-appliance/systemd-simulation.log"
+        else
+            if [ "$stop" = "true" ]; then
+                systemctl disable --now "$unit"
+            else
+                systemctl is-active --quiet "$unit" && fail "refusing to configure while $unit is active"
+                systemctl disable "$unit"
+            fi
+        fi
+    done
+}
+
+reload_systemd() {
+    if [ -n "$root" ]; then
+        ensure_directory /run/orchard-appliance root root 700
+        printf 'daemon-reload\n' >> "$root/run/orchard-appliance/systemd-simulation.log"
+    else
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+}
+
+configure_paths() {
+    case "$package" in
+        orchard-appliance-tools|orchard-appliance)
+            ensure_directory /etc/orchard/appliance root root 750
+            ensure_directory /var/lib/orchard/appliance root root 700
+            ensure_directory /var/log/orchard/appliance root root 700
+            ensure_directory /var/backups/orchard root root 700
+            ;;
+        orchard-controller)
+            ensure_account orchard-controller orchard-controller /var/lib/orchard/controller
+            ensure_directory /etc/orchard/controller root orchard-controller 750
+            ensure_directory /var/lib/orchard/controller orchard-controller orchard-controller 700
+            ensure_directory /var/log/orchard/controller orchard-controller orchard-controller 750
+            ;;
+        orchard-postgresql)
+            ensure_account orchard-db-migrate orchard-db-migrate /var/lib/orchard/appliance
+            ensure_directory /etc/orchard/postgresql root orchard-db-migrate 750
+            ;;
+        orchard-worker-foundation)
+            ensure_account orchard-node orchard-node /var/lib/orchard/node
+            ensure_account orchard-worker orchard-worker /var/lib/orchard/worker
+            ensure_directory /var/lib/orchard/models orchard-node orchard-worker 750
+            ensure_directory /var/lib/orchard/worker orchard-worker orchard-worker 700
+            ensure_directory /var/log/orchard/worker orchard-worker orchard-worker 750
+            ;;
+        *) fail "unsupported package $package" ;;
+    esac
+}
+
+case "$phase" in
+    postinst)
+        disable_units false
+        configure_paths
+        write_receipt
+        reload_systemd
+        ;;
+    prerm)
+        if [ "${1:-}" = "remove" ]; then
+            disable_units true
+        fi
+        write_receipt
+        ;;
+    postrm)
+        write_receipt
+        reload_systemd
+        ;;
+    *) fail "unsupported maintainer phase $phase" ;;
+esac
+
+exit 0

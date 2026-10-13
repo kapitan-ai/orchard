@@ -20,6 +20,8 @@ defmodule OrchardCLI.PinnedHTTPS do
         "controller_id" => bundle.controller_id,
         "csr_pem" => identity.csr_pem,
         "node_id" => bundle.node_id,
+        "preauthorization_id" => bundle.preauthorization_id,
+        "preauthorization_digest" => bundle.preauthorization_digest,
         "runtime_endpoint" => runtime_endpoint,
         "token" => bundle.token
       },

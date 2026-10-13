@@ -4,7 +4,7 @@
 - [x] 1.2 Audit current SPEC, ADR 0012, enrollment PKI, Peer Grant persistence, local custody, expiry guard, and retained gRPC control boundaries.
 - [x] 1.3 Propose ADR 0035 and reconcile the required SPEC and OpenSpec deltas.
 - [x] 1.4 Obtain explicit Repository Owner acceptance for seven-day certificate overlap, five-minute clock uncertainty, 30-day renewal lead, forced disconnect at certificate expiry, and the bounded reconnect policy.
-- [ ] 1.5 Sync the accepted `add-linux-node-platform-contract` predecessor before archiving this change.
+- [x] 1.5 Sync the accepted `add-linux-node-platform-contract` predecessor into the main `linux-node-platform` capability without claiming its unfinished qualification tasks complete.
 
 ## 2. Transport-neutral credential lifecycle
 
@@ -26,4 +26,5 @@
 - [x] 4.1 Prove reconnect never resumes output or retransmits an ambiguous Runtime Endpoint operation and adds no KAP-27 session/delivery semantics.
 - [x] 4.2 Preserve KAP-28, KAP-18, KAP-26, KAP-84, and KAP-17 ownership boundaries in code, tests, and diagnostics.
 - [x] 4.3 Run formatting, compilation, Credo, Dialyzer, focused and full tests, coverage, strict OpenSpec, and applicable Linux portable gates.
-- [ ] 4.4 Obtain independent implementation review and real KAP-84 mixed-platform qualification separately before any support claim.
+- [x] 4.4 Obtain bounded independent implementation review and resolve its credential, disconnect, and connection-incarnation findings.
+- [ ] 4.5 Obtain real KAP-84 mixed-platform `N` and `N-1` qualification separately before closing KAP-82 or making any support claim.

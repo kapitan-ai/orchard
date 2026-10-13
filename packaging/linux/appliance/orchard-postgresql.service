@@ -1,0 +1,16 @@
+[Unit]
+Description=Orchard managed PostgreSQL 16 cluster
+Documentation=https://github.com/kapitan-ai/orchard
+After=local-fs.target
+ConditionPathExists=/etc/orchard/appliance/initialized
+ConditionPathExists=/var/lib/postgresql/16/orchard/PG_VERSION
+
+[Service]
+Type=notify
+User=postgres
+Group=postgres
+ExecStart=/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/orchard -c config_file=/etc/orchard/postgresql/postgresql.conf
+ExecStop=/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/orchard -m fast stop
+Slice=orchard-database.slice
+TimeoutStartSec=90s
+TimeoutStopSec=90s

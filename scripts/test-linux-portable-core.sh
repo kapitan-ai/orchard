@@ -15,6 +15,7 @@ EXCLUDES=(
 )
 
 scripts/test-linux-node-package.sh
+scripts/test-ubuntu-appliance-packages.sh
 mise exec -- mix test "${EXCLUDES[@]}"
 mise exec -- mix test --cover "${EXCLUDES[@]}"
 

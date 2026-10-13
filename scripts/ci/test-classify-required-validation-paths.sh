@@ -68,6 +68,12 @@ assert_case linux-node-package \
 assert_case linux-node-package-test \
   'portable=true conformance=true macos=false mlx=false packaging=true ' \
   scripts/test-linux-node-package.sh
+assert_case ubuntu-appliance-package \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  packaging/linux/appliance/orchard-appliance.target
+assert_case ubuntu-appliance-package-test \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  scripts/test-ubuntu-appliance-packages.sh
 assert_case mlx-provider \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py

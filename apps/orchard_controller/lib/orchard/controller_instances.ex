@@ -25,6 +25,35 @@ defmodule Orchard.ControllerInstances do
   import Ecto.Query, only: [from: 2]
 
   @advisory_lock_name "orchard.controller_instances.ensure_local"
+  @membership_lock_name "orchard.controller_instances.membership"
+
+  @doc """
+  Takes the transaction-scoped lock that linearizes Controller membership.
+
+  Callers must already be inside a database transaction. Operations that take
+  the dispatch-capacity or admission-mode row locks take those locks first.
+  """
+  @spec lock_membership() :: :ok | {:error, :controller_membership_transaction_required}
+  def lock_membership do
+    if Repo.in_transaction?() do
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@membership_lock_name])
+      :ok
+    else
+      {:error, :controller_membership_transaction_required}
+    end
+  end
+
+  @doc "Returns the locked, stable eligible Controller membership snapshot."
+  @spec lock_eligible_members() :: [ControllerInstance.t()]
+  def lock_eligible_members do
+    Repo.all(
+      from(instance in ControllerInstance,
+        where: instance.status in [:enrolled, :operational],
+        order_by: [asc: instance.id],
+        lock: "FOR UPDATE"
+      )
+    )
+  end
 
   @spec ensure_local(keyword()) :: {:ok, ControllerInstance.t()} | {:error, term()}
   def ensure_local(opts) when is_list(opts) do
@@ -168,6 +197,8 @@ defmodule Orchard.ControllerInstances do
 
   defp ensure_persisted(attrs) do
     Repo.transaction(fn ->
+      :ok = lock_membership()
+
       Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
         @advisory_lock_name <> "." <> attrs.id
       ])

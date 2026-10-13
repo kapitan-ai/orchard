@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'orchard-appliance-preflight: %s\n' "$1" >&2
+    exit 1
+}
+
+root=${1:-/}
+case "$root" in /*) ;; *) fail "root must be absolute" ;; esac
+prefix=${root%/}
+manifest="$prefix/usr/lib/orchard/appliance/compatibility.json"
+dependencies="$prefix/usr/lib/orchard/appliance/dependencies.json"
+postgresql_closure="$prefix/usr/lib/orchard/appliance/postgresql-16-closure.json"
+
+assert_safe_components() {
+    path=$1
+    current=""
+    old_ifs=$IFS
+    IFS=/
+    set -- $path
+    IFS=$old_ifs
+    for component do
+        [ -n "$component" ] || continue
+        current="$current/$component"
+        [ ! -L "$current" ] || fail "refusing symlink path component $current"
+    done
+}
+
+assert_safe_file() {
+    assert_safe_components "$1"
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -Lc %h "$1")" = "1" ] || fail "missing safe regular file $1"
+}
+
+assert_safe_file "$manifest"
+assert_safe_file "$dependencies"
+assert_safe_file "$postgresql_closure"
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+jq -e '
+  .schema_version == 1 and
+  .profile == "ubuntu_24_04_x86_64_single_host" and
+  .architecture == "amd64" and
+  .source_tree_clean == true and
+  .activation == "disabled" and
+  (.packages | length == 6)
+' "$manifest" >/dev/null || fail "compatibility manifest is invalid or non-activating provenance is unclean"
+jq -e '
+  .schema_version == 1 and
+  .profile == "ubuntu_24_04_x86_64_single_host" and
+  .postgresql.major == 16 and
+  .postgresql.install_policy == "lifecycle_owned_no_automatic_cluster"
+' "$dependencies" >/dev/null || fail "dependency closure is invalid"
+expected_closure=$(jq -r '.postgresql_closure_sha256' "$manifest")
+actual_closure=$(sha256sum "$postgresql_closure" | cut -d ' ' -f 1)
+[ "$actual_closure" = "$expected_closure" ] || fail "PostgreSQL dependency closure digest does not match compatibility metadata"
+jq -e '
+  .schema_version == 1 and
+  .profile == "ubuntu_24_04_x86_64_single_host" and
+  .architecture == "amd64" and
+  (.packages | length >= 80) and
+  ([.packages[].name] | unique | length) == (.packages | length) and
+  ([.packages[] | select(.name == "postgresql-16" and .version == "16.15-0ubuntu0.24.04.1")] | length) == 1
+' "$postgresql_closure" >/dev/null || fail "PostgreSQL dependency closure content is invalid"
+
+for path in \
+    /etc/orchard/appliance \
+    /etc/orchard/controller \
+    /etc/orchard/node \
+    /var/lib/orchard/appliance \
+    /var/lib/orchard/controller \
+    /var/lib/orchard/node \
+    /var/lib/orchard/models \
+    /var/lib/orchard/worker
+do
+    candidate="$prefix$path"
+    assert_safe_components "$candidate"
+done
+
+admindir="$prefix/var/lib/dpkg"
+assert_safe_file "$admindir/status"
+jq -r '.packages[] | [.name, .version] | @tsv' "$manifest" |
+while IFS="	" read -r package expected; do
+    actual=$(dpkg-query --admindir="$admindir" -W -f='${db:Status-Abbrev} ${Version}' "$package" 2>/dev/null) ||
+        fail "required package $package is not installed"
+    [ "$actual" = "ii  $expected" ] || fail "$package has unsupported state/version $actual, expected ii  $expected"
+done
+
+if find "$prefix/etc/systemd/system" -type l \( -path '*.wants/orchard-*' -o -path '*.requires/orchard-*' \) -print -quit 2>/dev/null | grep -q .; then
+    fail "an Orchard unit is enabled before initialization"
+fi
+[ ! -e "$prefix/var/lib/postgresql/16/orchard/PG_VERSION" ] ||
+    fail "PostgreSQL cluster already exists; KAP-98 preflight is foundation-only"
+
+printf 'orchard-appliance-preflight: compatible inert ubuntu_24_04_x86_64_single_host package set\n'

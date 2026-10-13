@@ -8,12 +8,14 @@ signals. Runtime Endpoint Observations SHALL be transport-independent.
 
 For an authenticated first-party BEAM endpoint, observation acceptance SHALL
 capture the native connection identity and current certificate, local-identity,
-Peer Grant, and connection generations before the operation and revalidate them
-before durable commit. A result from a disconnected, superseded, restarted, or
-reauthenticated connection SHALL be stale even when the persisted Node ID and
-BEAM name are unchanged. No custom boot-incarnation field SHALL be added unless
-deterministic native-BEAM tests first prove that these fences cannot reject a
-delayed observation and a separate OpenSpec amendment is accepted.
+Peer Grant, and connection generations before the operation. The authenticated
+response SHALL carry the random 128-bit process-ephemeral incarnation of its
+exact connection. Before durable commit, the Controller SHALL revalidate the
+captured authority and require the response incarnation to belong to the
+currently authenticated connection. A result from a disconnected, superseded,
+restarted, or reauthenticated connection SHALL be stale even when the persisted
+Node ID and BEAM name are unchanged. The incarnation SHALL change on reconnect
+and SHALL NOT create durable identity, authority, replay, or resume semantics.
 
 This replaces the current first-party dependence on `StatusResponse` as the
 active observation seam in `SPEC.md` §§4.6.1 and 7.5 and refines §7.5.0.

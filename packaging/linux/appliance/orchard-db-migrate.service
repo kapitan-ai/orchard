@@ -1,0 +1,14 @@
+[Unit]
+Description=Orchard exclusive database migration gate
+Documentation=https://github.com/kapitan-ai/orchard
+Requires=orchard-postgresql.service
+After=orchard-postgresql.service
+ConditionPathExists=/etc/orchard/appliance/initialized
+ConditionPathExists=/etc/orchard/postgresql/migration.enabled
+
+[Service]
+Type=oneshot
+User=orchard-db-migrate
+Group=orchard-db-migrate
+ExecStart=/usr/lib/orchard/appliance/orchard-db-migrate
+TimeoutStartSec=90s

@@ -85,7 +85,7 @@ This refines `SPEC.md` §4.1, §10.5, §10.6, and §10.8.
 
 #### Scenario: Successful registration establishes Node identity
 
-- **WHEN** a Node Agent validates the Controller, redeems a valid bundle, and submits a CSR matching the allocated Node id
+- **WHEN** a Node Agent validates the Controller, redeems a valid manual-admission bundle, and submits a CSR matching the allocated Node id
 - **THEN** Orchard atomically consumes the Bootstrap Token
 - **AND** Orchard issues a Node Certificate bound to that Node id
 - **AND** Orchard transitions the Node from `provisioned` to `registered`
@@ -117,18 +117,33 @@ This refines `SPEC.md` §3.7, §4.4, §10.5, and §12.7.
 - **THEN** Orchard refuses the retry
 - **AND** Orchard does not replace or add Node Certificate state
 
-### Requirement: Registration Does Not Imply Admission
+### Requirement: Registration Does Not Implicitly Confer Admission
 
-Successful Node registration SHALL leave the Node non-schedulable in `registered` state until explicit administrator Node Admission succeeds.
+Successful Node registration SHALL leave the Node non-schedulable in
+`registered` state until explicit administrator Node Admission succeeds.
+Manual admission SHALL remain the default. A separately accepted bundle-scoped
+preauthorization MAY allow one exact Enrollment redemption to commit
+registration and admission as one Controller-owned operation only when the
+administrator already previewed and confirmed the complete immutable admission
+intent and every current predicate is revalidated. Bundle possession,
+certificate issuance, locality, or Controller mode alone SHALL NOT imply
+admission.
 Admission SHALL reuse the shared Action Preview, leader-only write gate, inventory, trust, pool, policy, confirmation, and cluster-scoped audit contracts.
 A fresh healthy authenticated Runtime Endpoint observation SHALL advance `admitted -> active` only after admission.
 This refines `SPEC.md` §4.2 through §4.6, §5.5, §7.4.1, and §11.9.
 
 #### Scenario: Registered Node waits for approval
 
-- **WHEN** a Node completes certificate-backed registration
+- **WHEN** a Node completes certificate-backed registration without a successfully redeemed current admission preauthorization
 - **THEN** Console and CLI show the Node as registered and pending admission
 - **AND** the scheduler and queue consume no capacity from that Node
+
+#### Scenario: Preauthorized Enrollment admits atomically
+
+- **WHEN** an exact bundle-scoped admission preauthorization and every bound admission predicate remain current at successful Enrollment redemption
+- **THEN** Orchard commits registration and admission under the separately accepted preauthorization contract
+- **AND** no intermediate committed `registered` state becomes schedulable
+- **AND** activation still waits for fresh healthy authenticated Runtime Endpoint evidence
 
 #### Scenario: Admission activates only after authenticated health
 

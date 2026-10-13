@@ -1,0 +1,31 @@
+[Unit]
+Description=Orchard source-development Controller
+Requires=orchard-db-migrate.service
+After=network-online.target orchard-db-migrate.service
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Service]
+Type=simple
+User=orchard-controller
+Group=orchard-controller
+EnvironmentFile=/etc/orchard/controller/controller.env
+ExecStartPre=+/opt/orchard/source/bin/source-dev-role-guard controller
+ExecStart=/opt/orchard/source/bin/dev-controller
+Slice=orchard-control.slice
+MemoryHigh=4G
+MemoryMax=6G
+TasksMax=2048
+LimitNOFILE=65536
+RuntimeDirectory=orchard-controller
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/orchard/controller /var/log/orchard/controller /run/orchard-controller

@@ -15,7 +15,7 @@
 
 - [x] 3.1 Implement bounded provider-neutral CPU, memory, disk, OS, kernel, and network observations.
 - [x] 3.2 Implement separate NVIDIA and AMD accelerator observations with stable identities and no allocation authority.
-- [ ] 3.3 Prove certificate renewal/revocation, Peer Grant rotation, private-network reconnect/backoff, local secret permissions, and stale-session fail-closed behavior.
+- [x] 3.3 Prove certificate renewal/revocation, Peer Grant rotation, private-network reconnect/backoff, local secret permissions, and stale-observation fail-closed behavior through the accepted KAP-82 implementation and bounded single-host matrix; real mixed-host acceptance remains task 4.3.
 - [ ] 3.4 Implement health, logs, metrics, lifecycle receipts, inventory snapshots, and redacted offline diagnostics with deterministic cleanup.
 
 ## 4. Custody and compatibility

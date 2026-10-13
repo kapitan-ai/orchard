@@ -1,0 +1,10 @@
+[Unit]
+Description=Orchard Ubuntu single-host source-development composition
+Requires=orchard-postgresql.service orchard-db-migrate.service orchard-controller.service
+Wants=orchard-node-agent.service
+After=orchard-postgresql.service orchard-db-migrate.service orchard-controller.service orchard-node-agent.service
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+RefuseManualStart=yes
+
+[Install]
+WantedBy=multi-user.target

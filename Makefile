@@ -1,4 +1,4 @@
-.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version macos-native-helpers macos-native-test-helpers format compile credo dialyzer test cover check-elixir
+.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version source-dev-installation-test source-dev-postgresql-test source-dev-lifecycle-test macos-native-helpers macos-native-test-helpers format compile credo dialyzer test cover check-elixir
 
 MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
 
@@ -11,6 +11,9 @@ help:
 	  '  make dev-node-agent Run source-dev node-agent host' \
 	  '  make openspec       Run pinned OpenSpec validation' \
 	  '  make validate-product-version Validate Product Version consistency' \
+	  '  make source-dev-installation-test Test the inert Ubuntu source foundation' \
+	  '  make source-dev-postgresql-test Test the isolated Ubuntu PostgreSQL lifecycle' \
+	  '  make source-dev-lifecycle-test Test the integrated Ubuntu source lifecycle' \
 	  '  make macos-native-helpers Build macOS helpers for source development' \
 	  '  make macos-native-test-helpers Build macOS helpers for Mix tests' \
 	  '  make format         Run Elixir formatter' \
@@ -48,6 +51,15 @@ openspec:
 
 validate-product-version:
 	mise exec -- elixir scripts/validate-product-version.exs
+
+source-dev-installation-test:
+	scripts/test-source-dev-installation.sh
+
+source-dev-postgresql-test:
+	scripts/test-source-dev-postgresql.sh
+
+source-dev-lifecycle-test:
+	scripts/test-source-dev-lifecycle.sh
 
 macos-native-helpers:
 	scripts/build-macos-native-helpers.sh --output _build/dev/lib/orchard_cli/priv

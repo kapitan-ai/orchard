@@ -1,0 +1,29 @@
+[Unit]
+Description=Orchard source-development managed PostgreSQL 16 cluster
+After=local-fs.target
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+ConditionPathExists=/var/lib/postgresql/16/orchard/PG_VERSION
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/orchard/postgresql/lifecycle.env
+ExecStart=/opt/orchard/source/bin/orchard-source-postgresql start
+ExecStop=/opt/orchard/source/bin/orchard-source-postgresql stop
+RemainAfterExit=yes
+Slice=orchard-database.slice
+MemoryHigh=6G
+MemoryMax=8G
+TasksMax=2048
+LimitNOFILE=65536
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/orchard/install /var/lib/postgresql/16/orchard /run/postgresql /var/log/orchard/postgresql
+RestrictSUIDSGID=yes
+LockPersonality=yes

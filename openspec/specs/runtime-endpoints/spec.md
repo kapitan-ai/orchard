@@ -37,6 +37,9 @@ Orchard SHALL validate first-party BEAM Distribution guardrails before productio
 First-party Orchard Runtime Endpoints MAY use BEAM Distribution as a default-off live communication and monitoring layer between admitted Elixir services.
 Production BEAM Distribution MUST be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
+Reconnect SHALL restore authenticated BEAM reachability plus a fresh accepted observation for the same persisted Node and Controller IDs.
+It SHALL use the currently authorized certificate and active exact pair-grant generations with bounded backoff; after a committed cutover, only its successor generations are current.
+It SHALL NOT add outbound WSS/HTTP2, NAT or proxy traversal, public remote-session ingress, operation replay, output resumption, a durable session identity, or automatic gRPC inference fallback.
 This changes the base `SPEC.md` section 1.2 language that forbids distributed Erlang across machines and requires all cross-node control traffic to use gRPC over mTLS.
 
 #### Scenario: First-party BEAM endpoint is enabled
@@ -50,10 +53,45 @@ This changes the base `SPEC.md` section 1.2 language that forbids distributed Er
 - **THEN** the node identity is validated as a UUID
 - **THEN** scheduler and dispatch trust the identity only when observed endpoint metadata matches the configured identity
 
+#### Scenario: First-party BEAM endpoint reconnects without a cutover
+- **WHEN** current unchanged credentials remain authorized and the trusted private-network target becomes reachable
+- **THEN** the same persisted Node and Controller identities may restore authenticated BEAM reachability with bounded backoff
+- **AND** availability returns only after a fresh current-connection observation is accepted
+
 #### Scenario: External endpoint remains outside BEAM mesh
 - **WHEN** a future provider-backed Runtime Endpoint is configured
 - **THEN** it integrates through a Runtime Endpoint adapter
 - **THEN** it does not join first-party BEAM Distribution
+
+### Requirement: Colocated Production BEAM Retains Exact Pair Authorization
+
+The Ubuntu single-host profile SHALL use the enrolled Production BEAM Operating
+Model between its Controller and local Node Agent.
+Both canonical names SHALL contain their distinct complete UUID and the host's
+validated stable non-loopback RFC1918 IPv4 address.
+The relationship SHALL require exact current Controller and Node Certificates,
+Node Admission, trusted inventory, one active certificate-bound scoped Peer
+Grant, current local and connection generations, restricted listeners, forced
+disconnect obligations, and a fresh accepted Runtime Endpoint Observation.
+Loopback identity, localhost trust, a static or shared cookie, certificate-only
+authorization, address-only trust, and automatic gRPC fallback MUST NOT satisfy
+any requirement.
+KAP-27 outbound-session semantics MUST NOT be introduced.
+Authenticated topology and separation implementation and qualification SHALL
+remain held until real KAP-84 mixed-host evidence and their separately
+authorized gates pass.
+
+#### Scenario: Colocated BEAM authentication succeeds
+
+- **WHEN** both services use their trusted private-address canonical names and every current certificate, admission, Peer Grant, generation, and network gate passes
+- **THEN** the Controller may accept a fresh Runtime Endpoint Observation from the local Node
+- **AND** ordinary scheduler and dispatch eligibility remains independently enforced
+
+#### Scenario: BEAM operation fails on the local host
+
+- **WHEN** a same-host BEAM Runtime Endpoint operation fails before, during, or after ambiguous acceptance
+- **THEN** the failure remains visible on the BEAM path
+- **AND** Orchard does not retry that operation through the gRPC compatibility adapter
 
 ### Requirement: Postgres Durable Runtime Truth
 Postgres SHALL remain Orchard's durable persistence and coordination store for inventory, lifecycle state, Runtime Endpoint Observations, request state, scheduling decisions, and operator-visible history.
@@ -72,6 +110,9 @@ This preserves the durable coordination model described in `SPEC.md` sections 1.
 ### Requirement: Runtime Endpoint Observations
 The Controller SHALL record Runtime Endpoint Observations as durable snapshots of endpoint status, capability, availability, Placement Capacity, and placement signals.
 Runtime Endpoint Observations SHALL be transport-independent.
+For an authenticated first-party BEAM endpoint, observation acceptance SHALL capture current certificate, local-identity, Peer Grant, and connection generations before the operation.
+The authenticated response SHALL carry the random 128-bit process-ephemeral incarnation of its exact connection; before durable commit, the Controller SHALL revalidate the captured authority and require that incarnation to belong to the currently authenticated connection.
+A result from a disconnected, superseded, restarted, reauthenticated, or replaced connection SHALL be stale even when the persisted Node ID and BEAM name are unchanged.
 This replaces the current first-party dependence on `StatusResponse` as the active observation seam in `SPEC.md` sections 4.6.1 and 7.5.
 
 #### Scenario: First-party status is observed
@@ -86,6 +127,11 @@ This replaces the current first-party dependence on `StatusResponse` as the acti
 - **WHEN** a BEAM Runtime Endpoint Observation is recorded from a target that cannot resolve back to the same persisted node identity
 - **THEN** the Controller does not publish queue capacity from that observation
 - **THEN** stale queue capacity sources for the unresolved target remain unavailable for promotion
+
+#### Scenario: Observation completes after connection replacement
+- **WHEN** a status operation began on a connection that was disconnected or superseded before observation commit
+- **THEN** the Controller rejects the result as stale
+- **AND** reconnect requires a new authenticated observation without replaying the old operation
 
 ### Requirement: Bounded Aggregate Runtime Capacity Evidence
 Orchard SHALL persist at most one current aggregate runtime capacity evidence row per admitted Node.

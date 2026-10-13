@@ -1,0 +1,12 @@
+[Unit]
+Description=Orchard source-development lifecycle helper boundary
+Before=slices.target
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes
+MemoryMax=512M
+TasksMax=256

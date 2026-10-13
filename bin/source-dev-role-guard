@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+role=${1:-}
+
+fail() {
+  printf 'orchard-source-role-guard: %s\n' "$1" >&2
+  exit "${2:-78}"
+}
+
+case "$role" in
+  controller|node-agent) ;;
+  *) fail 'usage: source-dev-role-guard controller|node-agent' 64 ;;
+esac
+
+root=${ORCHARD_SOURCE_DEV_ROOT:-}
+if [[ -n "$root" ]]; then
+  [[ "$root" == /* && "${ORCHARD_SOURCE_DEV_TESTING:-0}" == "1" ]] ||
+    fail 'relocated roots require an absolute ORCHARD_SOURCE_DEV_ROOT and ORCHARD_SOURCE_DEV_TESTING=1' 64
+else
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || fail 'role preflight must run as root'
+fi
+
+prefix=${root%/}
+manifest="$prefix/var/lib/orchard/install/manifest.json"
+composition="$prefix/etc/orchard/source-dev/composition.json"
+activation="$prefix/etc/orchard/source-dev/activation-authorized.json"
+
+safe_file() {
+  local path=$1 expected_owner=root file_owner
+  [[ -z "$root" ]] || expected_owner=$(id -un)
+  [[ -f "$path" && ! -L "$path" && $(stat -Lc %h "$path") == 1 ]] ||
+    fail "required authority file is missing or unsafe: $path"
+  local file_mode
+  file_mode=$(stat -Lc %a "$path")
+  file_owner=$(stat -Lc %U "$path")
+  [[ "$file_owner" == "$expected_owner" && $((8#$file_mode & 0022)) -eq 0 ]] ||
+    fail "authority file has unsafe owner or writable mode: $path"
+}
+
+safe_authority_path() {
+  local path=$1 expected_owner=$2 actual_owner
+  [[ -e "$path" && ! -L "$path" ]] || fail "required role authority path is missing or unsafe: $path"
+  if [[ -f "$path" ]]; then
+    [[ $(stat -Lc %h "$path") == 1 ]] || fail "role authority file has multiple links: $path"
+  elif [[ ! -d "$path" ]]; then
+    fail "role authority path must be a file or directory: $path"
+  fi
+  local path_mode
+  path_mode=$(stat -Lc %a "$path")
+  actual_owner=$(stat -Lc %U "$path")
+  [[ "$actual_owner" == "$expected_owner" && $((8#$path_mode & 0022)) -eq 0 ]] ||
+    fail "role authority path has unsafe owner or writable mode: $path"
+}
+
+validate_launch_manifest() {
+  local expected_role=$1 path=$2 controller_id node_id controller_name node_name optfile
+  controller_id=$(jq -r '.controller.id' "$composition")
+  node_id=$(jq -r '.node.id' "$composition")
+  controller_name=$(jq -r '.controller.beam_name' "$composition")
+  node_name=$(jq -r '.node.beam_name' "$composition")
+  optfile=${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}
+  jq -e \
+    --arg role "$expected_role" \
+    --arg controller "$controller_id" \
+    --arg node "$node_id" \
+    --arg controller_name "$controller_name" \
+    --arg node_name "$node_name" \
+    --arg optfile "$optfile" '
+    .schema_version == 1 and .role == $role and
+    (.generation | type == "number" and . > 0) and
+    (.contract_version | type == "number" and . > 0) and
+    (.grant_id | type == "string" and length > 0) and
+    .controller_id == $controller and .node_id == $node and
+    .controller_beam_name == $controller_name and .node_beam_name == $node_name and
+    .optfile_path == $optfile and
+    (.optfile_digest_sha256 | type == "string" and length == 64)
+  ' "$path" >/dev/null || fail "$role Distribution launch manifest does not bind the prepared composition"
+  [[ "$(sha256sum "$prefix$optfile" | cut -d ' ' -f1)" == "$(jq -r '.optfile_digest_sha256' "$path")" ]] ||
+    fail "$role TLS Distribution options differ from the launch manifest"
+}
+
+for path in "$manifest" "$composition" "$activation"; do
+  safe_file "$path"
+done
+
+installation_uuid=$(jq -r '.installation_uuid' "$manifest")
+composition_sha=$(sha256sum "$composition" | cut -d ' ' -f1)
+jq -e \
+  --arg installation "$installation_uuid" \
+  --arg composition_sha "$composition_sha" '
+  .schema_version == 1 and .installation_uuid == $installation and
+  .composition_sha256 == $composition_sha and .authorized == true and
+  .scope == "authenticated_same_host_start"
+' "$activation" >/dev/null || fail 'activation authorization is stale or outside the same-host scope'
+
+[[ "${ORCHARD_SOURCE_DEV_COMPOSITION:-}" == 1 ]] || fail 'composition environment is absent'
+[[ "${ORCHARD_INSTALLATION_UUID:-}" == "$installation_uuid" ]] || fail 'installation identity differs from the prepared composition'
+[[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-}" == beam ]] || fail 'Runtime Endpoint transport must be authenticated BEAM'
+[[ -z "${ORCHARD_BEAM_COOKIE_FILE+x}" ]] || fail 'shared/static BEAM cookies are forbidden'
+[[ -z "${ORCHARD_RUNTIME_ENDPOINT_TARGETS:-}" ]] || fail 'static BEAM targets are forbidden'
+[[ -z "${ORCHARD_RUNTIME_CLIENT_TARGETS:-}" ]] || fail 'gRPC Runtime Endpoint fallback targets are forbidden'
+
+expected_name=$(jq -r --arg role "$role" 'if $role == "controller" then .controller.beam_name else .node.beam_name end' "$composition")
+[[ "${ORCHARD_BEAM_NODE_NAME:-}" == "$expected_name" ]] || fail "$role BEAM identity differs from the prepared composition"
+
+case "$role" in
+  controller)
+    expected_authority_owner=orchard-controller
+    [[ "${ORCHARD_CONTROLLER_ID:-}" == "$(jq -r '.controller.id' "$composition")" ]] || fail 'Controller identity differs from the prepared composition'
+    [[ "${ORCHARD_BEAM_PEER_GRANTS_ENABLED:-}" == true && "${ORCHARD_BEAM_PEER_GRANT_MODE:-}" == distributed ]] ||
+      fail 'Controller requires distributed pair-scoped Peer Grants'
+    [[ "${ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK:-}" == false ]] || fail 'static Runtime Endpoint fallback must be disabled'
+    private_ipv4=$(jq -r '.host.private_ipv4' "$composition")
+    [[ "${ORCHARD_CONTROLLER_MEMBERSHIP_HOST:-}" == "$private_ipv4" &&
+       "${ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST:-}" == "$private_ipv4" &&
+       "${ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT:-}" == 8444 &&
+       "${ORCHARD_BEAM_DIST_PORT_MIN:-}" == 52171 && "${ORCHARD_BEAM_DIST_PORT_MAX:-}" == 52171 ]] ||
+      fail 'Controller listener identity or port differs from the prepared composition'
+    [[ "${ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH:-}" == /var/lib/orchard/controller/beam/authorization-root &&
+       "${ORCHARD_NODE_TRUST_ROOT:-}" == /var/lib/orchard/controller/beam/node-trust &&
+       "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" == /var/lib/orchard/controller/beam/launch.json &&
+       "${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}" == /var/lib/orchard/controller/beam/ssl-dist.conf ]] ||
+      fail 'Controller authority custody path differs from the prepared composition'
+    required_paths=(
+      "${ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH:-}"
+      "${ORCHARD_NODE_TRUST_ROOT:-}"
+      "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}"
+      "${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}"
+    )
+    ;;
+  node-agent)
+    expected_authority_owner=orchard-node
+    [[ "${ORCHARD_NODE_ID:-}" == "$(jq -r '.node.id' "$composition")" ]] || fail 'Node identity differs from the prepared composition'
+    [[ "${ORCHARD_NODE_AGENT_GRPC_LISTENER_ENABLED:-}" == false ]] || fail 'same-host gRPC Runtime Endpoint listener must be disabled'
+    [[ "${ORCHARD_NODE_AGENT_LISTEN_HOST:-}" == "$(jq -r '.host.private_ipv4' "$composition")" &&
+       "${ORCHARD_NODE_AGENT_LISTEN_PORT:-}" == 9444 && "${ORCHARD_RUNTIME_CLIENT_PORT:-}" == 9444 &&
+       "${ORCHARD_BEAM_DIST_PORT_MIN:-}" == 52172 && "${ORCHARD_BEAM_DIST_PORT_MAX:-}" == 52172 ]] ||
+      fail 'Node listener identity or port differs from the prepared composition'
+    [[ "${ORCHARD_NODE_IDENTITY_ROOT:-}" == /var/lib/orchard/node/identity &&
+       "${ORCHARD_NODE_IDENTITY_PATH:-}" == /var/lib/orchard/node/identity/node-id &&
+       "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" == /var/lib/orchard/node/beam/peer-grant.json &&
+       "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" == /var/lib/orchard/node/beam/launch.json &&
+       "${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}" == /var/lib/orchard/node/beam/ssl-dist.conf ]] ||
+      fail 'Node authority custody path differs from the prepared composition'
+    required_paths=(
+      "${ORCHARD_NODE_IDENTITY_ROOT:-}"
+      "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}"
+      "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}"
+      "${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}"
+    )
+    ;;
+esac
+
+if [[ -n "$root" ]]; then
+  expected_authority_owner=$(id -un)
+fi
+
+for path in "${required_paths[@]}"; do
+  [[ -n "$path" && "$path" == /* ]] || fail "$role authority path must be absolute"
+  safe_authority_path "$prefix$path" "$expected_authority_owner"
+done
+
+[[ -s "$prefix${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}" ]] || fail "$role TLS Distribution options are empty"
+validate_launch_manifest "${role//-/_}" "$prefix${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}"
+
+if [[ "$role" == node-agent ]]; then
+  node_identity_path="$prefix${ORCHARD_NODE_IDENTITY_PATH:-}"
+  safe_authority_path "$node_identity_path" "$expected_authority_owner"
+  [[ "$(tr -d '\r\n' < "$node_identity_path")" == "${ORCHARD_NODE_ID:-}" ]] ||
+    fail 'Node identity custody differs from the prepared composition'
+  jq -e --arg controller "$(jq -r '.controller.id' "$composition")" '
+    (.grant_id | type == "string" and length > 0) and
+    (.generation | type == "number" and . > 0) and
+    .controller_id == $controller and
+    (.control_endpoint | type == "string" and startswith("https://"))
+  ' "$prefix${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" >/dev/null ||
+    fail 'Node Peer Grant descriptor does not bind the prepared Controller'
+fi

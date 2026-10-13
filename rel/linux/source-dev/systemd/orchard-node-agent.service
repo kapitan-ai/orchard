@@ -1,0 +1,32 @@
+[Unit]
+Description=Orchard source-development Node Agent
+Requires=orchard-controller.service
+After=network-online.target orchard-controller.service
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Service]
+Type=simple
+User=orchard-node
+Group=orchard-node
+EnvironmentFile=/etc/orchard/node/node-agent.env
+ExecStartPre=+/opt/orchard/source/bin/source-dev-role-guard node-agent
+ExecStart=/opt/orchard/source/bin/dev-node-agent
+Slice=orchard.slice
+Delegate=yes
+KillMode=control-group
+MemoryMin=1G
+TasksMax=8192
+LimitNOFILE=65536
+RuntimeDirectory=orchard-node orchard-worker
+RuntimeDirectoryMode=0710
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/orchard/node /var/lib/orchard/models /var/lib/orchard/worker /var/log/orchard/node /var/log/orchard/worker /run/orchard-node /run/orchard-worker

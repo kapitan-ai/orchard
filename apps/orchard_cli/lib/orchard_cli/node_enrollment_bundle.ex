@@ -20,6 +20,8 @@ defmodule OrchardCLI.NodeEnrollmentBundle do
           https_trust_spki_sha256: String.t(),
           issued_at: DateTime.t(),
           node_id: Ecto.UUID.t(),
+          preauthorization_digest: String.t() | nil,
+          preauthorization_id: Ecto.UUID.t() | nil,
           runtime_trust_spki_sha256: String.t(),
           token: String.t()
         }
@@ -52,7 +54,8 @@ defmodule OrchardCLI.NodeEnrollmentBundle do
          {:ok, expires_at} <- timestamp(bundle["expires_at"]),
          :ok <- validate_time_window(issued_at, expires_at, now),
          {:ok, controller} <- controller(bundle["controller"], cluster_id),
-         :ok <- validate_token(bundle["token"]) do
+         :ok <- validate_token(bundle["token"]),
+         {:ok, preauthorization} <- preauthorization(bundle["preauthorization"]) do
       {:ok,
        %{
          enrollment_id: enrollment_id,
@@ -66,7 +69,9 @@ defmodule OrchardCLI.NodeEnrollmentBundle do
          controller_id: controller.controller_id,
          controller_uri_san: controller.controller_uri_san,
          runtime_trust_spki_sha256: controller.runtime_trust_spki_sha256,
-         token: bundle["token"]
+         token: bundle["token"],
+         preauthorization_id: preauthorization.id,
+         preauthorization_digest: preauthorization.digest
        }}
     end
   end
@@ -194,4 +199,18 @@ defmodule OrchardCLI.NodeEnrollmentBundle do
   end
 
   defp validate_token(_value), do: {:error, :invalid_enrollment_bundle}
+
+  defp preauthorization(nil), do: {:ok, %{id: nil, digest: nil}}
+
+  defp preauthorization(%{"id" => id, "digest" => "sha256-" <> encoded = digest}) do
+    with {:ok, id} <- uuid(id),
+         {:ok, decoded} <- Base.url_decode64(encoded, padding: false),
+         true <- byte_size(decoded) == 32 do
+      {:ok, %{id: id, digest: digest}}
+    else
+      _reason -> {:error, :invalid_enrollment_bundle}
+    end
+  end
+
+  defp preauthorization(_value), do: {:error, :invalid_enrollment_bundle}
 end

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "profile": "ubuntu_24_04_x86_64_single_host",
+  "architecture": "amd64",
+  "host": {
+    "distribution": "ubuntu",
+    "release": "24.04",
+    "kernel": ">= 6.8 (Ubuntu 24.04 line)",
+    "libc": "glibc >= 2.39",
+    "init": "systemd >= 255",
+    "cgroup": "v2"
+  },
+  "postgresql": {
+    "major": 16,
+    "packages": [
+      {"name": "postgresql-16", "version": "16.15-0ubuntu0.24.04.1"},
+      {"name": "postgresql-client-16", "version": "16.15-0ubuntu0.24.04.1"},
+      {"name": "postgresql-common", "version": "257build1.1"},
+      {"name": "ssl-cert", "version": "1.1.2ubuntu1"}
+    ],
+    "closure": "postgresql-16-closure.json",
+    "install_policy": "lifecycle_owned_no_automatic_cluster"
+  },
+  "node_profile": "ubuntu_24_04_x86_64_node",
+  "excluded": [
+    "database cluster initialization",
+    "service activation",
+    "Node enrollment or admission",
+    "Worker provider payload",
+    "model payload",
+    "capacity publication"
+  ]
+}

@@ -95,23 +95,25 @@ while attempts continue at the bounded ceiling.
 No reconnect state identifies or resumes an inference operation. Ambiguous
 operations retain their existing failure and reconciliation contracts.
 
-### Use native connection identity before adding a field
+### Fence each authenticated connection
 
-The first implementation tests delayed observations across disconnect,
-certificate/grant cutover, Node restart, and Controller restart. Acceptance
-requires the Runtime Endpoint adapter to capture native BEAM connection
-identity and current credential/grant generations before the operation and
-compare them again before committing its observation.
-The matrix includes connection replacement after response receipt but before
-durable commit, reconnect with unchanged credentials, Node restart, and
-Controller restart.
+The required deterministic matrix tested delayed observations across
+disconnect, unchanged-authority reconnect, certificate/grant cutover, Node
+restart, and Controller restart. It proved that the native Node identity and
+current credential/grant generations remain unchanged across an ordinary
+reconnect and cannot distinguish a predecessor response at durable commit.
+Independent review also proved that one value per Agent boot cannot fence two
+connections in the same boot.
 
-If stock OTP cannot expose a stable-enough connection identity to make those
-tests pass, implementation stops. A follow-up OpenSpec amendment may propose a
-random ephemeral Agent-boot incarnation carried only by authenticated
-observations. No field is added by this proposal, and any later field is barred
-from becoming durable Node identity, a replay key, a session ID, or a Worker
-allocation incarnation.
+The accepted follow-up therefore generates one random 128-bit
+process-ephemeral incarnation per authenticated BEAM connection and carries it
+only in authenticated observations. The Controller captures it with the exact
+credential and grant generations and revalidates all of them before durable
+commit. Disconnect and authority loss clear the current incarnation;
+Controller restart begins without one and requires fresh authentication plus a
+fresh observation. The value is never persisted and cannot become durable Node
+identity, authority by itself, a replay key, a session ID, operation identity,
+or Worker allocation incarnation.
 
 ### Version skew is capability refusal
 
@@ -137,21 +139,21 @@ observation-ineligible. KAP-84 owns real macOS/Linux qualification.
 
 ## Migration Plan
 
-Land and accept this contract first. Then implement transport-neutral
-certificate persistence and authority checks, followed by Peer Grant staging
-and cutover, reconnect supervision, stale-observation tests, and diagnostics.
-Keep each behavior default-off until its complete failure matrix passes.
+The accepted contract and implementation landed in separately reviewable
+commits. Transport-neutral certificate persistence and authority checks precede
+Peer Grant staging and cutover, reconnect supervision, the accepted connection
+incarnation fence, stale-observation tests, and diagnostics. Production use
+remains unavailable until the applicable platform and KAP-84 evidence passes.
 
 The accepted `add-linux-node-platform-contract` change is an archive/sync
-predecessor because this change modifies its `linux-node-platform` capability.
+predecessor because this change modifies its `linux-node-platform` capability;
+that predecessor is now synchronized into the main capability specs.
 
-Do not add an ephemeral boot-incarnation field unless the required native BEAM
-tests first demonstrate a concrete stale-observation escape and a reviewed
-OpenSpec amendment is accepted.
+## Remaining qualification gate
 
-## Open Questions
-
-Repository Owner acceptance is required for the proposed seven-day certificate
-overlap, five-minute clock uncertainty, retained 30-day renewal lead, forced
-disconnect at certificate expiry, and reconnect backoff constants before source
-implementation.
+The seven-day certificate overlap, five-minute clock uncertainty, retained
+30-day renewal lead, forced expiry disconnect, bounded reconnect policy, and
+per-authenticated-connection incarnation are accepted and implemented. KAP-84
+still requires real macOS Controller `N` against each exact Linux candidate at
+`N` and `N-1`. Static validation and the retained single-host matrix do not
+satisfy that gate.

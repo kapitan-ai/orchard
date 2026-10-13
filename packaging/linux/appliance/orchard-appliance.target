@@ -1,0 +1,10 @@
+[Unit]
+Description=Orchard Ubuntu single-host appliance
+Documentation=https://github.com/kapitan-ai/orchard
+Requires=orchard-postgresql.service orchard-db-migrate.service orchard-controller.service
+Wants=orchard-node-agent.service
+After=orchard-postgresql.service orchard-db-migrate.service orchard-controller.service orchard-node-agent.service
+ConditionPathExists=/etc/orchard/appliance/initialized
+
+[Install]
+WantedBy=multi-user.target

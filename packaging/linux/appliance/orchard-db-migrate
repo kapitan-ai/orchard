@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+printf 'orchard-db-migrate: PostgreSQL lifecycle is not implemented by the inert KAP-98 foundation\n' >&2
+exit 78

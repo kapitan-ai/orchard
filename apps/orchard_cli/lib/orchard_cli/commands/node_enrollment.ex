@@ -1,6 +1,7 @@
 defmodule OrchardCLI.Commands.NodeEnrollment do
   @moduledoc false
 
+  alias Orchard.NodeAdmissionPreauthorizations
   alias Orchard.NodeEnrollmentBundle
   alias Orchard.NodeEnrollments
   alias OrchardCLI.ExclusiveOutput
@@ -25,15 +26,67 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
   defp parse_create_args(args) do
     {options, positional, invalid} =
       OptionParser.parse(args,
-        strict: [output: :string, expires_in: :string]
+        strict: [
+          output: :string,
+          expires_in: :string,
+          admit_on_join: :boolean,
+          pool_id: :string,
+          pool_revision: :string,
+          routing_policy_id: :string,
+          routing_policy_revision: :string,
+          controller_dispatch_ceiling: :integer,
+          capacity_policy_reason: :string,
+          preview_output: :string,
+          preview_file: :string,
+          confirm_digest: :string,
+          json: :boolean
+        ]
       )
 
     with :ok <- reject_parse_errors(positional, invalid),
          {:ok, output_path} <- require_single_output(options),
-         {:ok, expiry_seconds} <- parse_expiry(Keyword.get(options, :expires_in)) do
-      {:ok, %{expiry_seconds: expiry_seconds, output_path: output_path}}
+         {:ok, expiry_seconds} <- parse_expiry(Keyword.get(options, :expires_in)),
+         {:ok, admission} <- parse_admission_options(options) do
+      {:ok,
+       Map.merge(admission, %{
+         expiry_seconds: expiry_seconds,
+         output_path: output_path,
+         preview_output: Keyword.get(options, :preview_output),
+         preview_file: Keyword.get(options, :preview_file),
+         confirm_digest: Keyword.get(options, :confirm_digest),
+         json?: Keyword.get(options, :json, false)
+       })}
     end
   end
+
+  defp parse_admission_options(options) do
+    admit? = Keyword.get(options, :admit_on_join, false)
+
+    attrs = %{
+      admit_on_join: admit?,
+      pool_id: Keyword.get(options, :pool_id, "general"),
+      pool_revision: Keyword.get(options, :pool_revision, "1"),
+      routing_policy_id: Keyword.get(options, :routing_policy_id),
+      routing_policy_revision: Keyword.get(options, :routing_policy_revision, "1"),
+      controller_dispatch_ceiling: Keyword.get(options, :controller_dispatch_ceiling, 1),
+      capacity_policy_reason: Keyword.get(options, :capacity_policy_reason)
+    }
+
+    valid? =
+      not admit? or
+        (present?(attrs.routing_policy_id) and present?(attrs.capacity_policy_reason) and
+           attrs.controller_dispatch_ceiling >= 0)
+
+    if valid? do
+      {:ok, attrs}
+    else
+      {:error,
+       "Error: --admit-on-join requires --routing-policy-id and --capacity-policy-reason; --controller-dispatch-ceiling must be non-negative.\n\n#{usage()}",
+       1}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp reject_parse_errors([], []), do: :ok
 
@@ -86,14 +139,42 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     attrs = %{
       creator_id: "local-orchardctl",
       creator_type: "operator",
+      admit_on_join: options.admit_on_join,
+      capacity_policy_reason: options.capacity_policy_reason,
+      controller_dispatch_ceiling: options.controller_dispatch_ceiling,
       display_name: nil,
       expiry_seconds: options.expiry_seconds,
+      pool_id: options.pool_id,
+      pool_revision: options.pool_revision,
+      routing_policy_id: options.routing_policy_id,
+      routing_policy_revision: options.routing_policy_revision,
       surface: "local_orchardctl"
     }
 
-    case bundle_issuer_impl().issue(attrs) do
-      {:ok, bundle} ->
-        publish_bundle(output, reservation, bundle)
+    issue_with_admission_preview(output, reservation, attrs, options)
+  end
+
+  defp issue_with_admission_preview(output, reservation, %{admit_on_join: false} = attrs, options) do
+    publish_issued_bundle(output, reservation, bundle_issuer_impl().issue(attrs), options)
+  end
+
+  defp issue_with_admission_preview(output, reservation, attrs, options) do
+    now = DateTime.utc_now()
+
+    case resolve_admission_preview(attrs, options, now) do
+      {:ok, preview} when options.confirm_digest == preview.digest ->
+        result =
+          bundle_issuer_impl().issue(attrs,
+            now: now,
+            preauthorization_preview: preview,
+            confirmation_digest: preview.digest
+          )
+
+        publish_issued_bundle(output, reservation, result, options)
+
+      {:ok, preview} ->
+        output.release(reservation)
+        persist_preview_and_require_confirmation(output, preview, options)
 
       {:error, reason} ->
         output.release(reservation)
@@ -101,14 +182,77 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     end
   end
 
-  defp publish_bundle(output, reservation, bundle) do
-    publish_encoded_bundle(output, reservation, bundle.enrollment.id, bundle.contents)
+  defp resolve_admission_preview(attrs, %{preview_file: nil}, now) do
+    bundle_issuer_impl().preview_admission(attrs, now: now)
   end
 
-  defp publish_encoded_bundle(output, reservation, enrollment_id, contents) do
+  defp resolve_admission_preview(_attrs, %{preview_file: path}, _now) do
+    with {:ok, contents} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(contents) do
+      NodeAdmissionPreauthorizations.restore_preview(decoded)
+    else
+      _reason -> {:error, :invalid_node_admission_preauthorization_preview}
+    end
+  end
+
+  defp persist_preview_and_require_confirmation(output, preview, options) do
+    case maybe_publish_preview(output, preview, options.preview_output) do
+      :ok -> confirmation_required(preview, options.json?)
+      {:error, reason} -> command_error(reason)
+    end
+  end
+
+  defp maybe_publish_preview(_output, _preview, nil), do: :ok
+
+  defp maybe_publish_preview(output, preview, path) do
+    contents =
+      Jason.encode!(NodeAdmissionPreauthorizations.preview_to_map(preview), pretty: true) <> "\n"
+
+    with {:ok, reservation} <- reserve_output(output, path),
+         {:ok, _published} <- output.publish(reservation, contents) do
+      :ok
+    end
+  end
+
+  defp publish_issued_bundle(output, reservation, result, options) do
+    case result do
+      {:ok, bundle} ->
+        publish_bundle(output, reservation, bundle, options)
+
+      {:error, reason} ->
+        output.release(reservation)
+        command_error(reason)
+    end
+  end
+
+  defp publish_bundle(output, reservation, bundle, options) do
+    publish_encoded_bundle(
+      output,
+      reservation,
+      bundle.enrollment.id,
+      bundle.contents,
+      Map.get(bundle, :preauthorization),
+      options
+    )
+  end
+
+  defp publish_encoded_bundle(
+         output,
+         reservation,
+         enrollment_id,
+         contents,
+         preauthorization,
+         options
+       ) do
     case output.publish(reservation, contents) do
       {:ok, published} ->
-        confirm_published_enrollment(output, published, enrollment_id)
+        confirm_published_enrollment(
+          output,
+          published,
+          enrollment_id,
+          preauthorization,
+          options
+        )
 
       {:error, {:publication_failed, :cleanup_complete, _reason}} ->
         mark_publication_failed(enrollment_id)
@@ -123,13 +267,25 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     end
   end
 
-  defp confirm_published_enrollment(output, published, enrollment_id) do
+  defp confirm_published_enrollment(
+         output,
+         published,
+         enrollment_id,
+         preauthorization,
+         options
+       ) do
     case mark_published_issued(enrollment_id) do
       {:ok, _issued} ->
-        publication_success(published.path, enrollment_id)
+        publication_success(published.path, enrollment_id, preauthorization, options)
 
       {:error, _reason} ->
-        reconcile_ambiguous_confirmation(output, published, enrollment_id)
+        reconcile_ambiguous_confirmation(
+          output,
+          published,
+          enrollment_id,
+          preauthorization,
+          options
+        )
     end
   end
 
@@ -153,10 +309,16 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     end
   end
 
-  defp reconcile_ambiguous_confirmation(output, published, enrollment_id) do
+  defp reconcile_ambiguous_confirmation(
+         output,
+         published,
+         enrollment_id,
+         preauthorization,
+         options
+       ) do
     case NodeEnrollments.fetch(enrollment_id) do
       {:ok, %{state: state}} when state in [:issued, :consumed, :revoked, :expired] ->
-        publication_success(published.path, enrollment_id)
+        publication_success(published.path, enrollment_id, preauthorization, options)
 
       {:ok, %{state: state}} when state in [:pending_publication, :output_failed] ->
         handle_publication_failure(output, published, enrollment_id)
@@ -168,10 +330,47 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     end
   end
 
-  defp publication_success(path, enrollment_id) do
+  defp publication_success(path, enrollment_id, preauthorization, %{json?: true}) do
+    {:ok,
+     Jason.encode!(%{
+       "bundle_path" => path,
+       "enrollment_id" => enrollment_id,
+       "preauthorization_id" => preauthorization_id(preauthorization),
+       "status" => "issued"
+     })}
+  end
+
+  defp publication_success(path, enrollment_id, preauthorization, _options) do
+    preauthorization_line =
+      case preauthorization do
+        nil -> ""
+        value -> "\nAdmission preauthorization ID: #{value.id}"
+      end
+
     {:ok,
      "Node Enrollment bundle created at #{path}\n" <>
-       "Enrollment ID: #{enrollment_id}"}
+       "Enrollment ID: #{enrollment_id}" <> preauthorization_line}
+  end
+
+  defp preauthorization_id(nil), do: nil
+  defp preauthorization_id(preauthorization), do: preauthorization.id
+
+  defp confirmation_required(preview, true) do
+    {:error,
+     Jason.encode!(%{
+       "error" => "confirmation_required",
+       "preview" => NodeAdmissionPreauthorizations.preview_to_map(preview),
+       "preview_digest" => preview.digest,
+       "warnings" => preview.warnings
+     }), 2}
+  end
+
+  defp confirmation_required(preview, false) do
+    {:error,
+     "Admission-on-join requires confirmation of the exact saved preview.\n" <>
+       Enum.join(preview.warnings, "\n") <>
+       "\nPreview digest: #{preview.digest}\n" <>
+       "Repeat with --preview-file PATH --confirm-digest #{preview.digest}.", 2}
   end
 
   defp handle_publication_failure(output, reservation, enrollment_id) do
@@ -307,6 +506,9 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
   defp failure_label(:bundle_encoding_failed), do: "the enrollment bundle could not be encoded"
 
   defp usage do
-    "Usage: orchardctl nodes enrollment create --output PATH [--expires-in DURATION]"
+    "Usage: orchardctl nodes enrollment create --output PATH [--expires-in DURATION] " <>
+      "[--admit-on-join --pool-id ID --routing-policy-id ID " <>
+      "--capacity-policy-reason REASON [--controller-dispatch-ceiling N] " <>
+      "(--preview-output PATH | --preview-file PATH --confirm-digest DIGEST)] [--json]"
   end
 end

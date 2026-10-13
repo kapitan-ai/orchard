@@ -8,6 +8,7 @@ defmodule Orchard.NodeEnrollmentBundle do
   """
 
   alias Orchard.EndpointMetadata
+  alias Orchard.NodeAdmissionPreauthorizations
   alias Orchard.NodeEnrollments
   alias Orchard.NodeTrust
   alias Orchard.TransportTLS.CertificateIdentity
@@ -27,6 +28,21 @@ defmodule Orchard.NodeEnrollmentBundle do
           filename: String.t()
         }
 
+  @spec preview_admission(map(), keyword()) ::
+          {:ok, NodeAdmissionPreauthorizations.preview()} | {:error, term()}
+  def preview_admission(attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    with {:ok, attrs} <- validate_attrs(attrs),
+         true <- attrs.admit_on_join,
+         {:ok, trust} <- NodeTrust.public_material() do
+      build_preauthorization_preview(attrs, trust, now, attrs.expiry_seconds)
+    else
+      false -> {:error, :preauthorization_not_requested}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @spec issue(map(), keyword()) :: {:ok, issued_bundle()} | {:error, term()}
   def issue(attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
@@ -36,23 +52,40 @@ defmodule Orchard.NodeEnrollmentBundle do
          {:ok, endpoint} <- controller_https_endpoint(),
          {:ok, _reconciliation} <-
            NodeEnrollments.reconcile_stale_pending_publications(now: now),
+         {:ok, preauthorization_preview} <-
+           preauthorization_preview(attrs, trust, now, attrs.expiry_seconds, opts),
          {:ok, result} <-
            NodeEnrollments.create(
              enrollment_attrs(attrs, trust, now, attrs.expiry_seconds),
-             now: now
+             now: now,
+             preauthorization_preview: preauthorization_preview,
+             preauthorization_confirmation_digest:
+               preauthorization_confirmation_digest(preauthorization_preview, opts)
            ) do
       finalize_issue(result, trust, endpoint, attrs)
     end
   end
+
+  defp preauthorization_confirmation_digest(nil, _opts), do: nil
+
+  defp preauthorization_confirmation_digest(_preview, opts),
+    do: Keyword.get(opts, :confirmation_digest)
 
   @spec validate_attrs(map()) :: {:ok, map()} | {:error, term()}
   def validate_attrs(attrs) when is_map(attrs) do
     normalized = %{
       creator_id: value(attrs, :creator_id),
       creator_type: value(attrs, :creator_type, "operator"),
+      admit_on_join: value(attrs, :admit_on_join, false),
+      bound_predicates: value(attrs, :bound_predicates, %{}),
+      capacity_policy_reason: normalize_optional_text(value(attrs, :capacity_policy_reason)),
+      controller_dispatch_ceiling: value(attrs, :controller_dispatch_ceiling, 1),
       display_name: normalize_optional_text(value(attrs, :display_name)),
       expiry_seconds: value(attrs, :expiry_seconds, @default_expiry_seconds),
       pool_id: normalize_text(value(attrs, :pool_id, "general")),
+      pool_revision: normalize_text(value(attrs, :pool_revision, "1")),
+      routing_policy_id: normalize_optional_text(value(attrs, :routing_policy_id)),
+      routing_policy_revision: normalize_text(value(attrs, :routing_policy_revision, "1")),
       surface: normalize_text(value(attrs, :surface))
     }
 
@@ -61,7 +94,8 @@ defmodule Orchard.NodeEnrollmentBundle do
         validate_expiry(normalized.expiry_seconds),
         validate_display_name(normalized.display_name),
         validate_intent(:pool_id, normalized.pool_id, @pool_id_pattern),
-        validate_intent(:surface, normalized.surface, @surface_pattern)
+        validate_intent(:surface, normalized.surface, @surface_pattern),
+        validate_preauthorization_attrs(normalized)
       ]
       |> Enum.reject(&(&1 == :ok))
       |> Enum.map(fn {:error, error} -> error end)
@@ -104,28 +138,146 @@ defmodule Orchard.NodeEnrollmentBundle do
   end
 
   defp encode_bundle(result, trust, endpoint) do
-    bundle = %{
-      version: 1,
-      enrollment_id: result.enrollment.id,
-      node_id: result.enrollment.node_id,
-      cluster_id: trust.cluster_id,
-      expires_at: DateTime.to_iso8601(result.enrollment.expires_at),
-      issued_at: DateTime.to_iso8601(result.enrollment.issued_at),
-      controller: %{
-        https_endpoint: endpoint.address,
-        https_trust_anchor_pem: endpoint.trust_anchor_pem,
-        https_trust_spki_sha256: endpoint.trust_spki_sha256,
-        id: trust.controller_id,
-        runtime_trust_spki_sha256: trust.ca_spki_fingerprint,
-        uri_san: trust.controller_uri_san
-      },
-      token: result.bootstrap_token
-    }
+    bundle =
+      %{
+        version: 1,
+        enrollment_id: result.enrollment.id,
+        node_id: result.enrollment.node_id,
+        cluster_id: trust.cluster_id,
+        expires_at: DateTime.to_iso8601(result.enrollment.expires_at),
+        issued_at: DateTime.to_iso8601(result.enrollment.issued_at),
+        controller: %{
+          https_endpoint: endpoint.address,
+          https_trust_anchor_pem: endpoint.trust_anchor_pem,
+          https_trust_spki_sha256: endpoint.trust_spki_sha256,
+          id: trust.controller_id,
+          runtime_trust_spki_sha256: trust.ca_spki_fingerprint,
+          uri_san: trust.controller_uri_san
+        },
+        token: result.bootstrap_token
+      }
+      |> maybe_put_preauthorization(result.preauthorization)
 
     case Jason.encode(bundle, pretty: true) do
       {:ok, json} -> validate_bundle_size(json <> "\n")
       {:error, reason} -> {:error, {:bundle_encoding_failed, reason}}
     end
+  end
+
+  defp preauthorization_preview(%{admit_on_join: false}, _trust, _now, _expiry, _opts),
+    do: {:ok, nil}
+
+  defp preauthorization_preview(attrs, trust, now, expiry_seconds, opts) do
+    case Keyword.get(opts, :preauthorization_preview) do
+      nil ->
+        with {:ok, preview} <- build_preauthorization_preview(attrs, trust, now, expiry_seconds),
+             :ok <- validate_confirmation(preview, opts) do
+          {:ok, preview}
+        end
+
+      preview ->
+        with :ok <- validate_supplied_preview(preview, attrs, trust, now, expiry_seconds),
+             :ok <- validate_confirmation(preview, opts) do
+          {:ok, preview}
+        end
+    end
+  end
+
+  defp build_preauthorization_preview(attrs, trust, now, expiry_seconds) do
+    enrollment_id = Ecto.UUID.generate()
+    node_id = Ecto.UUID.generate()
+
+    preview_attrs = %{
+      id: Ecto.UUID.generate(),
+      enrollment_id: enrollment_id,
+      node_id: node_id,
+      cluster_id: trust.cluster_id,
+      issuing_controller_id: trust.controller_id,
+      actor_type: attrs.creator_type,
+      actor_id: attrs.creator_id,
+      expires_at: DateTime.add(now, expiry_seconds, :second),
+      pool_id: attrs.pool_id,
+      pool_revision: attrs.pool_revision,
+      routing_policy_id: attrs.routing_policy_id,
+      routing_policy_revision: attrs.routing_policy_revision,
+      controller_dispatch_ceiling: attrs.controller_dispatch_ceiling,
+      capacity_policy_reason: attrs.capacity_policy_reason,
+      bound_predicates: attrs.bound_predicates,
+      confirmation_evidence: %{
+        "surface" => attrs.surface,
+        "bundle_theft_consequence_confirmed" => true
+      }
+    }
+
+    NodeAdmissionPreauthorizations.preview_issuance(preview_attrs)
+  end
+
+  defp validate_supplied_preview(preview, attrs, trust, now, expiry_seconds) do
+    record = Map.get(preview, :record, %{})
+
+    expected = %{
+      cluster_id: trust.cluster_id,
+      issuing_controller_id: trust.controller_id,
+      issuing_actor_type: attrs.creator_type,
+      issuing_actor_id: attrs.creator_id,
+      pool_id: attrs.pool_id,
+      pool_revision: attrs.pool_revision,
+      routing_policy_id: attrs.routing_policy_id,
+      routing_policy_revision: attrs.routing_policy_revision,
+      controller_dispatch_ceiling: attrs.controller_dispatch_ceiling,
+      capacity_policy_reason: attrs.capacity_policy_reason,
+      bound_predicates: normalize_string_map(attrs.bound_predicates)
+    }
+
+    actual = Map.take(record, Map.keys(expected))
+    maximum_expiry = DateTime.add(now, expiry_seconds, :second)
+    expiry = Map.get(record, :expires_at)
+
+    expiry_valid? =
+      is_struct(expiry, DateTime) and DateTime.compare(expiry, now) == :gt and
+        DateTime.compare(expiry, maximum_expiry) in [:lt, :eq]
+
+    if actual == expected and expiry_valid?,
+      do: :ok,
+      else: {:error, :preauthorization_preview_mismatch}
+  end
+
+  defp validate_confirmation(preview, opts) do
+    if Keyword.get(opts, :confirmation_digest) == preview.digest,
+      do: :ok,
+      else: {:error, {:preauthorization_confirmation_required, preview}}
+  end
+
+  defp maybe_put_preauthorization(bundle, nil), do: bundle
+
+  defp maybe_put_preauthorization(bundle, preauthorization) do
+    Map.put(bundle, :preauthorization, %{
+      id: preauthorization.id,
+      digest: preauthorization.preview_digest
+    })
+  end
+
+  defp validate_preauthorization_attrs(%{admit_on_join: false}), do: :ok
+
+  defp validate_preauthorization_attrs(attrs) do
+    valid = attrs.admit_on_join == true and valid_preauthorization_values?(attrs)
+
+    if valid,
+      do: :ok,
+      else: invalid(:admit_on_join, :incomplete_preauthorization)
+  end
+
+  defp valid_preauthorization_values?(attrs) do
+    present?(attrs.creator_id) and present?(attrs.routing_policy_id) and
+      present?(attrs.capacity_policy_reason) and
+      is_integer(attrs.controller_dispatch_ceiling) and
+      attrs.controller_dispatch_ceiling >= 0 and is_map(attrs.bound_predicates)
+  end
+
+  defp present?(value), do: is_binary(value) and value != ""
+
+  defp normalize_string_map(map) do
+    Map.new(map, fn {key, entry} -> {to_string(key), entry} end)
   end
 
   defp validate_bundle_size(contents) when byte_size(contents) <= @maximum_bundle_bytes,

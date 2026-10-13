@@ -59,7 +59,7 @@ while IFS= read -r path; do
       conformance=true
       packaging=true
       ;;
-    packaging/linux/*|scripts/build-linux-node-package.sh|scripts/test-linux-node-package.sh)
+    packaging/linux/*|scripts/build-linux-node-package.sh|scripts/test-linux-node-package.sh|scripts/build-ubuntu-appliance-packages.sh|scripts/test-ubuntu-appliance-packages.sh)
       portable=true
       conformance=true
       packaging=true

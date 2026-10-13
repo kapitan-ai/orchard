@@ -115,7 +115,7 @@ defmodule OrchardCLI.Commands.NodeJoin do
   defp join(root, bundle, %{state: "prepared"} = identity) do
     with {:ok, response} <- enrollment_client().redeem(bundle, identity),
          {:ok, registered} <- Store.finalize(root, identity, response) do
-      {:ok, success_message(bundle, registered)}
+      {:ok, success_message(bundle, registered, response)}
     else
       {:error, reason} -> command_error(reason)
     end
@@ -125,11 +125,28 @@ defmodule OrchardCLI.Commands.NodeJoin do
     Application.get_env(:orchard_cli, :node_enrollment_client, PinnedHTTPS)
   end
 
-  defp success_message(bundle, identity) do
+  defp success_message(bundle, identity, response \\ %{}) do
     "Node joined and registered\n" <>
       "Node ID: #{bundle.node_id}\n" <>
       "Certificate ID: #{identity.certificate_identifier}\n" <>
-      "Node Admission remains required before active or schedulable."
+      admission_message(response["admission"])
+  end
+
+  defp admission_message(%{"outcome" => "preauthorized_admitted"}) do
+    "Node Admission: preauthorized admission committed.\n" <>
+      "The Node remains inactive and unschedulable until independent runtime gates pass."
+  end
+
+  defp admission_message(%{
+         "outcome" => "registered_pending_review",
+         "reason" => reason
+       }) do
+    "Node Admission: pending review (#{reason}).\n" <>
+      "The Node remains inactive and unschedulable."
+  end
+
+  defp admission_message(_admission) do
+    "Node Admission remains required before active or schedulable."
   end
 
   defp command_error(:invalid_join_arguments) do

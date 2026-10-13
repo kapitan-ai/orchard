@@ -1,0 +1,15 @@
+[Unit]
+Description=Orchard source-development database boundary
+Before=slices.target
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes
+AllowedCPUs=0-1
+CPUWeight=1000
+MemoryMin=4G
+MemoryMax=8G
+IOWeight=1000

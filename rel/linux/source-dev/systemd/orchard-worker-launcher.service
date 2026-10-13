@@ -1,0 +1,25 @@
+[Unit]
+Description=Orchard source-development inert Worker launcher
+Requires=orchard-node-agent.service
+After=orchard-node-agent.service
+ConditionPathExists=/etc/orchard/source-dev/activation-authorized.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/orchard/source/bin/source-dev-role-guard worker-launcher
+RemainAfterExit=no
+Slice=orchard-lifecycle.slice
+MemoryMax=512M
+TasksMax=256
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

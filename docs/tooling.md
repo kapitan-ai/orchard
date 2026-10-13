@@ -95,6 +95,8 @@ make dev-controller
 make dev-node-agent
 make openspec
 make validate-product-version
+make source-dev-installation-test
+make source-dev-postgresql-test
 make check-elixir
 ```
 
@@ -104,6 +106,21 @@ target and this guide disagree.
 `make validate-product-version` is a read-only normal source validation command.
 It validates the exact root `VERSION` grammar and requires the umbrella plus every discovered first-party OTP application to report the same Product Version.
 Passing this command does not establish or require a release transition, tag, candidate, artifact, credential, or publication state.
+
+`make source-dev-installation-test` exercises the Ubuntu 24.04 single-host
+source-preparation foundation entirely under isolated relocated roots. It uses
+synthetic ownership observations only inside those roots, creates no host
+account or unit, and starts no service. The production command
+`bin/orchard-source-installation prepare` is root-only, requires the clean
+canonical `/opt/orchard/source` checkout, and remains a separately authorized
+host operation.
+
+`make source-dev-postgresql-test` exercises the source-managed PostgreSQL state
+machine with deterministic command adapters and disposable relocated roots. It
+does not run PostgreSQL, initialize a real cluster, start a unit, or mutate host
+accounts, services, files, or network state. The production lifecycle command
+requires root, the canonical prepared manifest and lock, the exact pinned Ubuntu
+PostgreSQL closure, and an installation-UUID-bound mutation authorization.
 
 Elixir validation:
 
@@ -203,6 +220,20 @@ Shared distribution-neutral payload builds should run through the same toolchain
 ```bash
 mise exec -- ./scripts/build-payload.sh
 ```
+
+The deferred Ubuntu 24.04 package-foundation evidence can still be rebuilt and
+tested without installation or service activation with:
+
+```bash
+mise exec -- scripts/build-ubuntu-appliance-packages.sh
+scripts/test-ubuntu-appliance-packages.sh
+```
+
+That packaging test uses relocated roots and fake release payloads. It does
+not require root and does not install packages, PostgreSQL, users, or units on
+the validation host. It is not current source-installation authority. Real
+package installation and host lifecycle qualification remain separately
+authorized gates.
 
 ## Generated Contracts
 

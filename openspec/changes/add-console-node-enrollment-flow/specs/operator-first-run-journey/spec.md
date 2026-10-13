@@ -6,7 +6,7 @@ The journey SHALL identify the target Mac and Controller Console action location
 The journey SHALL present installation preparation before short-lived Enrollment issuance as the recommended order.
 The journey SHALL show the exact `orchardctl node join --enrollment-bundle PATH` command as a target-Mac action.
 The journey SHALL NOT treat installation, download, transfer, service start, or endpoint observation as registration, trust, admission, activation, or scheduling eligibility.
-The journey SHALL preserve explicit Node Admission and automatic activation from fresh healthy authenticated evidence.
+The journey SHALL preserve Node Admission as an explicit administrator authority boundary and automatic activation from fresh healthy authenticated evidence. Manual admission remains the default; if a later accepted Console slice exposes bundle-scoped preauthorization, the administrator SHALL preview and confirm the complete admission intent at issuance and Console SHALL NOT infer authority from bundle delivery or registration.
 This refines `SPEC.md` §§4.2 through 4.6, 7.4, 7.5.4, and 10.6.
 
 #### Scenario: Administrator discovers Add Node
@@ -89,7 +89,7 @@ After successful bundle delivery, Console SHALL poll durable Enrollment and Node
 Console SHALL show the last successful check time and MAY offer **Refresh now** as a fallback.
 Console SHALL NOT ask the operator to record package installation, service start, registration, transport authorization, health, or activation.
 Before registration, Console SHALL present one current blocker with the exact target-Mac action and expected result.
-After registration, Console SHALL link to the existing explicit admission review.
+After manual registration, Console SHALL link to the existing explicit admission review. After a successful exact preauthorized admission, Console SHALL show admitted-awaiting-activation without offering a redundant admission action.
 After admission, Node activation SHALL remain system-managed and SHALL require fresh healthy authenticated evidence.
 
 #### Scenario: Registration remains pending
@@ -99,10 +99,16 @@ After admission, Node activation SHALL remain system-managed and SHALL require f
 - **THEN** scheduling remains blocked
 
 #### Scenario: Registration completes
-- **WHEN** certificate-backed redemption advances the Node to `registered`
+- **WHEN** certificate-backed manual redemption advances the Node to `registered`
 - **THEN** the next automatic check shows **Registered - awaiting admission**
 - **THEN** Console offers a link to admission review
 - **THEN** Console does not admit or activate the Node automatically
+
+#### Scenario: Preauthorized registration and admission complete
+- **WHEN** certificate-backed redemption atomically commits registration and exact preauthorized admission
+- **THEN** the next automatic check shows **Admitted - awaiting authenticated health**
+- **THEN** Console does not offer a redundant admission action
+- **THEN** Console does not claim activation or scheduling eligibility before fresh healthy authenticated evidence
 
 #### Scenario: Enrollment can no longer register
 - **WHEN** the Enrollment is expired, revoked, or `output_failed`

@@ -78,7 +78,12 @@ installed
 The existing Node Lifecycle State machine continues to own `provisioned`, `registered`, `admitted`, and `active`.
 
 A successful transport connection or Runtime Endpoint observation never skips registration or Node Admission.
-A registered Node remains visibly pending until an administrator admits it.
+Manual admission remains the default, and a registered Node remains visibly
+pending until an administrator admits it. A separately accepted bundle-scoped
+preauthorization may let exact Enrollment redemption commit registration and
+admission atomically only because an administrator already previewed and
+confirmed that immutable admission intent; bundle possession, certificate
+issuance, locality, or Controller mode does not imply admission.
 An admitted Node becomes active only after a fresh healthy authenticated observation.
 
 ## Decision 4: Node Enrollment Bundle Is A Narrow One-Time Trust Artifact

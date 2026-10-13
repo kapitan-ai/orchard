@@ -5,8 +5,63 @@ Source availability does not promise a supported public binary; see [`dmg/README
 The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
 
-The accepted Linux Controller profile remains a future milestone with separate headless lifecycle and packaging acceptance requirements.
+The Linux Controller profile remains a future milestone with separate headless lifecycle and packaging acceptance requirements.
+The Ubuntu Server 24.04 LTS x86_64 single-host profile is source-development-only
+for the current milestone. KAP-98's inert, unqualified coordinated package
+foundation is preserved below as deferred experimental evidence. It is not
+current installation authority and is not installed, activated, qualified,
+released, or supported by this runbook.
 Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Orchard control-plane core contract.
+
+## Deferred KAP-98 Ubuntu package evidence
+
+The preserved KAP-98 source foundation can build six coordinated Debian
+artifacts that were designed for the exact
+`ubuntu_24_04_x86_64_single_host` profile:
+
+- `orchard-appliance-tools`
+- `orchard-controller`
+- `orchard-postgresql`
+- `orchard-worker-foundation`
+- `orchard-node-agent`
+- `orchard-appliance`
+
+Build without installing or activating them:
+
+```bash
+mise exec -- scripts/build-ubuntu-appliance-packages.sh
+```
+
+The meta-package pins one exact package tuple. The compatibility manifest binds
+the Product Version, source commit, profile, schema/protocol contracts, and the
+default-off/unqualified state. The Node artifact reuses the existing
+`ubuntu_24_04_x86_64_node` package bytes; only the complete appliance
+meta-package owns the composition-specific Node unit drop-in and preset. The
+PostgreSQL integration artifact records the exact Ubuntu PostgreSQL 16 closure
+but deliberately does not depend on it: Ubuntu's package configuration may
+otherwise create and start a default cluster. KAP-99 no longer inherits package
+installation authority; its approved revision is source-development-only.
+
+Package configuration may create non-login role identities, fixed empty roots,
+inert units, the lifecycle lock, and package receipts. It does not create the
+appliance initialization marker, initialize PostgreSQL, configure or enroll a
+Node, enable a unit, install a provider or model, or publish capacity. The
+installed target and services remain condition-gated and disabled by preset.
+
+Run the deterministic package, compatibility, ownership, symlink, locking,
+retention, reproducibility, and systemd static tests with:
+
+```bash
+scripts/test-ubuntu-appliance-packages.sh
+```
+
+`--allow-dirty` produces development evidence only. Its compatibility manifest
+is marked with an unclean source tree and the appliance preflight rejects it.
+It grants no publication, deployment, host mutation, or support authority.
+Future package installation, qualification, reproducibility, or publication
+requires a fresh accepted OpenSpec proposal and fenced migration from the
+single source-development installation. These commands retain KAP-98 evidence
+only and are not part of the current KAP-95 execution path.
 
 ## Shared distribution-neutral payload
 

@@ -1,0 +1,5 @@
+disable orchard-appliance.target
+disable orchard-controller.service
+disable orchard-postgresql.service
+disable orchard-db-migrate.service
+disable orchard-node-agent.service

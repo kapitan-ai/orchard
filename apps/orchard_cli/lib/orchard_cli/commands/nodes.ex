@@ -4,11 +4,13 @@ defmodule OrchardCLI.Commands.Nodes do
   """
 
   alias Orchard.PackagedNodeCommand
+  alias OrchardCLI.Commands.NodeAdmission
   alias OrchardCLI.Commands.NodeEnrollment
   alias OrchardCLI.Commands.NodeTrust, as: NodeTrustCommand
   alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
+  def run(["admission" | rest]), do: NodeAdmission.run(rest)
   def run(["enrollment" | rest]), do: NodeEnrollment.run(rest)
   def run(["trust" | rest]), do: NodeTrustCommand.run(rest)
   def run(args), do: PackagedNodeCommand.run(args, &RepoRuntime.run/2)

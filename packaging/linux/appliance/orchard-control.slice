@@ -1,0 +1,9 @@
+[Unit]
+Description=Orchard Controller resource boundary
+Before=slices.target
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes
