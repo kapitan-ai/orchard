@@ -2013,9 +2013,16 @@ def _ok_prefix_cache_status(**overrides: Any) -> dict[str, Any]:
     return status
 
 
-def test_get_status_prefix_cache_checkpoint_fields_default_to_zero_when_absent() -> None:
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"checkpoint_uncertain_count": None, "checkpoint_retained_bytes": None}],
+)
+def test_get_status_prefix_cache_checkpoint_fields_default_to_zero_when_absent(
+    overrides: dict[str, Any],
+) -> None:
+    # SPEC.md §7.5.3: checkpoint counters are additive; absent or None means zero.
     servicer = WorkerRuntimeServicer(
-        PrefixCacheStatusBackend(prefix_cache_status=_ok_prefix_cache_status())
+        PrefixCacheStatusBackend(prefix_cache_status=_ok_prefix_cache_status(**overrides))
     )
 
     status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
@@ -2026,6 +2033,7 @@ def test_get_status_prefix_cache_checkpoint_fields_default_to_zero_when_absent()
 
 
 def test_get_status_prefix_cache_serializes_checkpoint_fields() -> None:
+    # SPEC.md §7.5.3: strict-prefix status carries both checkpoint counters.
     servicer = WorkerRuntimeServicer(
         PrefixCacheStatusBackend(
             prefix_cache_status=_ok_prefix_cache_status(
@@ -2055,6 +2063,7 @@ def test_get_status_prefix_cache_serializes_checkpoint_fields() -> None:
 def test_get_status_prefix_cache_invalid_checkpoint_field_is_invalid_status(
     overrides: dict[str, Any],
 ) -> None:
+    # SPEC.md §7.5.3: a malformed counter reports invalid_status, never a raw value.
     servicer = WorkerRuntimeServicer(
         PrefixCacheStatusBackend(prefix_cache_status=_ok_prefix_cache_status(**overrides))
     )

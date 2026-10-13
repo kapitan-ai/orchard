@@ -62,7 +62,7 @@ _PREFIX_CACHE_UINT64_FIELDS = (
     "configured_max_bytes",
     "session_started_unix_ms",
 )
-# Strict-prefix checkpoint fields: absent means zero, present must be valid.
+# Strict-prefix checkpoint fields: absent or None means zero, otherwise they must be valid.
 _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS = ("checkpoint_uncertain_count",)
 _PREFIX_CACHE_OPTIONAL_UINT64_FIELDS = ("checkpoint_retained_bytes",)
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
@@ -438,22 +438,20 @@ def _invalid_prefix_cache_numeric_fields(prefix_cache: dict[str, Any]) -> list[s
             continue
 
         value = prefix_cache[field]
-        if not _valid_prefix_cache_uint64(value):
+        if not _valid_status_uint64(value):
             invalid_fields.append(field)
 
     for field in _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS:
-        if field in prefix_cache and not _valid_status_uint32(prefix_cache[field]):
+        value = prefix_cache.get(field)
+        if value is not None and not _valid_status_uint32(value):
             invalid_fields.append(field)
 
     for field in _PREFIX_CACHE_OPTIONAL_UINT64_FIELDS:
-        if field in prefix_cache and not _valid_prefix_cache_uint64(prefix_cache[field]):
+        value = prefix_cache.get(field)
+        if value is not None and not _valid_status_uint64(value):
             invalid_fields.append(field)
 
     return invalid_fields
-
-
-def _valid_prefix_cache_uint64(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _UINT64_MAX
 
 
 def _prefix_cache_fingerprints(value: Any) -> list[str]:
@@ -506,10 +504,8 @@ def _prefix_cache_status_response(
         status_message=_status_string(prefix_cache.get("status_message")),
         session_started_unix_ms=_status_uint64(prefix_cache.get("session_started_unix_ms")),
         prefix_cache_fingerprints=fingerprints,
-        checkpoint_uncertain_count=int(
-            _status_uint64(prefix_cache.get("checkpoint_uncertain_count", 0))
-        ),
-        checkpoint_retained_bytes=_status_uint64(prefix_cache.get("checkpoint_retained_bytes", 0)),
+        checkpoint_uncertain_count=_status_uint32(prefix_cache.get("checkpoint_uncertain_count")),
+        checkpoint_retained_bytes=_status_uint64(prefix_cache.get("checkpoint_retained_bytes")),
     )
 
 

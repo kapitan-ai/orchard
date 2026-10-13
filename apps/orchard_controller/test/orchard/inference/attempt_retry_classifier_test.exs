@@ -47,7 +47,9 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     end
   end
 
-  test "SPEC.md §5.8 retries strict-prefix and memory load refusals on another node" do
+  # The Node maps each code to its category (model_load_failure_test.exs);
+  # this checks that the Controller keeps the code and retries both categories.
+  test "SPEC.md §5.8 retries the categories the Node assigns to strict-prefix and memory refusals" do
     for {code, node_category} <- [
           {"strict_prefix_runtime_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},
           {"strict_prefix_model_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE},

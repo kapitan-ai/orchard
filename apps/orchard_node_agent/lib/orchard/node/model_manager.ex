@@ -85,7 +85,7 @@ defmodule Orchard.Node.ModelManager do
   @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
   @prefix_cache_fingerprint_cap 64
   @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
-  @prefix_cache_uint32_fields [:entry_count, :configured_max_entries, :checkpoint_uncertain_count]
+  @prefix_cache_uint32_fields [:entry_count, :configured_max_entries]
   @prefix_cache_uint64_fields [
     :total_bytes,
     :hits,
@@ -94,9 +94,11 @@ defmodule Orchard.Node.ModelManager do
     :stores,
     :evictions,
     :configured_max_bytes,
-    :session_started_unix_ms,
-    :checkpoint_retained_bytes
+    :session_started_unix_ms
   ]
+  # Checkpoint counters apply only to strict-prefix status (SPEC.md 7.5.3).
+  # Other implementations report zero, and nil means absent.
+  @checkpoint_implementation "strict_prefix"
   @invalid_prefix_cache_numeric_message "prefix cache status contained invalid numeric fields"
   @score_prefix_cache_default_timeout_ms 150
   @score_prefix_cache_local_timeout_grace_ms 50
@@ -1693,16 +1695,44 @@ defmodule Orchard.Node.ModelManager do
         session_started_unix_ms: budget_uint64(prefix_cache_status[:session_started_unix_ms]),
         prefix_cache_fingerprints: prefix_cache_fingerprints(prefix_cache_status),
         checkpoint_uncertain_count:
-          prefix_cache_uint32(prefix_cache_status[:checkpoint_uncertain_count]),
-        checkpoint_retained_bytes: budget_uint64(prefix_cache_status[:checkpoint_retained_bytes])
+          checkpoint_counter(
+            prefix_cache_status,
+            :checkpoint_uncertain_count,
+            &prefix_cache_uint32/1
+          ),
+        checkpoint_retained_bytes:
+          checkpoint_counter(prefix_cache_status, :checkpoint_retained_bytes, &budget_uint64/1)
       }
     end
   end
 
+  defp checkpoint_counter(
+         %{implementation: @checkpoint_implementation} = prefix_cache_status,
+         field,
+         normalize
+       ),
+       do: normalize.(prefix_cache_status[field])
+
+  defp checkpoint_counter(_prefix_cache_status, _field, _normalize), do: 0
+
+  defp invalid_checkpoint_counters?(%{implementation: @checkpoint_implementation} = status) do
+    invalid_checkpoint_counter?(
+      status[:checkpoint_uncertain_count],
+      &valid_prefix_cache_uint32?/1
+    ) or
+      invalid_checkpoint_counter?(status[:checkpoint_retained_bytes], &valid_budget_uint64?/1)
+  end
+
+  defp invalid_checkpoint_counters?(_prefix_cache_status), do: false
+
+  defp invalid_checkpoint_counter?(nil, _valid?), do: false
+  defp invalid_checkpoint_counter?(value, valid?), do: not valid?.(value)
+
   defp invalid_prefix_cache_numeric_payload?(prefix_cache_status) do
-    Enum.any?(@prefix_cache_uint32_fields, fn field ->
-      invalid_prefix_cache_uint32?(prefix_cache_status, field)
-    end) or
+    invalid_checkpoint_counters?(prefix_cache_status) or
+      Enum.any?(@prefix_cache_uint32_fields, fn field ->
+        invalid_prefix_cache_uint32?(prefix_cache_status, field)
+      end) or
       Enum.any?(@prefix_cache_uint64_fields, fn field ->
         invalid_prefix_cache_uint64?(prefix_cache_status, field)
       end)

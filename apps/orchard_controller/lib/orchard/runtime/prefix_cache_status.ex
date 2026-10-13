@@ -59,7 +59,7 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   @max_prefix_cache_fingerprints 64
   @prefix_cache_fingerprint_pattern ~r/\Ahmac-sha256:[a-f0-9]{64}\z/
 
-  @uint32_fields [:entry_count, :configured_max_entries, :checkpoint_uncertain_count]
+  @uint32_fields [:entry_count, :configured_max_entries]
 
   @uint64_fields [
     :total_bytes,
@@ -69,13 +69,14 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     :stores,
     :evictions,
     :configured_max_bytes,
-    :session_started_unix_ms,
-    :checkpoint_retained_bytes
+    :session_started_unix_ms
   ]
 
   # Checkpoint fields are plain proto3 scalars, so other implementations report
-  # zero. They are kept only for strict-prefix status.
+  # zero. They are validated and kept only for strict-prefix status.
   @checkpoint_implementation "strict_prefix"
+  @checkpoint_uint32_fields [:checkpoint_uncertain_count]
+  @checkpoint_uint64_fields [:checkpoint_retained_bytes]
 
   @doc """
   Returns the scheduler-decision keys owned by prefix-cache introspection.
@@ -131,7 +132,7 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
         )
     }
 
-    if malformed_numeric_payload?(status) do
+    if malformed_numeric_payload?(status) or malformed_checkpoint_payload?(implementation, status) do
       %{normalized | status_code: "invalid_status"}
     else
       normalized
@@ -233,6 +234,13 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     Enum.any?(@uint32_fields, &malformed_uint32?(status, &1)) or
       Enum.any?(@uint64_fields, &malformed_uint64?(status, &1))
   end
+
+  defp malformed_checkpoint_payload?(@checkpoint_implementation, status) do
+    Enum.any?(@checkpoint_uint32_fields, &malformed_uint32?(status, &1)) or
+      Enum.any?(@checkpoint_uint64_fields, &malformed_uint64?(status, &1))
+  end
+
+  defp malformed_checkpoint_payload?(_implementation, _status), do: false
 
   defp malformed_uint32?(status, field) do
     case fetch_value(status, field) do

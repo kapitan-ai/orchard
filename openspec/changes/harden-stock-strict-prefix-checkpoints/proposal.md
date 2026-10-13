@@ -11,7 +11,7 @@ Strict-prefix checkpoint reuse is on main as a default-off spike (change `add-st
   - `insufficient_memory` maps to RESOURCE_EXHAUSTED;
   - the older `strict_prefix_checkpoint_unsupported` maps to RUNTIME_UNAVAILABLE.
 
-  All three categories stay retryable on another Node.
+  Both categories stay retryable on another Node.
 - Subtract the configured checkpoint budget once from the published headroom and recommended context.
 - Publish strict-prefix status through the prefix-cache status, and add two counters to the Worker and cluster status messages: the uncertain checkpoint count and the measured retained bytes.
 - A strict-prefix Worker publishes no cache-affinity fingerprints and no prefix-cache capability. Checkpoint-identity affinity is a separate change.

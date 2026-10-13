@@ -834,6 +834,22 @@ defmodule OrchardConsole.RuntimeTest do
       end
     end
 
+    test "SPEC 7.5.3 ignores malformed checkpoint counters for other implementations" do
+      status =
+        PrefixCacheStatus.normalize(%{
+          implementation: "kv",
+          status_code: "ok",
+          entry_count: 2,
+          checkpoint_uncertain_count: -1,
+          checkpoint_retained_bytes: "0"
+        })
+
+      assert status.status_code == "ok"
+      assert status.entry_count == 2
+      assert status.checkpoint_uncertain_count == nil
+      assert status.checkpoint_retained_bytes == nil
+    end
+
     test "SPEC 7.5.3 selected fields carry checkpoint counters for strict-prefix only" do
       strict_fields =
         PrefixCacheStatus.selected_fields(%{

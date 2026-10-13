@@ -218,15 +218,16 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.message == "MLX batch runtime is unavailable on this node"
   end
 
-  # KAP-147: strict-prefix refusals are node configuration problems, so they
-  # stay retryable on another node instead of reporting an invalid artifact.
+  # SPEC.md §12.3 and §5.8: strict-prefix refusals are node configuration
+  # problems, so they stay retryable on another node instead of reporting an
+  # invalid artifact.
   for {code, message} <- [
         {"strict_prefix_runtime_unsupported",
          "installed runtime does not support strict-prefix checkpoints on this node"},
         {"strict_prefix_model_unsupported",
          "model cache layout does not support strict-prefix checkpoints on this node"},
         {"strict_prefix_checkpoint_unsupported",
-         "strict-prefix checkpoints are not supported for this model on this node"}
+         "model runtime refused strict-prefix checkpoints for this model on this node; see the Worker log"}
       ] do
     test "worker_load_failed with #{code} -> RUNTIME_UNAVAILABLE" do
       f = ModelLoadFailure.from_reason({:worker_load_failed, unquote(code), "detail"})
@@ -236,7 +237,7 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     end
   end
 
-  test "worker_load_failed with insufficient_memory -> RESOURCE_EXHAUSTED" do
+  test "SPEC.md §12.3 worker_load_failed with insufficient_memory -> RESOURCE_EXHAUSTED" do
     f = ModelLoadFailure.from_reason({:worker_load_failed, "insufficient_memory", "detail"})
     assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED
     assert f.code == "insufficient_memory"

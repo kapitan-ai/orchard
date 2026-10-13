@@ -42,7 +42,9 @@ defmodule Orchard.Node.ModelLoadFailure do
   # Strict-prefix refusals are node configuration problems, not artifact
   # problems: another node without the setting can still load the model, so
   # they stay retryable instead of MODEL_INVALID.
-  # `strict_prefix_checkpoint_unsupported` is the code older Workers emit.
+  # `strict_prefix_checkpoint_unsupported` is the code older Workers emit for
+  # every strict-prefix refusal, including a budget above headroom, so its
+  # message does not name a cause.
   @worker_runtime_unavailable_codes MapSet.new([
                                       "mlx_backend_unavailable",
                                       "mlx_probe_failed",
@@ -52,9 +54,6 @@ defmodule Orchard.Node.ModelLoadFailure do
                                       "strict_prefix_model_unsupported",
                                       "strict_prefix_checkpoint_unsupported"
                                     ])
-
-  # Worker error codes indicating the node lacks memory for the configuration.
-  @worker_resource_exhausted_codes MapSet.new(["insufficient_memory"])
 
   @worker_model_invalid_messages %{
     "manifest_not_found" => "model manifest is missing",
@@ -82,12 +81,16 @@ defmodule Orchard.Node.ModelLoadFailure do
     "strict_prefix_model_unsupported" =>
       "model cache layout does not support strict-prefix checkpoints on this node",
     "strict_prefix_checkpoint_unsupported" =>
-      "strict-prefix checkpoints are not supported for this model on this node"
+      "model runtime refused strict-prefix checkpoints for this model on this node; see the Worker log"
   }
 
+  # Worker error codes indicating the node lacks memory for the configuration.
   @worker_resource_exhausted_messages %{
     "insufficient_memory" => "node does not have enough memory headroom for this model"
   }
+  @worker_resource_exhausted_codes @worker_resource_exhausted_messages
+                                   |> Map.keys()
+                                   |> MapSet.new()
 
   @doc """
   Classifies a raw error reason into a sanitized failure struct.
