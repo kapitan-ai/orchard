@@ -53,6 +53,10 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
   @spec policy_version() :: pos_integer()
   def policy_version, do: @policy_version
 
+  @doc "The prefix-cache mode that selects strict-prefix checkpoints."
+  @spec strict_prefix_mode() :: String.t()
+  def strict_prefix_mode, do: @strict_prefix_mode
+
   @doc "Strict-prefix launch options and the Worker CLI flag each one becomes."
   @spec strict_prefix_flags() :: [{atom(), String.t()}]
   def strict_prefix_flags, do: @strict_prefix_flags
@@ -159,15 +163,21 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
 
   defp parse_entry(%{"model_id" => model_id, "version" => version} = entry)
        when is_binary(model_id) and model_id != "" and is_binary(version) and version != "" do
-    with :ok <- known_keys(entry, @entry_keys, "#{model_id}@#{version}"),
-         {:ok, modes} <- parse_modes(entry, "#{model_id}@#{version}"),
-         {:ok, strict} <- parse_strict(entry["strict_prefix"], "#{model_id}@#{version}") do
+    where = "#{model_id}@#{version}"
+
+    with :ok <- known_keys(entry, @entry_keys, where),
+         {:ok, modes} <- parse_modes(entry, where),
+         {:ok, strict} <- parse_strict(entry["strict_prefix"], where),
+         :ok <- sets_something(modes ++ strict, where) do
       {:ok, {model_id, version}, modes ++ strict}
     end
   end
 
   defp parse_entry(_entry),
     do: {:error, "each model entry needs a non-empty model_id and version"}
+
+  defp sets_something([], where), do: {:error, "#{where}: the entry sets no Worker settings"}
+  defp sets_something(_options, _where), do: :ok
 
   defp known_keys(map, allowed, where) do
     case Map.keys(map) -- allowed do
@@ -271,10 +281,8 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
     slot_bytes = options[:strict_prefix_slot_bytes]
     budget_bytes = options[:strict_prefix_budget_bytes]
 
+    # The backend is checked for every override in validate_override_backend.
     cond do
-      options[:backend] != "mlx" ->
-        {:error, "strict_prefix requires the mlx backend, got #{inspect(options[:backend])}"}
-
       options[:generation_mode] != "stream" ->
         {:error, "strict_prefix requires generation_mode stream"}
 

@@ -52,7 +52,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
-  @strict_prefix_mode "strict_prefix"
+  @strict_prefix_mode WorkerLaunchPolicy.strict_prefix_mode()
   # The strict-prefix spike enabled reuse for every Worker through this
   # inherited variable. Workers start without it, so a leftover value in the
   # Node's environment cannot turn reuse on for every model.
@@ -316,6 +316,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       memory_budget_utilization: memory_budget_utilization,
       memory_budget_overhead_bytes: memory_budget_overhead_bytes,
       launch_policy_version: Keyword.get(opts, :launch_policy_version),
+      prefix_cache_mode: prefix_cache_mode,
+      strict_prefix: Map.new(strict_prefix_options),
       adapter: __MODULE__
     }
 

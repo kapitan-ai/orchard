@@ -470,10 +470,12 @@ defmodule Orchard.Node.WorkerProcess do
 
   defp invalidate_capability_snapshot(state), do: %{state | capability_snapshot: nil}
 
-  defp resolve_launch_options(%{launch_options: :unresolved} = state),
-    do: %{state | launch_options: Node.worker_launch_options(state.model_ref)}
+  # Keep only a successful policy, so a failed resolution is tried again on
+  # the next load instead of being cached for the Worker's lifetime.
+  defp resolve_launch_options(%{launch_options: {:ok, _options}} = state), do: state
 
-  defp resolve_launch_options(state), do: state
+  defp resolve_launch_options(state),
+    do: %{state | launch_options: Node.worker_launch_options(state.model_ref)}
 
   defp load_with_launch_options(launch_options, load_timeout_ms, state) do
     state = invalidate_capability_snapshot(state)

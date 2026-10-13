@@ -635,6 +635,7 @@ def test_mlx_backend_reports_strict_prefix_stats_failure_as_error() -> None:
     assert status["status_code"] == "error"
     assert status["implementation"] == "strict_prefix"
     assert "boom" in status["status_message"]
+    assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
 
 
 def test_mlx_backend_strict_prefix_advertises_no_prefix_cache_and_does_not_score() -> None:

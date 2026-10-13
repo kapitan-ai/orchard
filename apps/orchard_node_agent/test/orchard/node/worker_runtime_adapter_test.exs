@@ -578,6 +578,39 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     assert "--strict-prefix-reply-marker=<|r|>" in args
   end
 
+  test "a model without an override gets the same Worker argv as before per-model settings" do
+    # Older Workers accept exactly this argv: it is the list worker_cli_args
+    # produced for default settings before per-model launch policies existed.
+    {:ok, options} =
+      WorkerLaunchPolicy.resolve(
+        %ModelRef{model_id: "test/model", version: "v1"},
+        %{},
+        Keyword.put(Node.worker_launch_globals(), :backend, "mlx")
+      )
+
+    args =
+      WorkerRuntimeAdapter.worker_cli_args(
+        Keyword.merge(options, socket_path: "/tmp/worker.sock", log_path: "/tmp/worker.log")
+      )
+
+    assert args ==
+             WorkerRuntimeAdapter.worker_cli_args(
+               socket_path: "/tmp/worker.sock",
+               backend: "mlx",
+               log_path: "/tmp/worker.log",
+               prefix_cache_mode: Node.worker_prefix_cache_mode(),
+               prefix_cache_max_entries: Node.worker_prefix_cache_max_entries(),
+               prefix_cache_max_bytes: Node.worker_prefix_cache_max_bytes(),
+               generation_mode: Node.worker_generation_mode(),
+               max_concurrent_generations: Node.worker_max_concurrent_requests_per_model(),
+               auto_max_concurrent_generations:
+                 Node.worker_auto_max_concurrent_requests_per_model(),
+               memory_budget_mode: Node.worker_memory_budget_mode(),
+               memory_budget_utilization: Node.worker_memory_budget_utilization(),
+               memory_budget_overhead_bytes: Node.worker_memory_budget_overhead_bytes()
+             )
+  end
+
   test "a model without an override launches with only flags an older Worker accepts" do
     {:ok, options} =
       WorkerLaunchPolicy.resolve(

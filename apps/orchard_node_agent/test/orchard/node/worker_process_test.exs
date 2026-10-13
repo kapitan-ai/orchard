@@ -287,6 +287,20 @@ defmodule Orchard.Node.WorkerProcessTest do
     assert response.resident_fingerprint_match == false
   end
 
+  # Launch-policy tests change the Node's cached settings; put back whatever
+  # the application published at boot.
+  setup do
+    key = {Orchard.Node, :worker_launch_overrides}
+    previous = :persistent_term.get(key, :absent)
+
+    on_exit(fn ->
+      case previous do
+        :absent -> :persistent_term.erase(key)
+        overrides -> :persistent_term.put(key, overrides)
+      end
+    end)
+  end
+
   defp write_overrides!(models) do
     path =
       Path.join(System.tmp_dir!(), "worker-overrides-#{System.unique_integer([:positive])}.json")
@@ -326,8 +340,6 @@ defmodule Orchard.Node.WorkerProcessTest do
         assert opts[:owner] == pid
       end
     )
-  after
-    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "SPEC.md §7.5.3 an invalid launch policy refuses the load before the Worker starts" do
@@ -348,10 +360,25 @@ defmodule Orchard.Node.WorkerProcessTest do
 
         assert message =~ "test/buffer-model@v1: strict_prefix requires generation_mode stream"
         refute_received {:launch_options, _opts}
+
+        # A failed resolution is not kept: once the settings are fixed, the
+        # same Worker process resolves again and loads.
+        Application.put_env(
+          :orchard_node_agent,
+          :runtime,
+          Keyword.put(
+            Node.runtime_config(),
+            :worker_model_overrides_file,
+            write_overrides!([@strict_override])
+          )
+        )
+
+        :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
+        assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+        assert_receive {:launch_options, opts}
+        assert opts[:prefix_cache_mode] == "strict_prefix"
       end
     )
-  after
-    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "the Node refuses to load an invalid per-model settings file at boot" do
@@ -367,8 +394,6 @@ defmodule Orchard.Node.WorkerProcessTest do
                      fn -> Node.load_worker_launch_policy!() end
       end
     )
-  after
-    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "with no settings file the Node starts without evaluating global Worker settings" do
@@ -379,8 +404,6 @@ defmodule Orchard.Node.WorkerProcessTest do
         assert :persistent_term.get({Orchard.Node, :worker_launch_overrides}) == %{}
       end
     )
-  after
-    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "the Node uses the settings it checked at boot until it loads them again" do
@@ -403,8 +426,6 @@ defmodule Orchard.Node.WorkerProcessTest do
       assert {:ok, reloaded} = Node.worker_launch_options(model_ref)
       refute reloaded[:prefix_cache_mode] == "strict_prefix"
     end)
-  after
-    :persistent_term.erase({Orchard.Node, :worker_launch_overrides})
   end
 
   test "score_prefix_cache returns unsupported_version when adapter has no score hook" do

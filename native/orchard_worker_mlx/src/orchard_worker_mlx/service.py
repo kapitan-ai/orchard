@@ -377,11 +377,8 @@ def _prefix_cache_disabled(prefix_cache_config: Any | None) -> bool:
 
 
 def _prefix_cache_scoring_disabled(prefix_cache_config: Any | None) -> bool:
-    # Strict-prefix checkpoints do not score cache-affinity fingerprints.
-    return _status_string(getattr(prefix_cache_config, "mode", "")) in (
-        "disabled",
-        _CHECKPOINT_IMPLEMENTATION,
-    )
+    # Only the trim-based caches score cache-affinity fingerprints.
+    return not bool(getattr(prefix_cache_config, "uses_fingerprints", True))
 
 
 def _prefix_cache_caps(prefix_cache_config: Any | None) -> tuple[int, int]:

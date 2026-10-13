@@ -171,6 +171,8 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
         {"unknown top-level keys", %{"version" => 1, "models" => [], "extra" => 1},
          ~s(unknown top-level keys ["extra"])},
         {"a missing model id", [%{"version" => "v1"}], "non-empty model_id and version"},
+        {"an entry that sets nothing", [%{"model_id" => "org/a", "version" => "v1"}],
+         "org/a@v1: the entry sets no Worker settings"},
         {"unknown entry keys", [Map.put(@strict_entry, "executable", "/bin/sh")],
          ~s(unknown keys ["executable"])},
         {"unknown strict keys", [put_in(@strict_entry, ["strict_prefix", "slotz"], 1)],

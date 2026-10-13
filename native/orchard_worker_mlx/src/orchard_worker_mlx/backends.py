@@ -476,7 +476,7 @@ class MLXBackend:
                 getattr(session, "prefix_cache_fingerprints", []) if session is not None else []
             )
 
-        caps = getattr(self._prefix_cache_config, "status_caps", (0, 0))
+        caps = self._prefix_cache_config.status_caps
         config_max_entries = _status_uint32(caps[0])
         config_max_bytes = _status_uint64(caps[1])
 
@@ -493,13 +493,8 @@ class MLXBackend:
         if isinstance(strict_store, StrictPrefixCheckpointStore):
             return _strict_prefix_status(
                 strict_store,
-                budget_bytes=_status_uint64(
-                    getattr(
-                        getattr(self._prefix_cache_config, "strict_prefix", None),
-                        "budget_bytes",
-                        0,
-                    )
-                ),
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
                 session_started_unix_ms=_status_uint64(
                     getattr(session, "session_started_unix_ms", 0)
                 ),
@@ -712,7 +707,7 @@ class MLXBackend:
     def record_fingerprint(self, fingerprint: str) -> None:
         if not valid_cache_affinity_fingerprint(fingerprint):
             return
-        if _prefix_cache_mode(self._prefix_cache_config) == STRICT_PREFIX_MODE:
+        if not _scores_fingerprints(self._prefix_cache_config):
             return
 
         with self._lock:
@@ -881,7 +876,8 @@ def _score_disabled_message(prefix_cache_config: Any) -> str:
 def _strict_prefix_status(
     store: StrictPrefixCheckpointStore,
     *,
-    budget_bytes: int,
+    configured_max_entries: int,
+    configured_max_bytes: int,
     session_started_unix_ms: int,
 ) -> BackendPrefixCacheStatus:
     """Report strict-prefix checkpoints through the prefix-cache status fields.
@@ -895,7 +891,8 @@ def _strict_prefix_status(
     except Exception as exc:
         return _base_prefix_cache_status(
             implementation=STRICT_PREFIX_MODE,
-            configured_max_bytes=budget_bytes,
+            configured_max_entries=configured_max_entries,
+            configured_max_bytes=configured_max_bytes,
             status_code="error",
             status_message=f"strict-prefix checkpoint stats read failed: {exc}",
             session_started_unix_ms=session_started_unix_ms,
@@ -910,8 +907,8 @@ def _strict_prefix_status(
         failures=_status_uint64(stats.restore_failures + stats.copy_failures),
         stores=_status_uint64(stats.stores),
         evictions=_status_uint64(stats.evictions),
-        configured_max_entries=_status_uint32(stats.slots),
-        configured_max_bytes=budget_bytes,
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
         status_code="ok",
         status_message="",
         session_started_unix_ms=session_started_unix_ms,
