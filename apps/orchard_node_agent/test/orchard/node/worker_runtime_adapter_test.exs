@@ -580,55 +580,50 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   test "a model without an override gets the same Worker argv as before per-model settings" do
     # Older Workers accept exactly this argv: it is the list worker_cli_args
-    # produced for default settings before per-model launch policies existed.
-    # The literal list pins it; the comparison below checks the resolved path.
+    # produced for the default Worker settings before per-model launch
+    # policies existed. Resolve against explicit defaults so the literal pin
+    # runs whatever config/test.exs sets.
+    defaults = [
+      backend: "mlx",
+      prefix_cache_mode: "kv",
+      prefix_cache_max_entries: 8,
+      prefix_cache_max_bytes: 0,
+      generation_mode: "batch",
+      max_concurrent_generations: "auto",
+      auto_max_concurrent_generations: 3,
+      memory_budget_mode: "observe",
+      memory_budget_utilization: 0.9,
+      memory_budget_overhead_bytes: 1_073_741_824
+    ]
+
     {:ok, options} =
-      WorkerLaunchPolicy.resolve(
-        %ModelRef{model_id: "test/model", version: "v1"},
-        %{},
-        Keyword.put(Node.worker_launch_globals(), :backend, "mlx")
-      )
+      WorkerLaunchPolicy.resolve(%ModelRef{model_id: "test/model", version: "v1"}, %{}, defaults)
 
-    args =
-      WorkerRuntimeAdapter.worker_cli_args(
-        Keyword.merge(options, socket_path: "/tmp/worker.sock", log_path: "/tmp/worker.log")
-      )
+    assert WorkerRuntimeAdapter.worker_cli_args(
+             Keyword.merge(options, socket_path: "/tmp/worker.sock", log_path: "/tmp/worker.log")
+           ) == [
+             "--socket-path",
+             "/tmp/worker.sock",
+             "--backend",
+             "mlx",
+             "--log-file",
+             "/tmp/worker.log",
+             "--prefix-cache-mode",
+             "kv",
+             "--prefix-cache-max-entries",
+             "8",
+             "--prefix-cache-max-bytes",
+             "0"
+           ]
+  end
 
-    if Node.worker_prefix_cache_mode() == "kv" and Node.worker_generation_mode() == "batch" do
-      assert Enum.take(args, 12) == [
-               "--socket-path",
-               "/tmp/worker.sock",
-               "--backend",
-               "mlx",
-               "--log-file",
-               "/tmp/worker.log",
-               "--prefix-cache-mode",
-               "kv",
-               "--prefix-cache-max-entries",
-               "8",
-               "--prefix-cache-max-bytes",
-               "0"
-             ]
+  test "a model without an override resolves to exactly the Node's global Worker settings" do
+    globals = Keyword.put(Node.worker_launch_globals(), :backend, "mlx")
 
-      refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
-    end
+    {:ok, options} =
+      WorkerLaunchPolicy.resolve(%ModelRef{model_id: "test/model", version: "v1"}, %{}, globals)
 
-    assert args ==
-             WorkerRuntimeAdapter.worker_cli_args(
-               socket_path: "/tmp/worker.sock",
-               backend: "mlx",
-               log_path: "/tmp/worker.log",
-               prefix_cache_mode: Node.worker_prefix_cache_mode(),
-               prefix_cache_max_entries: Node.worker_prefix_cache_max_entries(),
-               prefix_cache_max_bytes: Node.worker_prefix_cache_max_bytes(),
-               generation_mode: Node.worker_generation_mode(),
-               max_concurrent_generations: Node.worker_max_concurrent_requests_per_model(),
-               auto_max_concurrent_generations:
-                 Node.worker_auto_max_concurrent_requests_per_model(),
-               memory_budget_mode: Node.worker_memory_budget_mode(),
-               memory_budget_utilization: Node.worker_memory_budget_utilization(),
-               memory_budget_overhead_bytes: Node.worker_memory_budget_overhead_bytes()
-             )
+    assert Keyword.delete(options, :launch_policy_version) == globals
   end
 
   test "a model without an override launches with only flags an older Worker accepts" do
