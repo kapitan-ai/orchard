@@ -499,7 +499,7 @@ worker_generation_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
-         if worker_backend == "stub" do
+         if worker_backend in ["stub", "vllm_poc"] do
            "stream"
          else
            Keyword.fetch!(worker_defaults, :worker_generation_mode)

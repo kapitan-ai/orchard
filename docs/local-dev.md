@@ -1613,6 +1613,35 @@ mise exec -- iex -S mix phx.server
 
 ## Current Source-Dev Limitations
 
+### Default-off vLLM source experiment
+
+`vllm_poc` is a separately selected development Worker behind existing local
+gRPC, using loopback `/v1/completions` on port 58080 with logical load/unload and
+concurrency one. It consumes existing rendered prompts and preserves generated
+legacy-blended reasoning; it does not expose `final_only` or register a new
+reasoning artifact. It requires the prompt suffix `<think>\n`, temperature `1.0`
+and top-p `0.95`, rejects token IDs/logprobs, and bounds decoded reasoning plus
+final output. See [ADR 0037](decisions/0037-bounded-linux-source-development-inference-poc.md).
+
+Selection is `MIX_ENV=dev ORCHARD_WORKER_BACKEND=vllm_poc`; stream generation
+is the default for this backend, and `config/runtime.exs` rejects it in prod.
+The separately authorized provider command is
+`scripts/with-kap112-vllm-poc.sh --model-dir DIR --evidence FILE -- COMMAND`,
+with both paths beneath `ORCHARD_KAP112_SNAPSHOT_ROOT`. It verifies the pinned
+image and snapshot and supervises only its own container and command. Run
+`bash scripts/test-with-kap112-vllm-poc.sh` for the model-free fake-command lane.
+
+Historical smoke-runner `main`/`execute` fail before mutation and historical setup
+is disabled: its effort artifact digest is not main's source-owned registered
+digest, and the old registration environment variable is not consumed. Retained
+deterministic tests are not a current real API/OpenCode proof. Do not bypass
+these guards. The supervisor requires `ORCHARD_KAP112_GPU_UUID` and
+`ORCHARD_KAP112_SNAPSHOT_ROOT`, but live supervisor/download use needs separate
+owner approval and has not run for this port. The pinned vLLM 0.27.1 tuple is a
+historical reference, not platform/provider/model qualification or support.
+
+### General limitations
+
 - Source dev controller uses loopback HTTP (`127.0.0.1:4000`); app-installed
   releases default to degraded loopback HTTP until an operator selects
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))

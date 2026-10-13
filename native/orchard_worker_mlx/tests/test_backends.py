@@ -44,6 +44,12 @@ def test_build_backend_stub_returns_backend() -> None:
     assert isinstance(backend, Backend)
 
 
+def test_build_backend_vllm_poc_returns_backend() -> None:
+    backend = build_backend("vllm_poc")
+    assert isinstance(backend, Backend)
+    assert backend.status()["supports_prompt_token_ids"] is False
+
+
 def test_build_backend_mlx_returns_backend() -> None:
     backend = build_backend("mlx")
     assert isinstance(backend, Backend)
@@ -67,6 +73,16 @@ def test_build_backend_stub_rejects_batch_mode() -> None:
         build_backend(
             "stub",
             generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        )
+
+    assert exc_info.value.code == "unsupported_backend_config"
+
+
+def test_build_backend_vllm_poc_rejects_batch_mode() -> None:
+    with pytest.raises(BackendError) as exc_info:
+        build_backend(
+            "vllm_poc",
+            generation_config=GenerationRuntimeConfig(mode="batch"),
         )
 
     assert exc_info.value.code == "unsupported_backend_config"
