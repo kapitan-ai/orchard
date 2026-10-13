@@ -2279,9 +2279,8 @@ The worker-side `memory_budget_mode` (`ORCHARD_WORKER_MEMORY_BUDGET_MODE`) is
   other failures. Enforcement applies cooldown hysteresis between abort sweeps,
   and every enforcement gate is fail-open: an unavailable, missing, or failed
   memory sample SHALL NOT fail a generation on its own. Pressure is sampled at
-  admission before backend prefill starts and per backend decode event. Prefill
-  is not interruptible, so a request already in prefill is not aborted
-  mid-prefill.
+  admission before backend prefill starts and per backend decode event, so
+  enforcement does not abort a request that is still in prefill.
 
 ### 6.5 Model import
 
@@ -6073,6 +6072,8 @@ On timeout:
 * if node fails to cancel within grace period, force kill worker
 * if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
 * usage charges the selected terminal attempt's exact generated output tokens when proven, including hidden reasoning, and otherwise uses the latest validated cumulative usage with `output_usage_status = lower_bound`
+
+When the MLX-LM Worker runs in stream mode, a cancel that arrives during prefill SHALL stop the prefill at the next prefill chunk boundary and end the request as `cancelled`, so a cancel takes effect within about one chunk instead of after the whole prompt. A cancel after prefill is checked on the decode cancel stride. The shared batch runtime keeps its own cancellation behavior.
 
 Default timeout:
 
