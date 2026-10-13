@@ -2280,9 +2280,10 @@ The worker-side `memory_budget_mode` (`ORCHARD_WORKER_MEMORY_BUDGET_MODE`) is
   and every enforcement gate is fail-open: an unavailable, missing, or failed
   memory sample SHALL NOT fail a generation on its own. Pressure is sampled at
   admission before backend prefill starts and per backend decode event. An
-  enforcement abort cancels every active generation; a generation that is
-  still in prefill stops according to its runtime's cancellation behavior
-  (§12.4).
+  enforcement abort cancels every active generation. In stream mode no sample
+  is taken while the single active generation prefills, so enforcement does
+  not interrupt a stream-mode prefill; in the shared batch runtime, a
+  generation still in prefill stops according to that runtime's cancellation.
 
 ### 6.5 Model import
 
@@ -6075,7 +6076,7 @@ On timeout:
 * if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
 * usage charges the selected terminal attempt's exact generated output tokens when proven, including hidden reasoning, and otherwise uses the latest validated cumulative usage with `output_usage_status = lower_bound`
 
-For any cancel, including a timeout cancel or a caller disconnect, when the MLX-LM Worker runs in stream mode: a cancel that arrives during prefill SHALL stop the prefill at the next intermediate prefill chunk boundary and end the request as `cancelled`, so the cancel takes effect within about one chunk instead of after the whole prompt. A cancel that arrives during the last prefill chunk or after prefill is checked on the decode cancel stride, so a reply that ends before the next stride check can still complete. The shared batch runtime keeps its own cancellation behavior.
+For any cancel, including a timeout cancel or a caller disconnect, when the MLX-LM Worker runs in stream mode: a cancel that arrives during prefill SHALL stop the prefill at the next intermediate prefill chunk boundary and end the execution with the Worker's `cancelled` terminal, so the cancel takes effect within about one chunk instead of after the whole prompt. The Request and attempt outcome still follow their existing rules, for example `timed_out` for a deadline. A cancel that arrives during the last prefill chunk or after prefill is checked on the decode cancel stride, so a reply that ends before the next stride check can still complete. The shared batch runtime keeps its own cancellation behavior.
 
 Default timeout:
 
