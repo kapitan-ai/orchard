@@ -61,8 +61,9 @@ def _tiny_session() -> Any:
     # Every token needs its own id. When "[UNK]" shared id 0 with "t0", the
     # tokenizer kept one of the two at random per process, and mlx-lm's
     # detokenizer probe failed whenever "[UNK]" was the one dropped.
-    vocab = {f"t{i}": i for i in range(1, 64)}
-    vocab["[UNK]"] = 0
+    vocab = {"[UNK]": 0, **{f"t{i}": i for i in range(1, 64)}}
+    # Check before serialization can hide a duplicate by dropping either token.
+    assert len(vocab) == len(set(vocab.values())) == 64
     backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
     tokenizer = TokenizerWrapper(PreTrainedTokenizerFast(tokenizer_object=backend))
     return SimpleNamespace(
@@ -116,6 +117,17 @@ def _deps_cancelling_at(cancel: threading.Event, processed_at: int, seen: list[i
         yield from real_stream(model, tokenizer, prompt_ids, **kwargs)
 
     return dataclasses.replace(deps, stream_generate=stream)
+
+
+def test_duplicate_token_ids_do_not_drop_unk_during_tokenizer_round_trip() -> None:
+    tokenizer = _tiny_session().tokenizer
+    vocab = tokenizer.get_vocab()
+
+    assert set(vocab) == {"[UNK]", *(f"t{i}" for i in range(1, 64))}
+    assert vocab["[UNK]"] == 0
+    assert len(set(vocab.values())) == 64
+    assert tokenizer.encode("a ,b", add_special_tokens=False) == [0]
+    assert tokenizer.decode([0]) == "[UNK]"
 
 
 def test_real_prefill_stops_at_the_next_chunk_boundary_and_the_model_still_generates() -> None:
