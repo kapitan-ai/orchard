@@ -75,6 +75,9 @@ defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do
     type: :string,
     json_name: "prefixCacheFingerprints"
   )
+
+  field(:checkpoint_uncertain_count, 16, type: :uint32, json_name: "checkpointUncertainCount")
+  field(:checkpoint_retained_bytes, 17, type: :uint64, json_name: "checkpointRetainedBytes")
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerCapabilityProfile do

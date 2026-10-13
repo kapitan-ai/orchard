@@ -18,6 +18,7 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
   alias Orchard.Cluster.V1.ReasoningNonAdvertising
   alias Orchard.Cluster.V1.ReasoningObservationRequest
   alias Orchard.Cluster.V1.ReasoningUnknown
+  alias Orchard.Cluster.V1.RuntimePrefixCacheStatus
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusRequest
@@ -267,6 +268,67 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
 
     assert decoded.capabilities == nil
     assert decoded == legacy_worker_status_response()
+  end
+
+  test "Elixir decodes nonzero strict-prefix checkpoint counters from the Python fixture" do
+    encoded =
+      File.read!(Path.join(@fixture_root, "python_worker_status_response_checkpoints.pb"))
+
+    expected_prefix_cache = %{
+      legacy_worker_status_response().prefix_cache
+      | implementation: "strict_prefix",
+        checkpoint_uncertain_count: 1,
+        checkpoint_retained_bytes: 3_000
+    }
+
+    assert Protobuf.decode(encoded, WorkerStatusResponse) ==
+             %{legacy_worker_status_response() | prefix_cache: expected_prefix_cache}
+  end
+
+  test "Elixir reads the previous-revision Python fixture with zero checkpoint counters" do
+    encoded = File.read!(Path.join(@fixture_root, "python_worker_status_response.pb"))
+    decoded = Protobuf.decode(encoded, WorkerStatusResponse)
+
+    assert decoded.prefix_cache.checkpoint_uncertain_count == 0
+    assert decoded.prefix_cache.checkpoint_retained_bytes == 0
+  end
+
+  test "N-1 Worker prefix-cache status keeps checkpoint counters 16 and 17 as unknown fields" do
+    encoded =
+      File.read!(Path.join(@fixture_root, "python_worker_status_response_checkpoints.pb"))
+
+    old_view = Protobuf.decode(encoded, @n_minus_1_worker_status_response)
+
+    assert old_view.prefix_cache.implementation == "strict_prefix"
+
+    assert old_view.prefix_cache.entry_count ==
+             legacy_worker_status_response().prefix_cache.entry_count
+
+    assert Enum.map(old_view.prefix_cache.__unknown_fields__, &elem(&1, 0)) == [16, 17]
+  end
+
+  test "N-1 cluster status keeps RuntimePrefixCacheStatus checkpoint counters 17 and 18 as unknown fields" do
+    encoded =
+      Protobuf.encode(%StatusResponse{
+        runtime_prefix_cache_statuses: [
+          %RuntimePrefixCacheStatus{
+            model_ref: %ModelRef{model_id: "test/model", version: "v1"},
+            implementation: "strict_prefix",
+            enabled: true,
+            entry_count: 1,
+            status_code: "ok",
+            checkpoint_uncertain_count: 1,
+            checkpoint_retained_bytes: 3_000
+          }
+        ]
+      })
+
+    [old_status] =
+      Protobuf.decode(encoded, @n_minus_1_status_response).runtime_prefix_cache_statuses
+
+    assert old_status.implementation == "strict_prefix"
+    assert old_status.entry_count == 1
+    assert Enum.map(old_status.__unknown_fields__, &elem(&1, 0)) == [17, 18]
   end
 
   test "Elixir decodes the current-revision Python fixture with semantic equality" do

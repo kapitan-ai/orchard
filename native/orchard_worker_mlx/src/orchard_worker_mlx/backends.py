@@ -86,6 +86,8 @@ class BackendPrefixCacheStatus(TypedDict):
     status_message: str
     session_started_unix_ms: int
     prefix_cache_fingerprints: NotRequired[list[str]]
+    checkpoint_uncertain_count: NotRequired[int]
+    checkpoint_retained_bytes: NotRequired[int]
 
 
 class _NormalizedPrefixCacheStats(TypedDict):

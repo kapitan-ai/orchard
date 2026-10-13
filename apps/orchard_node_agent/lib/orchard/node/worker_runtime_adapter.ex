@@ -218,7 +218,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       status_message: Map.get(status, :status_message, ""),
       session_started_unix_ms: Map.get(status, :session_started_unix_ms, 0),
       prefix_cache_fingerprints:
-        prefix_cache_fingerprints_from_proto(Map.get(status, :prefix_cache_fingerprints, []))
+        prefix_cache_fingerprints_from_proto(Map.get(status, :prefix_cache_fingerprints, [])),
+      checkpoint_uncertain_count: Map.get(status, :checkpoint_uncertain_count, 0),
+      checkpoint_retained_bytes: Map.get(status, :checkpoint_retained_bytes, 0)
     }
   end
 

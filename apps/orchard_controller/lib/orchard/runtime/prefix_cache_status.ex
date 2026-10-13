@@ -26,7 +26,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
           required(:status_message) => String.t() | nil,
           required(:session_started_unix_ms) => non_neg_integer() | nil,
           required(:prefix_cache_fingerprint_count) => non_neg_integer(),
-          required(:prefix_cache_warmth_indicator) => boolean()
+          required(:prefix_cache_warmth_indicator) => boolean(),
+          required(:checkpoint_uncertain_count) => non_neg_integer() | nil,
+          required(:checkpoint_retained_bytes) => non_neg_integer() | nil
         }
 
   @selected_prefix_cache_keys [
@@ -42,7 +44,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     :selected_prefix_cache_session_started_unix_ms,
     :selected_prefix_cache_fingerprint_count,
     :selected_prefix_cache_warmth_indicator,
-    :selected_prefix_cache_fingerprint_match
+    :selected_prefix_cache_fingerprint_match,
+    :selected_prefix_cache_checkpoint_uncertain_count,
+    :selected_prefix_cache_checkpoint_retained_bytes
   ]
 
   @status_codes ~w(ok disabled unavailable invalid_status error)
@@ -68,6 +72,10 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     :session_started_unix_ms
   ]
 
+  # Checkpoint fields are plain proto3 scalars, so other implementations report
+  # zero. They are validated and kept only for strict-prefix status.
+  @checkpoint_implementation "strict_prefix"
+
   @doc """
   Returns the scheduler-decision keys owned by prefix-cache introspection.
   """
@@ -81,14 +89,16 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   def normalize(nil), do: nil
 
   def normalize(status) when is_map(status) do
+    implementation =
+      TextBounds.bounded_string(
+        value(status, :implementation),
+        "unknown",
+        @max_implementation_length
+      )
+
     normalized = %{
       model_ref: normalize_model_ref(value(status, :model_ref)),
-      implementation:
-        TextBounds.bounded_string(
-          value(status, :implementation),
-          "unknown",
-          @max_implementation_length
-        ),
+      implementation: implementation,
       enabled: normalize_boolean(value(status, :enabled)),
       entry_count: normalize_uint32(value(status, :entry_count)),
       total_bytes: normalize_uint64(value(status, :total_bytes)),
@@ -107,14 +117,26 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
         ),
       session_started_unix_ms: normalize_uint64(value(status, :session_started_unix_ms)),
       prefix_cache_fingerprint_count: prefix_cache_fingerprint_count(status),
-      prefix_cache_warmth_indicator: prefix_cache_warmth_indicator?(status)
+      prefix_cache_warmth_indicator: prefix_cache_warmth_indicator?(status),
+      checkpoint_uncertain_count:
+        checkpoint_field(
+          implementation,
+          normalize_uint32(value(status, :checkpoint_uncertain_count))
+        ),
+      checkpoint_retained_bytes:
+        checkpoint_field(
+          implementation,
+          normalize_uint64(value(status, :checkpoint_retained_bytes))
+        )
     }
 
-    if malformed_numeric_payload?(status) do
-      %{normalized | status_code: "invalid_status"}
-    else
-      normalized
-    end
+    malformed? =
+      malformed_numeric_payload?(status) or
+        malformed_checkpoint_payload?(implementation, status)
+
+    normalized
+    |> mark_invalid(malformed?)
+    |> keep_checkpoint_counters_only_when_ok()
   end
 
   def normalize(_status) do
@@ -134,7 +156,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       status_message: "prefix-cache telemetry payload was malformed",
       session_started_unix_ms: nil,
       prefix_cache_fingerprint_count: 0,
-      prefix_cache_warmth_indicator: false
+      prefix_cache_warmth_indicator: false,
+      checkpoint_uncertain_count: nil,
+      checkpoint_retained_bytes: nil
     }
   end
 
@@ -197,14 +221,37 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       selected_prefix_cache_session_started_unix_ms: normalized.session_started_unix_ms,
       selected_prefix_cache_fingerprint_count: normalized.prefix_cache_fingerprint_count,
       selected_prefix_cache_warmth_indicator: normalized.prefix_cache_warmth_indicator,
-      selected_prefix_cache_fingerprint_match: fingerprint_match?
+      selected_prefix_cache_fingerprint_match: fingerprint_match?,
+      selected_prefix_cache_checkpoint_uncertain_count: normalized.checkpoint_uncertain_count,
+      selected_prefix_cache_checkpoint_retained_bytes: normalized.checkpoint_retained_bytes
     }
   end
+
+  defp checkpoint_field(@checkpoint_implementation, value), do: value
+  defp checkpoint_field(_implementation, _value), do: nil
 
   defp malformed_numeric_payload?(status) do
     Enum.any?(@uint32_fields, &malformed_uint32?(status, &1)) or
       Enum.any?(@uint64_fields, &malformed_uint64?(status, &1))
   end
+
+  defp mark_invalid(normalized, true), do: %{normalized | status_code: "invalid_status"}
+  defp mark_invalid(normalized, false), do: normalized
+
+  # Only an ok status carries trustworthy counters. Other statuses report
+  # proto3 zeros, including the zeros a node agent writes when it rejects a
+  # malformed Worker status.
+  defp keep_checkpoint_counters_only_when_ok(%{status_code: "ok"} = normalized), do: normalized
+
+  defp keep_checkpoint_counters_only_when_ok(normalized),
+    do: %{normalized | checkpoint_uncertain_count: nil, checkpoint_retained_bytes: nil}
+
+  defp malformed_checkpoint_payload?(@checkpoint_implementation, status) do
+    malformed_uint32?(status, :checkpoint_uncertain_count) or
+      malformed_uint64?(status, :checkpoint_retained_bytes)
+  end
+
+  defp malformed_checkpoint_payload?(_implementation, _status), do: false
 
   defp malformed_uint32?(status, field) do
     case fetch_value(status, field) do
