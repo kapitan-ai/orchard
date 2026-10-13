@@ -85,7 +85,7 @@ defmodule Orchard.Node.ModelManager do
   @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
   @prefix_cache_fingerprint_cap 64
   @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
-  @prefix_cache_uint32_fields [:entry_count, :configured_max_entries]
+  @prefix_cache_uint32_fields [:entry_count, :configured_max_entries, :checkpoint_uncertain_count]
   @prefix_cache_uint64_fields [
     :total_bytes,
     :hits,
@@ -94,7 +94,8 @@ defmodule Orchard.Node.ModelManager do
     :stores,
     :evictions,
     :configured_max_bytes,
-    :session_started_unix_ms
+    :session_started_unix_ms,
+    :checkpoint_retained_bytes
   ]
   @invalid_prefix_cache_numeric_message "prefix cache status contained invalid numeric fields"
   @score_prefix_cache_default_timeout_ms 150
@@ -1690,7 +1691,10 @@ defmodule Orchard.Node.ModelManager do
         status_code: budget_string(prefix_cache_status[:status_code]),
         status_message: budget_string(prefix_cache_status[:status_message]),
         session_started_unix_ms: budget_uint64(prefix_cache_status[:session_started_unix_ms]),
-        prefix_cache_fingerprints: prefix_cache_fingerprints(prefix_cache_status)
+        prefix_cache_fingerprints: prefix_cache_fingerprints(prefix_cache_status),
+        checkpoint_uncertain_count:
+          prefix_cache_uint32(prefix_cache_status[:checkpoint_uncertain_count]),
+        checkpoint_retained_bytes: budget_uint64(prefix_cache_status[:checkpoint_retained_bytes])
       }
     end
   end

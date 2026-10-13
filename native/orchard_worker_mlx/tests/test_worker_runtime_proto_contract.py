@@ -33,7 +33,7 @@ LEGACY_PROTO = (
 # real schema revision rather than the current bindings.
 N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
 N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
-EXPECTED_DESCRIPTOR_SET_SHA256 = "44e5b8e359730a95b343a78077b86b628b8690d012c21f19f070502958c52ca4"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "4cd6fe5d9bd9cf620466b570a836ea5103d469ff224385cf649a227a9fca8f76"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
@@ -85,6 +85,8 @@ EXPECTED_MESSAGES = {
         ("status_message", 13, "TYPE_STRING", False, None),
         ("session_started_unix_ms", 14, "TYPE_UINT64", False, None),
         ("prefix_cache_fingerprints", 15, "TYPE_STRING", True, None),
+        ("checkpoint_uncertain_count", 16, "TYPE_UINT32", False, None),
+        ("checkpoint_retained_bytes", 17, "TYPE_UINT64", False, None),
     ],
     "WorkerCapabilityProfile": [
         ("profile_id", 1, "TYPE_STRING", False, None),

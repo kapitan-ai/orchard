@@ -1992,6 +1992,80 @@ def test_get_status_prefix_cache_invalid_status_on_malformed_backend_payload() -
     assert status.prefix_cache.enabled is True
 
 
+def _ok_prefix_cache_status(**overrides: Any) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "implementation": "strict_prefix",
+        "enabled": True,
+        "entry_count": 1,
+        "total_bytes": 4096,
+        "hits": 2,
+        "misses": 1,
+        "failures": 0,
+        "stores": 1,
+        "evictions": 0,
+        "configured_max_entries": 1,
+        "configured_max_bytes": 8192,
+        "status_code": "ok",
+        "status_message": "",
+        "session_started_unix_ms": 1,
+    }
+    status.update(overrides)
+    return status
+
+
+def test_get_status_prefix_cache_checkpoint_fields_default_to_zero_when_absent() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(prefix_cache_status=_ok_prefix_cache_status())
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "ok"
+    assert status.prefix_cache.checkpoint_uncertain_count == 0
+    assert status.prefix_cache.checkpoint_retained_bytes == 0
+
+
+def test_get_status_prefix_cache_serializes_checkpoint_fields() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status=_ok_prefix_cache_status(
+                checkpoint_uncertain_count=1, checkpoint_retained_bytes=3000
+            )
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "ok"
+    assert status.prefix_cache.checkpoint_uncertain_count == 1
+    assert status.prefix_cache.checkpoint_retained_bytes == 3000
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"checkpoint_uncertain_count": True},
+        {"checkpoint_uncertain_count": -1},
+        {"checkpoint_uncertain_count": 2**32},
+        {"checkpoint_retained_bytes": "3000"},
+        {"checkpoint_retained_bytes": -1},
+        {"checkpoint_retained_bytes": 2**64},
+    ],
+)
+def test_get_status_prefix_cache_invalid_checkpoint_field_is_invalid_status(
+    overrides: dict[str, Any],
+) -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(prefix_cache_status=_ok_prefix_cache_status(**overrides))
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "invalid_status"
+    assert status.prefix_cache.checkpoint_uncertain_count == 0
+    assert status.prefix_cache.checkpoint_retained_bytes == 0
+
+
 def test_get_status_prefix_cache_backend_exception_returns_error_status() -> None:
     class PrefixCacheRaisesBackend(HappyBackend):
         def prefix_cache_status(self) -> dict[str, Any]:

@@ -781,6 +781,7 @@ defmodule OrchardNodeAgentTest do
     alias Orchard.Cluster.V1.ModelRef
 
     @malformed_prefix_model_id "prefix-cache/malformed"
+    @malformed_checkpoint_model_id "prefix-cache/malformed-checkpoint"
 
     @impl true
     def get_status(adapter_state, _opts) do
@@ -829,6 +830,29 @@ defmodule OrchardNodeAgentTest do
       }
     end
 
+    defp prefix_cache_status_for(%{
+           model_ref: %ModelRef{model_id: @malformed_checkpoint_model_id}
+         }) do
+      %{
+        implementation: "strict_prefix",
+        enabled: true,
+        entry_count: 1,
+        total_bytes: 16_384,
+        hits: 0,
+        misses: 0,
+        failures: 0,
+        stores: 1,
+        evictions: 0,
+        configured_max_entries: 1,
+        configured_max_bytes: 16_384,
+        status_code: "ok",
+        status_message: "",
+        session_started_unix_ms: 1_713_726_400_000,
+        checkpoint_uncertain_count: 0,
+        checkpoint_retained_bytes: -1
+      }
+    end
+
     defp prefix_cache_status_for(_adapter_state) do
       %{
         implementation: "kv",
@@ -844,7 +868,9 @@ defmodule OrchardNodeAgentTest do
         configured_max_bytes: 1_048_576,
         status_code: "ok",
         status_message: "",
-        session_started_unix_ms: 1_713_726_400_000
+        session_started_unix_ms: 1_713_726_400_000,
+        checkpoint_uncertain_count: 1,
+        checkpoint_retained_bytes: 3_000
       }
     end
 
@@ -2412,10 +2438,44 @@ defmodule OrchardNodeAgentTest do
 
       assert by_model[bundle.model_id].status_code == "ok"
       assert by_model[bundle.model_id].entry_count == 2
+      assert by_model[bundle.model_id].checkpoint_uncertain_count == 1
+      assert by_model[bundle.model_id].checkpoint_retained_bytes == 3_000
       assert by_model[malformed_bundle.model_id].status_code == "invalid_status"
 
       assert by_model[malformed_bundle.model_id].status_message ==
                "prefix cache status contained invalid numeric fields"
+    end)
+  end
+
+  test "get_status marks a malformed checkpoint counter invalid_status and zeroes it", %{
+    bundle: bundle
+  } do
+    malformed_bundle = stage_test_bundle!("prefix-cache/malformed-checkpoint", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(malformed_bundle.cache_path)
+      File.rm_rf(malformed_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PrefixCacheMixedRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(malformed_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      by_model =
+        Map.new(response.runtime_prefix_cache_statuses, fn status ->
+          {status.model_ref.model_id, status}
+        end)
+
+      malformed = by_model[malformed_bundle.model_id]
+      assert malformed.status_code == "invalid_status"
+      assert malformed.checkpoint_uncertain_count == 0
+      assert malformed.checkpoint_retained_bytes == 0
+      assert by_model[bundle.model_id].status_code == "ok"
     end)
   end
 

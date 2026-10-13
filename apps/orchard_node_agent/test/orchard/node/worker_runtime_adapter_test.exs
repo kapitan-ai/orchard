@@ -205,6 +205,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
           status_code: "ok",
           status_message: "",
           session_started_unix_ms: 1_713_726_400_000,
+          checkpoint_uncertain_count: 1,
+          checkpoint_retained_bytes: 3_000,
           prefix_cache_fingerprints: [
             @fingerprint_a,
             "hmac-sha256:" <> String.duplicate("A", 64),
@@ -589,6 +591,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       assert status.prefix_cache_status.total_bytes == 32_768
       assert status.prefix_cache_status.status_code == "ok"
       assert status.prefix_cache_status.session_started_unix_ms == 1_713_726_400_000
+      # The adapter passes checkpoint counters through; the Controller decides
+      # which implementations keep them.
+      assert status.prefix_cache_status.checkpoint_uncertain_count == 1
+      assert status.prefix_cache_status.checkpoint_retained_bytes == 3_000
 
       assert status.prefix_cache_status.prefix_cache_fingerprints == [
                "hmac-sha256:" <> String.duplicate("a", 64),
