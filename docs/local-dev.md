@@ -1252,9 +1252,9 @@ BundleBuilder will keep emitting the legacy field until a separate accepted chan
 ## TensorFold Experiment (Source Dev)
 
 The default-off TensorFold Worker is a source experiment under `SPEC.md` §7.2.9.
-It is frozen: Orchard chose the stock MLX-LM Worker with strict-prefix reuse
-instead, and this package is not maintained, tested in CI or installed by
-`make setup`. See the
+Orchard no longer develops it: the direction for the coding-agent tuple is the
+stock MLX-LM Worker with strict-prefix reuse, and this package is not tested in
+CI or installed by `make setup`. See the
 [package README](../native/orchard_tensorfold_http/README.md#status-frozen-not-maintained).
 It runs through the normal source-dev launchers with the variables below.
 A successful start proves the configuration only. Native load, memory fit,

@@ -2,18 +2,18 @@
 
 ## Status: frozen, not maintained
 
-Orchard chose the stock MLX-LM Worker with strict-prefix checkpoint reuse for the Qwen3.8 coding-agent tuple instead of TensorFold (see OpenSpec change `add-stock-strict-prefix-checkpoints`). Measured on the same hardware and model, the stock Worker with reuse gave output identical to the stock Worker without reuse, matched TensorFold on long-context follow-ups and agentic sessions, and used no more memory.
+Orchard's direction for the Qwen3.8 coding-agent tuple is the stock MLX-LM Worker with strict-prefix checkpoint reuse (OpenSpec change `add-stock-strict-prefix-checkpoints`). Measured on the same hardware and model, the stock Worker with reuse gave output identical to the stock Worker without reuse, matched TensorFold on long-context follow-ups and agentic sessions, and used no more memory. Both remain default-off experiments: promoting strict-prefix reuse needs its own decision and SPEC.md change, and this package stays the experiment that `SPEC.md` §7.2.9 describes until that section changes.
 
-This package therefore stays in the repository as a frozen, default-off source experiment:
+Orchard is not developing this package further:
 
 - It stays pinned to TensorFold 0.6.6. Orchard does not add features to it, retune it, mirror TensorFold or move its pins.
-- It is not part of required CI or `make setup`. Its model-free test suite, about 400 tests, runs only when someone runs it by hand. That is deliberate: Orchard does not spend CI time or maintenance on a path it no longer develops.
-- A change elsewhere, for example in `native/orchard_worker_mlx`, which this package imports, can break it without a CI signal.
+- It is not part of required CI or `make setup`. Its model-free test suite, about 400 tests, runs only when someone runs it by hand. That is deliberate: Orchard does not spend CI time on a path it no longer develops.
+- A change elsewhere, for example in the protobuf definitions or in `native/orchard_worker_mlx`, which this package imports, can break it without a CI signal.
 
 For contributors and agents:
 
-- If you change this package, run its tests: `mise exec -- uv run --directory native/orchard_tensorfold_http pytest`.
-- If you change shared code it depends on, running its tests is optional. A failure here does not block a merge. Say so in the pull request instead.
+- Run its tests when you change this package, or shared code it depends on (the protobuf definitions, `native/orchard_worker_mlx`, the Controller and Node TensorFold paths): `mise exec -- uv run --directory native/orchard_tensorfold_http pytest`.
+- A failure that shows a real break of the `SPEC.md` §7.2.9 experiment contract blocks the merge, as for any other contract regression, until the code is fixed or that section is revised.
 - Do not add this package to CI or setup, and do not start new TensorFold work, without a new decision.
 
 The rest of this README describes the experiment as it was built.
