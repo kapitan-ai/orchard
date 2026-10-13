@@ -16,5 +16,5 @@ When the MLX-LM Worker runs in stream mode and a request is cancelled during pre
 - **THEN** the checkpoint is captured before the prefill stops and stays available to a later request
 
 #### Scenario: Cancel at the final prefill callback
-- **WHEN** the cancel event is set only when the final `(total, total)` progress callback runs
-- **THEN** the Worker does not stop there, and the decode cancel stride ends the request as `cancelled`
+- **WHEN** the cancel event is set only when the final `(total, total)` progress callback runs, after the first output token was sampled
+- **THEN** the Worker does not stop there; the existing decode cancel check applies, so the request ends as `cancelled` at the next decode cancel stride, or completes normally if generation ends before that stride

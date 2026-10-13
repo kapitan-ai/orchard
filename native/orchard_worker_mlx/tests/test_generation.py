@@ -7790,6 +7790,23 @@ def test_spec_12_4_cancel_at_the_final_prefill_callback_uses_the_decode_check() 
     assert events[-1]["code"] == "cancelled"
 
 
+def test_spec_12_4_final_callback_cancel_completes_when_output_ends_before_the_stride() -> None:
+    """After prefill, cancellation keeps the decode stride: a short reply can finish."""
+    cancel = threading.Event()
+    deps = _make_deps(
+        stream_generate=_chunked_prefill_stream(
+            chunks=3, cancel=cancel, record=[], cancel_before_final=True
+        )
+    )
+
+    events = _collect_events(
+        _make_fake_session(decode_cancel_stride=8), _make_fake_request(), deps, cancel
+    )
+
+    assert events[-1]["kind"] == "completed"
+    assert [e["delta"] for e in events if e["kind"] == "output_text_delta"] == ["a", "b"]
+
+
 def test_spec_12_4_shared_batch_runtime_prefill_is_not_interrupted() -> None:
     cancel = threading.Event()
     record: list[str] = []
