@@ -75,8 +75,6 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   # Checkpoint fields are plain proto3 scalars, so other implementations report
   # zero. They are validated and kept only for strict-prefix status.
   @checkpoint_implementation "strict_prefix"
-  @checkpoint_uint32_fields [:checkpoint_uncertain_count]
-  @checkpoint_uint64_fields [:checkpoint_retained_bytes]
 
   @doc """
   Returns the scheduler-decision keys owned by prefix-cache introspection.
@@ -138,7 +136,7 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
 
     normalized
     |> mark_invalid(malformed?)
-    |> drop_invalid_checkpoint_counters()
+    |> keep_checkpoint_counters_only_when_ok()
   end
 
   def normalize(_status) do
@@ -240,16 +238,17 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   defp mark_invalid(normalized, true), do: %{normalized | status_code: "invalid_status"}
   defp mark_invalid(normalized, false), do: normalized
 
-  # An invalid status carries no trustworthy counters, including the zeros a
-  # node agent writes when it rejects a malformed Worker status.
-  defp drop_invalid_checkpoint_counters(%{status_code: "invalid_status"} = normalized),
+  # Only an ok status carries trustworthy counters. Other statuses report
+  # proto3 zeros, including the zeros a node agent writes when it rejects a
+  # malformed Worker status.
+  defp keep_checkpoint_counters_only_when_ok(%{status_code: "ok"} = normalized), do: normalized
+
+  defp keep_checkpoint_counters_only_when_ok(normalized),
     do: %{normalized | checkpoint_uncertain_count: nil, checkpoint_retained_bytes: nil}
 
-  defp drop_invalid_checkpoint_counters(normalized), do: normalized
-
   defp malformed_checkpoint_payload?(@checkpoint_implementation, status) do
-    Enum.any?(@checkpoint_uint32_fields, &malformed_uint32?(status, &1)) or
-      Enum.any?(@checkpoint_uint64_fields, &malformed_uint64?(status, &1))
+    malformed_uint32?(status, :checkpoint_uncertain_count) or
+      malformed_uint64?(status, :checkpoint_retained_bytes)
   end
 
   defp malformed_checkpoint_payload?(_implementation, _status), do: false

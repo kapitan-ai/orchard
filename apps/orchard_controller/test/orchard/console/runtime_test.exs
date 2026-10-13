@@ -834,18 +834,20 @@ defmodule OrchardConsole.RuntimeTest do
       end
     end
 
-    test "SPEC 7.5.3 drops checkpoint counters from a node-reported invalid status" do
-      status =
-        PrefixCacheStatus.normalize(%{
-          implementation: "strict_prefix",
-          status_code: "invalid_status",
-          checkpoint_uncertain_count: 0,
-          checkpoint_retained_bytes: 0
-        })
+    test "SPEC 7.5.3 keeps checkpoint counters only from an ok status" do
+      for status_code <- ~w(invalid_status error unavailable disabled) do
+        status =
+          PrefixCacheStatus.normalize(%{
+            implementation: "strict_prefix",
+            status_code: status_code,
+            checkpoint_uncertain_count: 0,
+            checkpoint_retained_bytes: 0
+          })
 
-      assert status.status_code == "invalid_status"
-      assert status.checkpoint_uncertain_count == nil
-      assert status.checkpoint_retained_bytes == nil
+        assert status.status_code == status_code
+        assert status.checkpoint_uncertain_count == nil
+        assert status.checkpoint_retained_bytes == nil
+      end
     end
 
     test "SPEC 7.5.3 ignores malformed checkpoint counters for other implementations" do
