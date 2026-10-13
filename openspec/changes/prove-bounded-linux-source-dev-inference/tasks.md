@@ -1,13 +1,13 @@
 ## 1. Current-main contract review
 
-- [ ] 1.1 Review ADR 0037 and the minimal §7.2.9 permission against KAP-49, KAP-116, ADR 0035 and M9.
-- [ ] 1.2 Validate this change and all OpenSpec packages strictly; record results without importing historical completed tasks.
+- [x] 1.1 Review ADR 0037 and the minimal §7.2.9 permission against KAP-49, KAP-116, ADR 0035 and M9.
+- [x] 1.2 Validate this change and all OpenSpec packages strictly; record results without importing historical completed tasks.
 
 ## 2. Deterministic implementation verification
 
-- [ ] 2.1 Verify default-off local gRPC/loopback HTTP selection, logical load/unload, concurrency one and unsupported-input rejection.
-- [ ] 2.2 Verify legacy-blended byte preservation, stateful final-suffix framing, UUID calls, malformed/partial tool rejection and total decoded-output bounds with fake providers.
-- [ ] 2.3 Verify historical setup and runner main/execute refuse before mutation; keep live execution disabled.
+- [x] 2.1 Verify default-off local gRPC/loopback HTTP selection, logical load/unload, concurrency one and unsupported-input rejection.
+- [x] 2.2 Verify legacy-blended raw pass-through, unambiguous final-suffix tool parsing, UUID calls, stop/length marker-prefix distinctions, parameter decoding and total decoded-output bounds with fake providers.
+- [x] 2.3 Verify historical setup and runner main/execute refuse before mutation; keep live execution disabled.
 
 ## 3. Separately reviewed future work (not authorized)
 

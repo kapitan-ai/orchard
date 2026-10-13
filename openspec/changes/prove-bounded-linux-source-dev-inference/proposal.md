@@ -11,7 +11,12 @@ accepted `reconcile-linux-node-source-dev-contract` change.
 - Permit separately selected `vllm_poc` behind existing local gRPC and loopback
   HTTP `/v1/completions` on 58080, with logical load/unload and concurrency one.
 - Preserve rendered prompts and legacy-blended generated reasoning; use stateful
-  framing only to locate the final suffix for fail-closed Qwen XML tool parsing.
+  framing only to locate an unambiguous final suffix for fail-closed Qwen XML
+  tool parsing. Raw output passes through at thinking length or malformed
+  reasoning framing; tool marker prefixes remain text at clean stop, not length.
+- Decode tool parameters by declared property type, retaining raw strings and
+  vLLM qwen3 JSON-or-trimmed-text fallback for absent or unknown types, without
+  claiming general JSON Schema validation.
 - Require pinned sampling and bounded total decoded output, reject token IDs and
   logprobs, and use UUID tool-call IDs under KAP-116.
 - Keep historical setup and live runner disabled; retain deterministic evidence

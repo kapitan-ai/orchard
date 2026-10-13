@@ -38,6 +38,7 @@ class _FakeVLLM(ThreadingHTTPServer):
         self.raw_events: list[bytes] | None = None
         self.send_done = True
         self.model_id = SERVED_MODEL_ID
+        self.identity_payload: Any | None = None
         self.response_status = 200
         self.content_type = "text/event-stream"
         self.stall = False
@@ -70,7 +71,10 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/models":
             self.send_error(404)
             return
-        body = json.dumps({"data": [{"id": self.server.model_id}]}).encode()
+        payload = self.server.identity_payload
+        if payload is None:
+            payload = {"data": [{"id": self.server.model_id}]}
+        body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -286,6 +290,35 @@ def test_load_and_generate_require_existing_loaded_model(tmp_path: Path) -> None
     assert wrong_binding.value.code == "model_not_loaded"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": 5},
+        {"data": True},
+        {"data": {"id": SERVED_MODEL_ID}},
+        {"data": [5]},
+        {"data": [{"id": SERVED_MODEL_ID}, False]},
+        {"data": [{"id": [SERVED_MODEL_ID]}]},
+        {"data": [{"id": SERVED_MODEL_ID}, {}]},
+    ],
+)
+def test_load_model_protocol_rejects_malformed_provider_identity(
+    tmp_path: Path, payload: Any
+) -> None:
+    with _FakeVLLM() as server:
+        server.identity_payload = payload
+        backend = VLLMPocBackend(config=VLLMPocConfig(endpoint=server.endpoint))
+        ack = WorkerRuntimeServicer(backend).LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id=MODEL_ID, version=MODEL_VERSION, model_path=str(tmp_path)
+            ),
+            None,
+        )
+    assert ack.ok is False
+    assert ack.message.startswith("provider_identity_mismatch:")
+    assert backend.status()["loaded"] is False
+
+
 def test_generate_rejects_request_for_different_model_version(tmp_path: Path) -> None:
     with _FakeVLLM() as server:
         backend = _loaded_backend(server, tmp_path)
@@ -340,6 +373,37 @@ def test_length_finish_is_preserved(tmp_path: Path) -> None:
     assert result[-1]["finish_reason"] == "FINISH_REASON_LENGTH"
 
 
+@pytest.mark.parametrize(
+    ("raw", "finish_reason"),
+    [
+        ("thinking still in progress", "length"),
+        ("reasoning<thi", "length"),
+        ("reasoning</think>", "stop"),
+        ("reasoning</think>answer<think>late</think>", "stop"),
+        ("reasoning<think>nested</think>answer", "stop"),
+        (
+            "outer<think>inner</think><tool_call><function=read></function></tool_call>",
+            "length",
+        ),
+        ("reasoning</think>answer<", "stop"),
+        ("reasoning</think>answer</", "stop"),
+        ("reasoning</think>answer<p", "stop"),
+    ],
+)
+def test_legacy_blended_preserves_raw_bytes_and_provider_terminal(
+    tmp_path: Path, raw: str, finish_reason: str
+) -> None:
+    provider_events = _provider_events(list(raw), close_prompt_reasoning=False)
+    provider_events[-2]["choices"][0]["finish_reason"] = finish_reason
+    with _FakeVLLM(provider_events) as server:
+        result = _generate(_loaded_backend(server, tmp_path), _request())
+    assert result[0] == {"kind": "output_text_delta", "delta": raw}
+    assert [event["kind"] for event in result] == ["output_text_delta", "completed"]
+    assert result[-1]["finish_reason"] == (
+        "FINISH_REASON_LENGTH" if finish_reason == "length" else "FINISH_REASON_STOP"
+    )
+
+
 def test_split_qwen_tool_call_is_validated_and_normalized(tmp_path: Path) -> None:
     tools = [
         {
@@ -364,6 +428,72 @@ def test_split_qwen_tool_call_is_validated_and_normalized(tmp_path: Path) -> Non
         "arguments_delta": '{"path":"fixture.txt","line":2}',
     }
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "raw", "expected"),
+    [
+        ("string", "123", "123"),
+        ("string", "true", "true"),
+        ("string", "null", "null"),
+        ("string", '"quoted"', '"quoted"'),
+        ("string", "  spaced\n", "  spaced\n"),
+        ("number", "12.5", 12.5),
+        ("number", "3", 3),
+        ("integer", "-12", -12),
+        ("boolean", "true", True),
+        ("object", '{"x":"y"}', {"x": "y"}),
+        ("array", '[1,"b"]', [1, "b"]),
+        ("null", "null", None),
+        (None, " 123 ", 123),
+        (None, " word ", "word"),
+        ("unknown", " true ", True),
+    ],
+)
+def test_tool_parameter_decoding_respects_declared_types(
+    tmp_path: Path, declared_type: str | None, raw: str, expected: Any
+) -> None:
+    definition = {"type": declared_type} if declared_type else {}
+    tools = [{"function": {"name": "read", "parameters": {"properties": {"value": definition}}}}]
+    xml = f"<tool_call><function=read><parameter=value>{raw}</parameter></function></tool_call>"
+    with _FakeVLLM(_provider_events([xml])) as server:
+        result = _generate(_loaded_backend(server, tmp_path), _request(tools=tools))
+    value = json.loads(result[1]["delta"]["function"]["arguments_delta"])["value"]
+    assert type(value) is type(expected)
+    assert value == expected
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "raw"),
+    [
+        ("number", "NaN"),
+        ("number", "Infinity"),
+        ("number", "-Infinity"),
+        ("number", "1e400"),
+        ("integer", "9" * 4301),
+        (None, "9" * 4301),
+        ("object", '{"x":NaN}'),
+        ("array", "[1e400]"),
+        ("integer", "true"),
+        ("integer", "2.5"),
+        ("boolean", "1"),
+        ("object", "[]"),
+        ("array", "{}"),
+        ("null", "false"),
+        ("number", '"3"'),
+        ("number", "invalid"),
+    ],
+)
+def test_invalid_tool_parameter_values_fail_with_typed_error(
+    tmp_path: Path, declared_type: str | None, raw: str
+) -> None:
+    definition = {"type": declared_type} if declared_type else {}
+    tools = [{"function": {"name": "read", "parameters": {"properties": {"value": definition}}}}]
+    xml = f"<tool_call><function=read><parameter=value>{raw}</parameter></function></tool_call>"
+    with _FakeVLLM(_provider_events([xml])) as server:
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), _request(tools=tools))
+    assert exc_info.value.code == "tool_call_parse_failed"
 
 
 def test_tool_ids_are_unique_across_calls_and_requests(tmp_path: Path) -> None:
@@ -437,11 +567,6 @@ def test_public_text_prefix_is_preserved_before_typed_tool_calls(
             "none",
             "tool_call_parse_failed",
         ),
-        (
-            "reasoning</think>answer<think>late</think>",
-            "auto",
-            "reasoning_parser_conformance_failed",
-        ),
     ],
 )
 def test_parser_fails_closed(text: str, tool_choice: Any, code: str) -> None:
@@ -458,14 +583,13 @@ def test_parser_fails_closed(text: str, tool_choice: Any, code: str) -> None:
     assert exc_info.value.code == code
 
 
-def test_parser_rejects_reasoning_without_a_final_answer() -> None:
+def test_parser_preserves_reasoning_without_a_final_answer() -> None:
     parser = _QwenPocOutputParser(_params())
     parser.push("reasoning</think>")
-
-    with pytest.raises(BackendError) as exc_info:
-        parser.finish("stop")
-
-    assert exc_info.value.code == "provider_empty_output"
+    assert parser.finish("stop") == (
+        [{"kind": "output_text_delta", "delta": "reasoning</think>"}],
+        False,
+    )
 
 
 @pytest.mark.parametrize(
@@ -606,6 +730,28 @@ def test_invalid_provider_events_fail_closed(
         with pytest.raises(BackendError) as exc_info:
             list(backend.generate(_request(), threading.Event()))
     assert exc_info.value.code == code
+
+
+@pytest.mark.parametrize(
+    "placement", ["early-empty", "early-choice", "terminal", "duplicate", "regressing"]
+)
+def test_usage_must_be_a_single_post_terminal_trailer(tmp_path: Path, placement: str) -> None:
+    events = _provider_events(["answer"])
+    usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    if placement == "early-empty":
+        events.insert(0, {"choices": [], "usage": usage})
+    elif placement == "early-choice":
+        events[0]["usage"] = usage
+    elif placement == "terminal":
+        events[-2]["usage"] = usage
+    else:
+        if placement == "regressing":
+            events[-1]["usage"] = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        events.append({"choices": [], "usage": usage})
+    with _FakeVLLM(events) as server:
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), _request())
+    assert exc_info.value.code == "provider_usage_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -774,6 +920,42 @@ def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:
         assert server.client_closed.wait(timeout=2)
 
 
+@pytest.mark.parametrize("delivered", [0, 1, 2, 3])
+def test_cancellation_during_buffered_delivery_emits_one_cancelled_terminal(
+    tmp_path: Path, monkeypatch, delivered: int
+) -> None:
+    cancel = threading.Event()
+    if delivered == 0:
+        original_finish = _QwenPocOutputParser.finish
+
+        def finish(parser, reason):
+            result = original_finish(parser, reason)
+            cancel.set()
+            return result
+
+        monkeypatch.setattr(_QwenPocOutputParser, "finish", finish)
+    tools = [{"function": {"name": "read"}}]
+    xml = "<tool_call><function=read></function></tool_call>"
+    with _FakeVLLM(_provider_events([xml + xml])) as server:
+        backend = _loaded_backend(server, tmp_path)
+        backend.start_generation()
+        try:
+            iterator = backend.generate(_request(tools=tools), cancel)
+            for _ in range(delivered):
+                assert next(iterator)["kind"] != "completed"
+            cancel.set()
+            assert list(iterator) == [
+                {
+                    "kind": "failed",
+                    "code": "cancelled",
+                    "message": "request cancelled",
+                    "retryable": False,
+                }
+            ]
+        finally:
+            backend.finish_generation()
+
+
 def test_single_flight_and_logical_unload(tmp_path: Path) -> None:
     with _FakeVLLM() as server:
         backend = _loaded_backend(server, tmp_path)
@@ -820,12 +1002,10 @@ def test_fake_provider_crosses_worker_runtime_protocol(tmp_path: Path) -> None:
     assert events[1].completed.usage.total_tokens == 5
 
 
-def test_parser_rejects_truncated_partial_control_marker() -> None:
+def test_parser_preserves_truncated_reasoning_marker_as_legacy_text() -> None:
     parser = _QwenPocOutputParser(_params())
     parser.push("<thi")
-    with pytest.raises(BackendError) as exc_info:
-        parser.finish("length")
-    assert exc_info.value.code == "reasoning_parser_conformance_failed"
+    assert parser.finish("length") == ([{"kind": "output_text_delta", "delta": "<thi"}], False)
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
@@ -838,13 +1018,17 @@ def test_parser_rejects_every_truncated_tool_control_marker_prefix(
 ) -> None:
     for length in range(1, len(marker)):
         parser = _QwenPocOutputParser(_params())
-        parser.push(f"reasoning</think>answer{marker[:length]}")
-        with pytest.raises(BackendError) as exc_info:
-            parser.finish(finish_reason)
-        assert exc_info.value.code in {
-            "tool_call_parse_failed",
-            "reasoning_parser_conformance_failed",
-        }
+        raw = f"reasoning</think>answer{marker[:length]}"
+        parser.push(raw)
+        if finish_reason == "length":
+            with pytest.raises(BackendError) as exc_info:
+                parser.finish(finish_reason)
+            assert exc_info.value.code == "tool_call_parse_failed"
+        else:
+            assert parser.finish(finish_reason) == (
+                [{"kind": "output_text_delta", "delta": raw}],
+                False,
+            )
 
     parser = _QwenPocOutputParser(_params())
     parser.push(f"reasoning</think>answer{marker}")

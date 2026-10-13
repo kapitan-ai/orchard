@@ -39,15 +39,27 @@ just the final suffix.
 
 Preserve generated reasoning bytes as legacy-blended text under main KAP-49.
 Stateful framing begins inside the prompt-opened reasoning frame and identifies
-the final suffix after its matching streamed close; it is not a `final_only`
-projection or a public reasoning capability. Parse Qwen XML tools only in that
-suffix. Preserve a text prefix exactly, then emit complete requested tool calls
-in source order with UUID call IDs under KAP-116. Only whitespace may separate
-or follow tool blocks. Reject malformed, partial, unknown, unrequested,
-duplicate-argument, interleaved or trailing-text and ambiguous framing cases;
-never reinterpret tool-like reasoning as a call. Structural parsing adds no
-JSON Schema validation of model-selected values. Deterministic coverage must
-split control markers across chunks and cover bounded-output failures.
+an unambiguous final suffix after its matching streamed close. Framing is only a
+tool-parsing locator, not negotiated-mode fail-closed reasoning validation or a
+`final_only` projection. Raw `legacy_blended` output passes through even when
+thinking ends at length or reasoning framing is malformed; without an
+unambiguous final suffix, do not parse tools. Parse Qwen XML tools only in that
+suffix, never tool-like reasoning. Preserve a text prefix exactly, then emit
+complete requested tool calls in source order with UUID call IDs under KAP-116.
+Only whitespace may separate or follow tool blocks. Fail closed on complete or
+ambiguous tool syntax there, including malformed, unknown, unrequested,
+duplicate-argument, interleaved or trailing-text cases. Truncated marker prefixes
+fail closed only at length; at clean stop they remain ordinary text.
+
+Decode parameters using `tool.parameters.properties[name].type`: declared
+`string` retains raw text; `number`, `integer`, `boolean`, `object`, `array` and
+`null` require JSON parsing and matching types. Absent or unknown types retain
+vLLM qwen3 JSON-or-trimmed-text semantics. Non-finite values and numeric parse
+failures are `tool_call_parse_failed`. This decoding is not general JSON Schema
+validation of model-selected values. Total decoded-output bounds still include
+reasoning and framing; pass-through does not discard bytes to fit the bound.
+Deterministic coverage must split control markers across chunks and cover these
+stop/length distinctions and bounded-output failures.
 
 Tool structure uses monotonic delimiter scanning, not backtracking regexes.
 HTTP identity checks have a wall-clock deadline. Cancellation shuts down the
@@ -100,6 +112,10 @@ OpenCode tools remain client-owned, not Orchard execution or confinement.
 
 Deterministic implementation evidence can protect the seam without activating a
 GPU, downloading a model or asserting current real API/OpenCode success.
+
+The remaining live risk is exact `prompt_tokens == request.input_tokens`
+validation: it may fail if Controller and vLLM tokenization diverge. This is not
+current live evidence or permission to change the tokenizer contract.
 
 ## SPEC.md impact
 

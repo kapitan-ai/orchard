@@ -37,15 +37,19 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "${FAKE_IMAGE_ID:-sha256:e0cfcfcb9b86e2c2d0d52a93689773f20f380cb8e050a24ce550c44f6f55c5eb}"
     ;;
   "container ls")
-    if [[ " $* " == *" name="* && -f "$state/preexisting" ]]; then
-      printf 'preexisting-id\n'
+    if [[ " $* " == *'{{.Names}}'* ]]; then
+      [[ -z "${FAKE_EXISTING_NAME:-}" ]] || printf 'preexisting-id %s\n' "$FAKE_EXISTING_NAME"
     elif [[ -f "$state/present" ]]; then
       printf 'fixture-id\n'
     fi
     ;;
   "container inspect")
     [[ -f "$state/present" ]]
-    cat "$state/label"
+    if [[ " $* " == *'{{.State.Running}}'* ]]; then
+      [[ ! -f "$state/container-exited" ]] && printf 'true\n' || printf 'false\n'
+    else
+      cat "$state/label"
+    fi
     ;;
   "volume ls") printf '%s' "${FAKE_VOLUMES:-}" ;;
   "create --pull=never")
@@ -74,6 +78,13 @@ case "${1:-} ${2:-}" in
       printf 'fixture provider failed during startup\n' >&2
       rm -f "$state/running" "$state/present"
       exit 9
+    fi
+    if [[ "${FAKE_PROVIDER_AFTER_READY:-0}" != "0" ]]; then
+      while [[ ! -f "$state/command-ran" ]]; do sleep 0.02; done
+      if [[ "$FAKE_PROVIDER_AFTER_READY" == client ]]; then
+        exit 0
+      fi
+      touch "$state/container-exited"
     fi
     while [[ -f "$state/present" ]]; do sleep 0.02; done
     ;;
@@ -125,6 +136,43 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'fedcba9876543210fedcba9876543210\n'
+EOF
+  cat >"$root/bin/setsid" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$FAKE_STATE/group"
+exec /usr/bin/setsid "$@"
+EOF
+  cat >"$root/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == '-eo pgid=,stat=' ]]; then
+  [[ "${FAKE_GROUP_UNKNOWN:-0}" != 1 ]] || exit 42
+  if [[ "${FAKE_GROUP_UNSETTLED:-0}" == 1 && -f "$FAKE_STATE/killed" ]]; then
+    printf '%s S\n' "$(cat "$FAKE_STATE/group")"
+    exit 0
+  fi
+  if [[ "${FAKE_GROUP_ZOMBIE:-0}" == 1 && -f "$FAKE_STATE/killed" ]]; then
+    printf '%s Z\n' "$(cat "$FAKE_STATE/group")"
+    exit 0
+  fi
+fi
+exec /usr/bin/ps "$@"
+EOF
+  cat >"$root/signal-env" <<'EOF'
+kill() {
+  if [[ "${1:-}" == -s ]]; then
+    [[ "$2" != KILL ]] || touch "$FAKE_STATE/killed"
+    if [[ "${FAKE_SIGNAL_FAILURE:-}" == "$2" ]]; then
+      # Independently settle the real fixture after reporting a failed signal.
+      if [[ "$2" == KILL ]]; then
+        (sleep 0.3; /bin/kill -KILL -- "${@: -1}") &
+      fi
+      return 42
+    fi
+    builtin kill "$@"
+  else
+    builtin kill "$@"
+  fi
+}
 EOF
   chmod +x "$root/bin/"*
 }
@@ -391,9 +439,86 @@ wait "$helper_pid"
 status=$?
 set -e
 [[ "$status" -eq 143 ]] || fail "descendant cancellation status was not preserved"
-if ps -o stat= -p "$descendant_pid" 2>/dev/null | grep -qv '^Z'; then
+if ps -eo pid= | awk -v pid="$descendant_pid" '$1 == pid { found=1 } END { exit !found }'; then
   fail "TERM-ignoring descendant survived cleanup"
 fi
 [[ ! -e "$SURVIVING_DESCENDANT/state/running" ]] || fail "descendant cancellation left container"
 
-printf 'KAP-112 vLLM supervisor tests passed\n'
+NORMAL_DESCENDANT="$TMP_ROOT/normal-descendant"
+make_case "$NORMAL_DESCENDANT"
+cat >"$NORMAL_DESCENDANT/command.sh" <<EOF
+bash -c 'trap "" TERM; touch "$NORMAL_DESCENDANT/state/descendant-ready"; while true; do sleep 1; done' &
+printf '%s\n' "\$!" >"$NORMAL_DESCENDANT/state/descendant-pid"
+while [[ ! -e "$NORMAL_DESCENDANT/state/descendant-ready" ]]; do sleep 0.02; done
+exit 0
+EOF
+run_case "$NORMAL_DESCENDANT" "$NORMAL_DESCENDANT/out"
+descendant_pid="$(cat "$NORMAL_DESCENDANT/state/descendant-pid")"
+if ps -eo pid= | awk -v pid="$descendant_pid" '$1 == pid { found=1 } END { exit !found }'; then
+  fail "normal command exit left a descendant"
+fi
+assert_grep 'Cleanup verified' "$NORMAL_DESCENDANT/out"
+
+# Review item 7: literal names and mount grammar must fail before mutation.
+for name_case in exact regex-similar substring; do
+  ROOT="$TMP_ROOT/name-$name_case"
+  make_case "$ROOT"
+  printf 'exit 0\n' >"$ROOT/command.sh"
+  existing='orchardXfixture'
+  [[ "$name_case" != exact ]] || existing='orchard.fixture'
+  [[ "$name_case" != substring ]] || existing='prefix-orchard.fixture-suffix'
+  if run_case "$ROOT" "$ROOT/out" ORCHARD_KAP112_VLLM_CONTAINER_NAME=orchard.fixture \
+    FAKE_EXISTING_NAME="$existing"; then
+    [[ "$name_case" != exact ]] || fail "exact name collision accepted"
+  else
+    [[ "$name_case" == exact ]] || fail "nonliteral name collision rejected"
+    assert_grep 'container name is already present' "$ROOT/out"
+    ! grep -q '^create ' "$ROOT/docker.log" || fail "collision mutated engine"
+  fi
+done
+ROOT="$TMP_ROOT/comma,source"
+make_case "$ROOT"
+if run_case "$ROOT" "$ROOT/out"; then fail "comma mount source accepted"; fi
+assert_grep 'mount source must not contain commas' "$ROOT/out"
+[[ ! -e "$ROOT/docker.log" ]] || fail "comma source invoked engine"
+
+for provider_case in client container; do
+  ROOT="$TMP_ROOT/after-ready-$provider_case"
+  make_case "$ROOT"
+  printf 'touch %q\nwhile true; do sleep 1; done\n' "$ROOT/state/command-ran" >"$ROOT/command.sh"
+  if run_case "$ROOT" "$ROOT/out" FAKE_PROVIDER_AFTER_READY="$provider_case"; then
+    fail "provider exit after readiness accepted"
+  fi
+  assert_grep 'after readiness' "$ROOT/out"
+  assert_grep 'Cleanup verified' "$ROOT/out"
+  [[ ! -e "$ROOT/state/present" ]] || fail "provider failure left container"
+  group="$(cat "$ROOT/state/group")"
+  if ps -eo pgid=,stat= | awk -v group="$group" '$1 == group { found=1 } END { exit !found }'; then
+    fail "provider exit left owned command group"
+  fi
+done
+
+for failure_case in TERM KILL unknown unsettled zombie; do
+  ROOT="$TMP_ROOT/group-$failure_case"
+  make_case "$ROOT"
+  printf 'trap "" TERM\ntouch %q\nwhile true; do sleep 1; done\n' "$ROOT/state/command-ran" >"$ROOT/command.sh"
+  options=(BASH_ENV="$ROOT/signal-env" FAKE_PROVIDER_AFTER_READY=client)
+  case "$failure_case" in
+    TERM|KILL) options+=(FAKE_SIGNAL_FAILURE="$failure_case") ;;
+    unknown) options+=(FAKE_GROUP_UNKNOWN=1) ;;
+    unsettled) options+=(FAKE_GROUP_UNSETTLED=1) ;;
+    zombie) options+=(FAKE_GROUP_ZOMBIE=1) ;;
+  esac
+  started=$SECONDS
+  if run_case "$ROOT" "$ROOT/out" "${options[@]}"; then fail "group failure accepted"; fi
+  [[ $((SECONDS - started)) -lt 20 ]] || fail "group cleanup was not bounded"
+  if [[ "$failure_case" == TERM || "$failure_case" == KILL ]]; then
+    assert_grep "failed to signal owned command group with $failure_case" "$ROOT/out"
+  else
+    assert_grep 'group remains or is unobservable after bounded cleanup' "$ROOT/out"
+  fi
+  ! grep -q 'Cleanup verified' "$ROOT/out" || fail "unverified cleanup claimed success"
+  [[ ! -e "$ROOT/state/present" ]] || fail "group failure skipped container cleanup"
+done
+
+printf 'KAP-112 vLLM supervisor tests passed (32 scenarios)\n'

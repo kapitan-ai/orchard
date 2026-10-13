@@ -19,15 +19,27 @@ repetition penalty `1`.
 ### Requirement: Stateful framing preserves legacy-blended reasoning
 
 The Worker SHALL preserve generated reasoning bytes as legacy-blended text
-under KAP-49, not project `final_only`. Stateful framing SHALL start inside the
-prompt-opened reasoning frame and identify the final suffix across stream
-chunks. Qwen XML tool parsing SHALL apply only to that suffix. Complete requested
-tool blocks MAY follow an exact text prefix; calls SHALL retain source order
-and use UUID IDs under KAP-116. Only whitespace SHALL separate or follow tool
-blocks. Malformed, partial, unknown, unrequested, duplicate-argument,
-interleaved/trailing-text or ambiguous output SHALL fail closed. Structural
-parsing SHALL NOT claim JSON Schema validation of generated values. Total
-decoded output SHALL be bounded including reasoning and framing.
+under KAP-49, not project `final_only`. Raw `legacy_blended` output SHALL pass
+through even when thinking ends at length or reasoning framing is malformed.
+Stateful framing SHALL start inside the prompt-opened reasoning frame and serve
+only to locate an unambiguous final suffix across stream chunks, not enforce
+negotiated-mode fail-closed reasoning rules. Qwen XML tool parsing SHALL apply
+only to that suffix; without one, raw output SHALL remain text. Complete
+requested tool blocks MAY follow an exact text prefix; calls SHALL retain source
+order and use UUID IDs under KAP-116. Only whitespace SHALL separate or follow
+tool blocks. Complete or ambiguous tool syntax in the identified suffix SHALL
+fail closed when malformed, unknown, unrequested, duplicate-argument or
+interleaved/trailing-text. Truncated marker prefixes SHALL fail closed only at
+length and SHALL remain ordinary text at clean stop.
+
+Parameter decoding SHALL use `tool.parameters.properties[name].type`: declared
+`string` SHALL retain raw text; `number`, `integer`, `boolean`, `object`, `array`
+and `null` SHALL require JSON parsing and matching types. Absent or unknown
+types SHALL retain vLLM qwen3 JSON-or-trimmed-text semantics. Non-finite values
+and numeric parse failures SHALL produce `tool_call_parse_failed`. This SHALL
+NOT claim general JSON Schema validation of generated values. Total decoded
+output SHALL remain bounded including reasoning and framing; pass-through
+SHALL NOT discard bytes to fit the bound.
 
 #### Scenario: Tool-shaped bytes occur within reasoning
 
@@ -38,7 +50,23 @@ decoded output SHALL be bounded including reasoning and framing.
 
 - **WHEN** markers arrive across stream boundaries
 - **THEN** framing preserves the same bytes and tool decisions as unsplit input
-- **AND** incomplete framing or total decoded output beyond the bound fails rather than discarding reasoning to fit
+- **AND** total decoded output beyond the bound fails rather than discarding reasoning to fit
+
+#### Scenario: Thinking ends at length or reasoning framing is malformed
+
+- **WHEN** thinking ends at length or reasoning framing is malformed without an unambiguous final suffix
+- **THEN** raw legacy-blended output passes through as text without tool parsing, subject to total decoded-output bounds
+
+#### Scenario: Tool marker prefix ends the identified suffix
+
+- **WHEN** an identified final suffix ends with a truncated tool marker prefix
+- **THEN** it fails closed at length but remains ordinary text at clean stop
+
+#### Scenario: Declared parameter types govern decoding
+
+- **WHEN** a requested tool call supplies parameter text
+- **THEN** declared strings retain raw text, declared JSON types require parsing and matching types, and absent or unknown types use JSON-or-trimmed-text semantics
+- **AND** non-finite values or numeric parse failures produce `tool_call_parse_failed`
 
 ### Requirement: Historical execution remains disabled
 

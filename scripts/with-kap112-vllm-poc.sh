@@ -22,6 +22,7 @@ child_pid=""
 child_pgid=""
 provider_pid=""
 requested_status=""
+command_signal_failed=0
 pre_gpu_processes=""
 pre_volumes=""
 
@@ -54,8 +55,13 @@ port_state() {
 }
 
 container_id_by_name() {
-  "$container_engine" container ls --all --no-trunc \
-    --filter "name=^/${container_name}$" --format '{{.ID}}'
+  local output id name
+  output="$("$container_engine" container ls --all --no-trunc \
+    --format '{{.ID}} {{.Names}}')" || return 2
+  while read -r id name; do
+    [[ "$name" != "$container_name" ]] || printf '%s\n' "$id"
+  done <<<"$output"
+  return 0
 }
 
 container_id_is_present() {
@@ -84,13 +90,24 @@ capture_owned_container_id() {
 signal_owned_command() {
   local signal=$1
   [[ -n "$child_pgid" ]] || return 0
-  kill -s "$signal" -- "-$child_pgid" 2>/dev/null || true
+  if ! kill -s "$signal" -- "-$child_pgid" 2>/dev/null; then
+    # A vanished group is a benign race; failed observation is not absence.
+    if [[ "$(process_group_state)" != absent ]]; then
+      printf 'error: failed to signal owned command group with %s\n' "$signal" >&2
+      command_signal_failed=1
+    fi
+  fi
 }
 
-process_group_is_running() {
-  [[ -n "$child_pgid" ]] || return 1
-  ps -eo pgid=,stat= 2>/dev/null |
-    awk -v group="$child_pgid" '$1 == group && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+process_group_state() {
+  local output
+  [[ -n "$child_pgid" ]] || { printf 'absent\n'; return; }
+  if ! output="$(ps -eo pgid=,stat= 2>/dev/null)"; then
+    printf 'unobservable\n'
+  else
+    awk -v group="$child_pgid" '$1 == group { found = 1 }
+      END { print found ? "running" : "absent" }' <<<"$output"
+  fi
 }
 
 request_stop() {
@@ -101,45 +118,72 @@ request_stop() {
 }
 
 terminate_owned_command() {
-  local attempt
-  [[ -n "$child_pgid" ]] || return 0
-  if process_group_is_running; then
+  local attempt state
+  [[ -n "$child_pgid" ]] || return "$command_signal_failed"
+  if [[ "$(process_group_state)" != absent ]]; then
     signal_owned_command TERM
     for attempt in {1..50}; do
-      process_group_is_running || break
+      [[ "$(process_group_state)" != absent ]] || break
       sleep 0.1
     done
-    if process_group_is_running; then
+    if [[ "$(process_group_state)" != absent ]]; then
       signal_owned_command KILL
     fi
+  fi
+  for attempt in {1..50}; do
+    if [[ -n "$child_pid" && "$(process_state "$child_pid")" == absent ]]; then
+      wait "$child_pid" 2>/dev/null || true
+      child_pid=""
+    fi
+    state="$(process_group_state)"
+    [[ "$state" != absent ]] || break
+    sleep 0.1
+  done
+  if [[ "$state" != absent ]]; then
+    printf 'error: owned command group remains or is unobservable after bounded cleanup\n' >&2
+    return 1
   fi
   [[ -z "$child_pid" ]] || wait "$child_pid" 2>/dev/null || true
   child_pid=""
   child_pgid=""
+  return "$command_signal_failed"
 }
 
-provider_process_is_running() {
-  [[ -n "$provider_pid" ]] || return 1
-  ps -o stat= -p "$provider_pid" 2>/dev/null | grep -qv '^Z'
+process_state() {
+  local pid=$1 output
+  [[ -n "$pid" ]] || { printf 'absent\n'; return; }
+  if ! output="$(ps -eo pid=,stat= 2>/dev/null)"; then
+    printf 'unobservable\n'
+  else
+    awk -v pid="$pid" '$1 == pid && $2 !~ /^Z/ { found=1 }
+      END { print found ? "running" : "absent" }' <<<"$output"
+  fi
 }
 
 terminate_provider_client() {
-  local attempt
+  local attempt signal failed=0
   [[ -n "$provider_pid" ]] || return 0
   for attempt in {1..50}; do
-    provider_process_is_running || break
+    [[ "$(process_state "$provider_pid")" != absent ]] || break
     sleep 0.1
   done
-  if provider_process_is_running; then
-    kill -TERM "$provider_pid" 2>/dev/null || true
+  for signal in TERM KILL; do
+    [[ "$(process_state "$provider_pid")" != absent ]] || break
+    if ! kill -s "$signal" "$provider_pid" 2>/dev/null; then
+      [[ "$(process_state "$provider_pid")" == absent ]] || failed=1
+    fi
     for attempt in {1..50}; do
-      provider_process_is_running || break
+      [[ "$(process_state "$provider_pid")" != absent ]] || break
       sleep 0.1
     done
+  done
+  if [[ "$(process_state "$provider_pid")" != absent ]]; then
+    printf 'error: provider client remains or is unobservable after bounded cleanup\n' >&2
+    return 1
   fi
-  provider_process_is_running && kill -KILL "$provider_pid" 2>/dev/null || true
   wait "$provider_pid" 2>/dev/null || true
   provider_pid=""
+  return "$failed"
 }
 
 cleanup() {
@@ -148,7 +192,7 @@ cleanup() {
     printf 'error: unable to recover KAP-112 vLLM ownership\n' >&2
     failed=1
   fi
-  terminate_owned_command
+  terminate_owned_command || failed=1
 
   if [[ -n "$owned_container_id" ]]; then
     if label="$($container_engine container inspect \
@@ -188,7 +232,7 @@ cleanup() {
       fi
     fi
   fi
-  terminate_provider_client
+  terminate_provider_client || failed=1
 
   for attempt in {1..100}; do
     state=0
@@ -237,7 +281,7 @@ cleanup() {
     failed=1
   fi
   if [[ "$failed" -eq 0 ]]; then
-    printf '==> Cleanup verified: vLLM port, container, volume, GPU, and temporary state restored\n'
+    printf '==> Cleanup verified: owned command group, vLLM port, container, volume, GPU, and temporary state restored\n'
   fi
   return "$failed"
 }
@@ -297,6 +341,7 @@ done
 snapshot_root="$(realpath "$snapshot_root")"
 model_dir="$(realpath "$model_dir")"
 evidence_file="$(realpath "$evidence_file")"
+[[ "$model_dir" != *,* ]] || fail "model mount source must not contain commas"
 [[ "$model_dir" == "${snapshot_root%/}/"* && "$evidence_file" == "${snapshot_root%/}/"* ]] ||
   fail "model and evidence must remain beneath ORCHARD_KAP112_SNAPSHOT_ROOT"
 mise exec -- uv run --directory "$repo_root/native/orchard_worker_mlx" python \
@@ -314,7 +359,8 @@ case "$(port_state)" in
   present) fail "vLLM port is already occupied: $port" ;;
   unknown) fail "unable to observe vLLM port before mutation" ;;
 esac
-[[ -z "$(container_id_by_name)" ]] || fail "KAP-112 vLLM container name is already present"
+existing_container_id="$(container_id_by_name)" || fail "unable to observe container names before mutation"
+[[ -z "$existing_container_id" ]] || fail "KAP-112 vLLM container name is already present"
 pre_gpu_processes="$(gpu_processes)" || fail "unable to inspect selected GPU"
 [[ -z "$pre_gpu_processes" ]] || fail "selected KAP-112 GPU is already in use"
 pre_volumes="$($container_engine volume ls --quiet)" || fail "unable to capture volume pre-state"
@@ -334,7 +380,7 @@ owned_container_id="$("$container_engine" create --pull=never --rm \
   --network host \
   --gpus "device=$GPU_UUID" \
   --shm-size 1g \
-  --mount "type=bind,src=$(realpath "$model_dir"),dst=/model,readonly" \
+  --mount "type=bind,src=$model_dir,dst=/model,readonly" \
   "$VLLM_IMAGE" \
   --model /model \
   --served-model-name "$SERVED_MODEL" \
@@ -352,7 +398,9 @@ provider_pid=$!
 ready=0
 for ((attempt = 1; attempt <= ready_attempts; attempt++)); do
   [[ -z "$requested_status" ]] || exit "$requested_status"
-  if ! ps -o stat= -p "$provider_pid" 2>/dev/null | grep -qv '^Z'; then
+  provider_state="$(process_state "$provider_pid")"
+  [[ "$provider_state" != unobservable ]] || fail "unable to observe provider before readiness"
+  if [[ "$provider_state" == absent ]]; then
     set +e
     wait "$provider_pid"
     provider_status=$?
@@ -375,6 +423,18 @@ done
 setsid -- "$@" &
 child_pid=$!
 child_pgid="$child_pid"
+while :; do
+  # Query the full process table: ps -p uses failure for both absence and errors.
+  process_table="$(ps -eo pid=,stat=)" || fail "unable to observe supervised processes"
+  if ! awk -v pid="$provider_pid" '$1 == pid && $2 !~ /^Z/ { found=1 } END { exit !found }' <<<"$process_table"; then
+    fail "KAP-112 vLLM provider exited after readiness"
+  fi
+  container_running="$("$container_engine" container inspect --format '{{.State.Running}}' "$owned_container_id")" ||
+    fail "unable to observe provider container after readiness"
+  [[ "$container_running" == true ]] || fail "KAP-112 vLLM container exited after readiness"
+  awk -v pid="$child_pid" '$1 == pid && $2 !~ /^Z/ { found=1 } END { exit !found }' <<<"$process_table" || break
+  sleep 0.1
+done
 set +e
 wait "$child_pid"
 status=$?

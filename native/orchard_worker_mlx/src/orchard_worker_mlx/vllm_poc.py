@@ -24,11 +24,6 @@ from orchard_worker_mlx.backends import (
     BackendStatus,
     cancelled_event,
 )
-from orchard_worker_mlx.reasoning import (
-    PARSER_VERSION_V1,
-    PROMPT_OPENED_FAMILY,
-    StatefulReasoningParser,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +34,6 @@ DEFAULT_ENDPOINT = "http://127.0.0.1:58080/v1/completions"
 MAX_INPUT_TOKENS = 131_072
 MAX_OUTPUT_TOKENS = 8_192
 MAX_TOTAL_TOKENS = 139_264
-PARSER_ID = "qwen3.8-poc-raw-v1"
-RENDER_CONTRACT = "vllm-poc-legacy-framing"
-RENDER_CONTRACT_VERSION = "1"
 SAMPLING_CONTROLS = {
     "temperature": 1.0,
     "top_p": 0.95,
@@ -212,14 +204,19 @@ class VLLMPocBackend:
                     return
 
                 parsed_usage = _normalize_usage(item.get("usage"), request)
-                if parsed_usage is not None:
-                    usage = parsed_usage
-
                 choices = item.get("choices")
                 if not isinstance(choices, list):
                     raise BackendError(
                         "provider_protocol_error", "provider choices were invalid", False
                     )
+                if parsed_usage is not None:
+                    if choices or provider_finish is None or usage is not None:
+                        raise BackendError(
+                            "provider_usage_mismatch",
+                            "provider usage was not a final trailer",
+                            False,
+                        )
+                    usage = parsed_usage
                 if not choices:
                     continue
                 if len(choices) != 1 or not isinstance(choices[0], dict):
@@ -269,7 +266,14 @@ class VLLMPocBackend:
             )
 
         events, tool_calls = output_parser.finish(provider_finish)
-        yield from events
+        for event in events:
+            if cancel_event.is_set():
+                yield cancelled_event()
+                return
+            yield event
+        if cancel_event.is_set():
+            yield cancelled_event()
+            return
         yield {
             "kind": "completed",
             "finish_reason": (
@@ -330,12 +334,11 @@ class VLLMPocBackend:
             ) from None
 
         data = payload.get("data") if isinstance(payload, dict) else None
-        ids = {
-            item.get("id")
-            for item in data or []
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        }
-        if ids != {SERVED_MODEL_ID}:
+        if (
+            not isinstance(data, list)
+            or not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in data)
+            or {item["id"] for item in data} != {SERVED_MODEL_ID}
+        ):
             raise BackendError(
                 "provider_identity_mismatch", "vllm_poc provider identity did not match", False
             )
@@ -573,15 +576,6 @@ class VLLMPocBackend:
 
 class _QwenPocOutputParser:
     def __init__(self, params: Any) -> None:
-        self._reasoning = StatefulReasoningParser(
-            parser_family=PROMPT_OPENED_FAMILY,
-            parser_version=PARSER_VERSION_V1,
-            generation_policy="enabled",
-            render_contract=RENDER_CONTRACT,
-            render_contract_version=RENDER_CONTRACT_VERSION,
-            synthetic_prompt_opened_render_contracts=((RENDER_CONTRACT, RENDER_CONTRACT_VERSION),),
-        )
-        self._parts: list[str] = []
         self._raw_parts: list[str] = []
         self._char_count = 0
         self._tools = _decode_json_bytes(getattr(params, "tools_json", b""), "tools_json", [])
@@ -614,23 +608,20 @@ class _QwenPocOutputParser:
                 "provider_output_too_large", "provider output exceeded the size limit", False
             )
         self._raw_parts.append(text)
-        delta = self._reasoning.push(text)
-        self._append(delta.final_text)
 
     def finish(self, finish_reason: str) -> tuple[list[dict[str, Any]], bool]:
-        terminal = self._reasoning.finish("length" if finish_reason == "length" else "stop")
-        if not terminal.ok:
-            raise BackendError(
-                terminal.failure_code or "reasoning_parser_conformance_failed",
-                terminal.failure_reason or "reasoning parser conformance failed",
-                False,
-            )
-        self._append(terminal.final_text)
-        text = "".join(self._parts)
-        events, tool_calls = _parse_final_output(text, self._tools, self._tool_choice)
         raw = "".join(self._raw_parts)
-        # KAP-49 retains legacy-blended bytes; framing only separates tool syntax.
-        prefix = raw[: -len(text)] if text else raw
+        reasoning, close, text = raw.partition("</think>")
+        if (
+            not close
+            or "<think>" in reasoning
+            or any(marker in text for marker in ("<think>", "</think>"))
+        ):
+            return ([{"kind": "output_text_delta", "delta": raw}] if raw else []), False
+        events, tool_calls = _parse_final_output(
+            text, self._tools, self._tool_choice, finish_reason
+        )
+        prefix = reasoning + close
         if prefix:
             if events and events[0]["kind"] == "output_text_delta":
                 events[0]["delta"] = prefix + events[0]["delta"]
@@ -638,13 +629,9 @@ class _QwenPocOutputParser:
                 events.insert(0, {"kind": "output_text_delta", "delta": prefix})
         return events, tool_calls
 
-    def _append(self, text: str) -> None:
-        if text:
-            self._parts.append(text)
-
 
 def _parse_final_output(
-    text: str, tools: list[Any], tool_choice: Any
+    text: str, tools: list[Any], tool_choice: Any, finish_reason: str
 ) -> tuple[list[dict[str, Any]], bool]:
     requires_tool, named_tool, tools_disabled = _tool_choice_policy(tool_choice)
     blocks: list[tuple[int, int, str]] = []
@@ -663,7 +650,7 @@ def _parse_final_output(
     has_marker = any(marker in text for marker in _TOOL_CONTROL_MARKERS)
 
     if not blocks:
-        if has_marker or _has_partial_tool_marker(text):
+        if has_marker or (finish_reason == "length" and _has_partial_tool_marker(text)):
             raise BackendError(
                 "tool_call_parse_failed", "provider returned an incomplete tool call", False
             )
@@ -671,11 +658,7 @@ def _parse_final_output(
             raise BackendError(
                 "tool_choice_not_satisfied", "model did not emit a required tool call", False
             )
-        if not text.strip():
-            raise BackendError(
-                "provider_empty_output", "provider returned no final answer text", False
-            )
-        return ([{"kind": "output_text_delta", "delta": text}]), False
+        return ([{"kind": "output_text_delta", "delta": text}] if text else []), False
 
     if tools_disabled or not tools:
         raise BackendError(
@@ -696,7 +679,7 @@ def _parse_final_output(
         [{"kind": "output_text_delta", "delta": public_prefix}] if public_prefix else []
     )
     for index, block in enumerate(blocks):
-        name, arguments = _parse_tool_block(block[2])
+        name, arguments = _parse_tool_block(block[2], tools)
         if name not in requested_names:
             raise BackendError(
                 "tool_call_parse_failed", "provider emitted an unrequested function", False
@@ -743,7 +726,7 @@ def _has_tool_control_syntax(text: str) -> bool:
     )
 
 
-def _parse_tool_block(body: str) -> tuple[str, dict[str, Any]]:
+def _parse_tool_block(body: str, tools: list[Any]) -> tuple[str, dict[str, Any]]:
     body = body.strip()
     name_end = body.find(">")
     if not body.startswith("<function=") or not body.endswith("</function>") or name_end == -1:
@@ -753,6 +736,9 @@ def _parse_tool_block(body: str) -> tuple[str, dict[str, Any]]:
     name = body[len("<function=") : name_end]
     if _NAME_RE.fullmatch(name) is None:
         raise BackendError("tool_call_parse_failed", "provider returned an invalid function", False)
+    function = next((tool["function"] for tool in tools if tool["function"]["name"] == name), {})
+    parameters = function.get("parameters")
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
     parameter_body = body[name_end + 1 : -len("</function>")]
     arguments: dict[str, Any] = {}
     cursor = 0
@@ -782,17 +768,41 @@ def _parse_tool_block(body: str) -> tuple[str, dict[str, Any]]:
             raise BackendError(
                 "tool_call_parse_failed", "provider returned duplicate tool arguments", False
             )
-        arguments[key] = _parse_parameter_value(raw_value)
+        definition = properties.get(key) if isinstance(properties, dict) else None
+        expected_type = definition.get("type") if isinstance(definition, dict) else None
+        arguments[key] = _parse_parameter_value(raw_value, expected_type)
         cursor = value_end + len("</parameter>")
     return name, arguments
 
 
-def _parse_parameter_value(value: str) -> Any:
+def _parse_parameter_value(value: str, expected_type: Any) -> Any:
+    if expected_type == "string":
+        return value
     stripped = value.strip()
     try:
-        return json.loads(stripped)
+        parsed = json.loads(stripped)
+        json.dumps(parsed, allow_nan=False)
     except json.JSONDecodeError:
+        if expected_type in ("number", "integer", "boolean", "object", "array", "null"):
+            raise BackendError(
+                "tool_call_parse_failed", "tool parameter is not valid JSON for its type", False
+            ) from None
         return stripped
+    except ValueError:
+        raise BackendError(
+            "tool_call_parse_failed", "tool parameter contains an invalid number", False
+        ) from None
+    valid = {
+        "number": isinstance(parsed, (int, float)) and not isinstance(parsed, bool),
+        "integer": isinstance(parsed, int) and not isinstance(parsed, bool),
+        "boolean": isinstance(parsed, bool),
+        "object": isinstance(parsed, dict),
+        "array": isinstance(parsed, list),
+        "null": parsed is None,
+    }
+    if isinstance(expected_type, str) and not valid.get(expected_type, True):
+        raise BackendError("tool_call_parse_failed", "tool parameter has the wrong type", False)
+    return parsed
 
 
 def _requested_tool_names(tools: list[Any]) -> set[str]:
