@@ -4,7 +4,7 @@ defmodule Orchard.Inference.RequestPreparationAccessTest do
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.Governance
-  alias Orchard.Inference.ChatOrchestrator
+  alias Orchard.Inference.{ChatOrchestrator, ResponsesOrchestrator}
   alias Orchard.Models
   alias Orchard.Models.Access
 
@@ -109,6 +109,35 @@ defmodule Orchard.Inference.RequestPreparationAccessTest do
 
     assert {:error, {:model_not_found, _detail}} =
              ChatOrchestrator.prepare(params, tenant_id: tenant.id)
+  end
+
+  test "KAP-112 exact proof model rejects omitted reasoning before tokenization", %{
+    tenant: tenant
+  } do
+    model =
+      create_model!(%{
+        model_id: "Qwen/Qwen3.8-27B",
+        version: "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        state: :active,
+        runtime_requirements: %{
+          "adapter" => "vllm_poc",
+          "min_agent_capability" => "kap112_unmanaged_linux_poc"
+        }
+      })
+
+    assert {:error,
+            {:tokenization,
+             {:unsupported_reasoning_control,
+              "KAP-112 requests require the exact explicit medium reasoning contract"}}} =
+             ResponsesOrchestrator.prepare(
+               %{
+                 "model" => "#{model.model_id}@#{model.version}",
+                 "input" => "hello",
+                 "temperature" => 1.0,
+                 "top_p" => 0.95
+               },
+               tenant_id: tenant.id
+             )
   end
 
   defp params_for(model, content) do

@@ -115,6 +115,43 @@ defmodule Orchard.CanonicalRequestTest do
     assert request.reasoning.reasoning_effort == :high
   end
 
+  test "new/1 accepts only the proof-bound unresolved medium public request" do
+    request =
+      CanonicalRequest.new(%{
+        internal_id: "internal-pending",
+        public_id: "public-pending",
+        endpoint: :responses,
+        tenant_id: "tenant-1",
+        model_ref: %{model_id: "model", version: "v1"},
+        reasoning: %{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :medium,
+          source: :explicit_public,
+          effective_contract: %{mode: :pending}
+        }
+      })
+
+    assert request.reasoning.effective_contract == %{mode: :pending}
+
+    assert_raise ArgumentError, ~r/reasoning/, fn ->
+      CanonicalRequest.new(%{
+        internal_id: "internal-invalid-pending",
+        public_id: "public-invalid-pending",
+        endpoint: :responses,
+        tenant_id: "tenant-1",
+        model_ref: %{model_id: "model", version: "v1"},
+        reasoning: %{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :high,
+          source: :explicit_public,
+          effective_contract: %{mode: :pending}
+        }
+      })
+    end
+  end
+
   test "new/1 rejects effort outside the enabled final-only negotiated contract" do
     for {generation_policy, projection, reasoning_effort, source} <- [
           {:model_default, :final_only, :low, :explicit_public},

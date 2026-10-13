@@ -272,6 +272,22 @@ def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
         )
 
 
+def test_main_defaults_vllm_poc_backend_to_stream(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    captured: dict[str, object] = {}
+
+    def fake_serve(_socket_path: str, backend: str, **kwargs: object) -> None:
+        captured["backend"] = backend
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "vllm_poc"]) == 0
+    assert captured["backend"] == "vllm_poc"
+    assert captured["generation_config"].mode == "stream"
+
+
 def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:
     from orchard_worker_mlx import cli
 

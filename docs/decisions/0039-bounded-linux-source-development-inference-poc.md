@@ -2,10 +2,64 @@
 
 ## Status
 
-Proposed under KAP-112. Two explicit Repository Owner gates remain: acceptance
-of this contract before implementation, then acceptance of the exact clean
-implementation commit/tree and executable mutation plan before model download,
-provider activation, or inference.
+Accepted for adapter/setup source implementation under KAP-112 by the Repository
+Owner on 2026-09-21 at exact contract commit
+`23395a3b06b144f76b1a11397c3d7ebe23c114b0`. The remaining Repository Owner gate
+must accept the exact clean implementation commit/tree and executable mutation
+plan before model download, provider activation, GPU use, live database setup,
+or inference.
+
+The Repository Owner separately authorized source-only implementation of the
+deterministic smoke runner and frozen fixture unit on 2026-09-21. That
+authorization does not satisfy the remaining mutation gate. The runner must
+first derive and receipt the exact 131,072/131,073-token adjacent fixtures
+offline through the pinned OpenCode request shape and snapshot tokenizer while
+all proof service ports remain clear; live execution must reproduce those
+identities rather than accept an operator-supplied token count.
+
+The runner binds `tokenizer.json`, `tokenizer_config.json`, and
+`chat_template.jinja` hashes into that receipt and recounts both adjacent
+fixtures before live Orchard startup. It pins the installed OpenCode 1.18.31
+binary and dependency-tree identities and supplies disposable provider/config,
+data, state, cache and workspace paths so the proof does not mutate persistent
+OpenCode configuration. OpenCode otherwise runs as the ordinary installed host
+client; the proof does not sandbox, enumerate or authorize its client-side tool
+surface. Typed event evidence proves that OpenCode consumed Orchard's API and
+received terminal assistant output, usage, finish and structured tool protocol
+data. An owned loopback API compatibility proxy measures client requests and
+exact refusal status, type and code; a durable Request-count delta measures
+persistence without claiming that transient dispatch absence has been
+established.
+
+On 2026-09-22 the Repository Owner authorized one final corrected experiment
+from source commit `b0991cb8ade8dc0c6130f89ee1e2183a6925ed6e` and tree
+`7d6eefa2c0713ca9aac466c4a0e74ba780dfb09c`. Prior live evidence showed that an
+omitted reasoning policy let the immutable template select its `xhigh` default.
+The correction changes only that axis: the exact artifact is registered at
+runtime for explicit `enabled + final_only + medium` reasoning, and every proof
+request selects it. Missing, mismatched, or defaulted registration stops the
+proof. All other tuple elements, prompts, limits, deadlines, and cleanup remain
+unchanged, and no further live retry is authorized.
+
+The Repository Owner later clarified the proof boundary: OpenCode is the
+external client under test, not a workload Orchard confines. The POC therefore
+runs the pinned installed client normally from the disposable proof workspace
+and judges Orchard API/protocol compatibility plus the independently checked
+workspace outcome. OpenCode may choose any installed client-side tool or command;
+those choices are neither enumerated nor treated as Orchard acceptance evidence.
+Controller, Node, Worker and provider processes remain tool-neutral. This source
+correction does not itself authorize another live attempt.
+
+The next owner-authorized live attempt reached successful direct, short-client
+stream and 131,072-token long-context assertions, then stopped before overflow
+because Ecto debug logging preceded the untagged durable Request count on
+stdout. The owner authorized source-only correction of that evidence boundary:
+durable counts use one exact tagged non-negative integer, and each stage writes
+an atomic mode-0600 closed-field receipt containing typed timing, usage, route,
+tool-protocol and outcome evidence or only a failure type/hash/length. Receipt
+files never contain prompts, model output, tool input/output, file content,
+credentials or sensitive paths and survive runner-state cleanup for private
+evidence capture. This is not authorization for another live attempt.
 
 ## Context
 
@@ -39,8 +93,8 @@ Propose exactly this immutable proof-of-concept tuple:
   `sha256:e0cfcfcb9b86e2c2d0d52a93689773f20f380cb8e050a24ce550c44f6f55c5eb`,
   build commit `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`, Apache-2.0;
 - model, tokenizer, processor, and template: `Qwen/Qwen3.8-27B`, Apache-2.0,
-  exact revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, repository storage
-  55,615,875,685 bytes, with 18 BF16 safetensor shards and native 262,144-token
+  exact revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, selected snapshot
+  55,586,114,863 bytes, with 18 BF16 safetensor shards and native 262,144-token
   context; and
 - execution scope: text-only, concurrency one, BF16 weights and KV cache,
   native context only, no YaRN, quantization, speculative decoding, multimodal
@@ -54,6 +108,27 @@ for the local manifest. The snapshot's own chat template is authoritative. No
 floating branch, remote code, alternate tokenizer, quantization, adapter, or
 sibling model is allowed.
 
+The prior 55,615,875,685-byte figure was the Hub `used_storage` field, not the
+selected revision's file sum. It consists of 55,575,816,096 bytes of selected
+LFS objects plus a 40,059,589-byte `R.Basca_Tr2.geojson` LFS object reachable
+only from pull-request refs 117 and 118. The selected revision additionally has
+10,298,767 bytes of ordinary Git objects. Therefore
+55,575,816,096 + 10,298,767 = 55,586,114,863 selected bytes, and
+40,059,589 - 10,298,767 = the exact 29,760,822-byte overstatement. The canonical
+32-file path/size/blob/LFS/ETag manifest is
+`scripts/fixtures/kap112/qwen-snapshot-manifest.json`.
+The immutable download container runs as the invoking numeric UID:GID, and the
+handoff fails unless both the snapshot and mode-0600 evidence remain owned and
+readable by that identity. Its Hub/Xet cache is confined to the same owner-only
+proof root rather than the image user's default home.
+Offline OpenCode calibration applies the same bounded `input_text` to `text`
+normalization as the Responses API before invoking the exact tokenizer and
+rejects every unsupported content-part shape.
+The long and adjacent-overflow messages are supplied through OpenCode stdin so
+the complete frozen context reaches the API request without file-tool display
+truncation; the exact captured request is passed to the tokenizer over stdin
+and recounted before live execution, avoiding host argument-size truncation.
+
 The smallest adapter adds a development-only `vllm_poc` backend to the existing
 Python Worker Runtime service. It preserves the Node Agent-owned Unix-socket
 gRPC surface and translates `LoadModel`, `GetStatus`, `Generate`, `Cancel`, and
@@ -64,26 +139,48 @@ not move rendering or scheduling into vLLM.
 
 Legacy completions does not apply vLLM's Chat Completions tool or reasoning
 parsers. The development adapter therefore owns one exact, artifact-bound raw
-Qwen3.8 stream parser: it discards bounded `<think>...</think>` content without
-retaining it, validates and normalizes complete Qwen XML tool blocks into
-`ToolCallDelta` events, emits only final answer text as `OutputTextDelta`, and
-fails closed on malformed, partial, unrequested, unknown, or parser-ambiguous
-output. Parser identity and version are recorded in evidence. Deterministic
-fake-provider tests SHALL split every control marker across stream boundaries
-and cover malformed and truncated calls. This proof-only parser is not a
-qualified provider parser or permission to weaken the production contract.
+Qwen3.8 stream parser. The pinned template opens `<think>` in the rendered
+prompt, so the parser starts inside reasoning, discards content through the
+matching streamed `</think>` without retaining it, validates and normalizes
+complete Qwen XML tool blocks into `ToolCallDelta` events, emits only final
+answer text as `OutputTextDelta`, and fails closed on malformed, partial,
+unrequested, unknown, or parser-ambiguous output. Parser identity and version
+are recorded in evidence. Deterministic fake-provider tests SHALL split every
+streamed control marker across stream boundaries and cover malformed and
+truncated calls. This proof-only parser is not a qualified provider parser or
+permission to weaken the production contract.
 
-The request preserves Orchard's omitted `model_default` generation policy and
-the exact snapshot template's default rendering. It does not inject
-`enable_thinking`, add an arbitrary template keyword, or invoke an explicit
-reasoning mode on the unmanaged target. Content-discarding adapter parsing is a
-declared POC compatibility shortcut, not a new rendering or reasoning contract.
+The owner-authorized mixed-output amendment permits exactly one additional
+post-reasoning shape: a nonempty public-text prefix followed by one or more
+complete, structurally valid, requested Qwen XML tool blocks. The adapter
+preserves the prefix byte-for-byte as public assistant text and emits the blocks
+as typed tool calls in order. Only whitespace may separate blocks or follow the
+final block. Text between or after blocks remains ambiguous and fails closed,
+as do malformed markers, unknown tools, structurally invalid or duplicate
+arguments and every existing reasoning-policy failure. This rule neither drops
+narration nor reclassifies it as hidden reasoning, and it remains proof-only
+rather than a provider support or qualification decision. It does not add JSON
+Schema validation of model-selected argument values.
+
+Each request explicitly selects the proof-only `medium` policy. The disposable
+setup writes a mode-0600, proof-root-contained registration bound to the imported
+artifact digest and exact chat-template digest. Orchard resolves only that
+registration to `enable_thinking = true` and `reasoning_effort = medium`; absent,
+altered, implicit, and `xhigh` paths fail closed before dispatch. The adapter
+uses the official thinking sampler: temperature `1.0`, top-p `0.95`, top-k `20`,
+min-p `0`, presence penalty `0`, and repetition penalty `1`. The runner records
+the requested controls, effective registration, sampler, and registration hash.
+This is an exact POC registration, not a production tuple or general public
+reasoning contract.
 
 A bounded wrapper, not the Node Agent, starts and stops the vLLM container. That
 is an explicit proof-only custody shortcut. The adapter's unload is logical,
 closing a cancelled HTTP stream is not evidence of native cessation, and
 stopping the container after the request is not evidence of request-slot or
 capacity release. None of those observations may update production authority.
+The wrapper creates the owned container before attachment, captures bounded
+startup output privately, and fails immediately with that output if the
+provider exits before readiness instead of waiting out the readiness deadline.
 
 Use the accepted disposable PostgreSQL helper on loopback port 55432, Orchard
 HTTP on 4000, local Node compatibility gRPC on 50071, and vLLM HTTP on
@@ -94,7 +191,7 @@ runs with concurrency one, `--dtype bfloat16`, `--max-model-len 139264`, and a
 of the device's reported memory). This is a vLLM allocation target, not a hard
 GPU-process memory ceiling; record observed peak device memory and stop if the
 provider cannot start at that target. The expected incremental model download
-is 55,615,875,685 bytes; the 21,417,065,539-byte runtime image is already
+is 55,586,114,863 bytes; the 21,417,065,539-byte runtime image is already
 cached. Allow 8 GiB of temporary disk beyond the snapshot and 64 GiB host RAM
 for the provider process and loading path. A need to raise any configured bound
 stops the proof rather than broadening it.
@@ -110,26 +207,63 @@ but the cached image SHALL still report its actual installed identities before
 model download. Missing architecture or completions support is a stop
 condition, not permission to install into or replace the image. No
 Docker-published or bridge-reachable provider port is permitted.
+The pinned vLLM build defaults `enable_log_requests` to false; the wrapper does
+not pass the removed `--disable-log-requests` flag.
 
 The disposable database may contain one explicitly development-only unmanaged
 Runtime Endpoint target, tenant, API credential, active model and access grant.
 They must be created by a narrow repeatable setup path, must not enroll or admit
-a production Node, and disappear with the database. Success requires one
-non-empty response to a deterministic, temperature-zero request through
-`POST /v1/responses`, terminal request status, exact model identity, latency,
-token/usage data where existing surfaces provide it, Worker execution events,
-and corresponding Console visibility. Output quality and performance are not
-acceptance criteria.
+a production Node, and disappear with the database. Success requires one exact
+frozen marker response using the artifact-bound medium policy and official
+thinking sampler with a 128-token output limit through `POST /v1/responses`,
+terminal request status,
+exact model identity, latency, token/usage data where existing surfaces provide
+it, Worker execution events, and corresponding Console visibility. The exact
+marker is fixture-conformance evidence only; output quality and performance are
+not acceptance criteria.
 
-The proof also uses an exact isolated OpenCode client identity with sharing,
-auto-update, and every external-provider fallback disabled. All client config,
-data, state, cache, and fixture repositories are proof-owned and disposable;
-tools execute in OpenCode, never in the provider. One short smoke SHALL inspect
-a frozen repository fixture, reproduce a baseline failure, use genuine
-structured tool calls through Orchard, edit only allowed implementation files,
-run tests, inspect its diff, and summarize. Independent checks SHALL verify the
-result, protected-file hashes, and edit scope. A denied tool action SHALL make
-no change and an approved action SHALL execute.
+The proof also uses an exact OpenCode client identity with sharing, auto-update,
+prompt-cache-key emission, and every external-provider fallback disabled so the
+observed model requests target Orchard. Offline request capture SHALL reject the
+cache-key field before live execution. Client config, data, state, cache and the
+fixture repository are proof-owned and disposable cleanup surfaces, not a
+client sandbox. OpenCode runs as the normal installed host client. Its tools
+execute client-side, never in Controller, Node, Worker or provider processes.
+The proof-only loopback proxy SHALL translate only OpenCode 1.18.31's exact
+flattened Responses function-tool objects into Orchard's canonical nested
+function-tool shape, apply the same translation before offline token counting,
+record every translated request, and fail on any schema drift. This does not
+expand Orchard's public API contract. Because pinned OpenCode 1.18.31 omits
+reasoning and sampling controls, the proof-only proxy SHALL require that omission
+and add exactly `reasoning: {effort: medium}`, `temperature: 1.0`, and
+`top_p: 0.95` during both offline capture and live forwarding. The exact adapter
+supplies the remaining official sampler fields. Any implicit template default,
+including `xhigh`, is a hard failure.
+Because Orchard's accepted streaming contract intentionally carries assembled
+function calls only in its terminal event, the proof proxy SHALL synthesize the
+pinned OpenCode client's exact `response.output_item.added` and
+`response.output_item.done` compatibility events from completed terminal
+function-call items. It SHALL preserve Orchard's terminal event, count every
+synthesized call, and fail closed on response drift. This proof-only translation
+SHALL also assign one proof-local message identity, surround Orchard text deltas
+with the pinned client's message-item events, and translate `response_id` to the
+required `item_id`. Proof-local function identities SHALL be unique per response.
+On later turns, the proxy SHALL correlate those exact identities and flatten each
+function-call/result block into proof-only role-bearing text messages because
+Orchard does not accept Responses tool-history input items. It does not change
+Orchard's streaming or input API contracts. Correlation SHALL compare decoded
+JSON argument values without conflating booleans and numbers, accept the pinned
+client's call-block/result-block ordering, and prove that every synthesized call
+identity had a result forwarded at least once. Each block SHALL reproduce the
+pinned Qwen chat template's assistant `<tool_call>` transcript followed by its
+user `<tool_response>` envelope so the provider retains multi-step tool semantics
+rather than interpreting a tool result as a new ordinary user request.
+One short smoke SHALL run the pinned installed OpenCode client against Orchard
+from a frozen disposable repository fixture. OpenCode may use its installed
+client-side tools and choose its own commands and order. Acceptance SHALL depend
+on Orchard request/stream/tool-call/result evidence, a nonempty terminal answer,
+the exact repaired fixture diff, protected-file hashes, edit scope and an
+independent passing test—not an expected action transcript or tool allowlist.
 
 A separate OpenCode long-context smoke SHALL exercise at least 131,072 actual
 rendered input tokens while reserving 8,192 output tokens, requiring 139,264

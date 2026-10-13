@@ -312,6 +312,39 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "context_length_exceeded failed events preserve the invalid-request classification" do
+    event =
+      InferenceEvent.failed(
+        "context_length_exceeded",
+        "request exceeds the accepted context envelope",
+        false
+      )
+
+    error = ChatError.from_failed_event(event)
+
+    assert ChatError.api_mapping(error) == %{
+             status: :bad_request,
+             type: "invalid_request_error",
+             code: "context_length_exceeded",
+             message: "request exceeds the accepted context envelope",
+             param: nil
+           }
+
+    assert ChatError.sse_mapping(error) == %{
+             type: "invalid_request_error",
+             code: "context_length_exceeded",
+             message: "request exceeds the accepted context envelope",
+             param: nil
+           }
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 400,
+             error_code: "context_length_exceeded",
+             error_message: "request exceeds the accepted context envelope"
+           }
+  end
+
   test "SPEC.md §7.2.7 model_busy failed events map to 503 server_error" do
     event = InferenceEvent.failed("model_busy", "model already has an active request", false)
     error = ChatError.from_failed_event(event)

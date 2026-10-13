@@ -41,6 +41,23 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
            }
   end
 
+  test "normalizes explicit medium reasoning to an unresolved proof contract" do
+    {:ok, request} =
+      ResponsesRequestNormalizer.normalize(%{
+        "model" => "test-model@v1",
+        "input" => "Hello",
+        "reasoning" => %{"effort" => "medium"}
+      })
+
+    assert request.reasoning == %CanonicalRequest.Reasoning{
+             generation_policy: :enabled,
+             projection: :final_only,
+             reasoning_effort: :medium,
+             source: :explicit_public,
+             effective_contract: %{mode: :pending}
+           }
+  end
+
   test "prepends instructions as a system message and rewrites input_text parts" do
     {:ok, request} =
       ResponsesRequestNormalizer.normalize(%{

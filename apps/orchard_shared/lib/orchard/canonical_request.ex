@@ -89,7 +89,8 @@ defmodule Orchard.CanonicalRequest do
             required(:event_binding_version) => String.t()
           }
 
-    @type effective_contract :: legacy_contract() | negotiated_contract()
+    @type pending_contract :: %{required(:mode) => :pending}
+    @type effective_contract :: legacy_contract() | pending_contract() | negotiated_contract()
 
     @type t :: %__MODULE__{
             generation_policy: generation_policy(),
@@ -532,6 +533,23 @@ defmodule Orchard.CanonicalRequest do
     else
       invalid_reasoning_contract!(
         "omitted_public legacy reasoning must use exactly %{mode: :legacy}",
+        effective_contract
+      )
+    end
+  end
+
+  defp validate_reasoning_combination!(
+         :enabled,
+         :final_only,
+         :medium,
+         :explicit_public,
+         %{mode: :pending} = effective_contract
+       ) do
+    if Map.keys(effective_contract) == [:mode] do
+      :ok
+    else
+      invalid_reasoning_contract!(
+        "pending explicit reasoning must use exactly %{mode: :pending}",
         effective_contract
       )
     end

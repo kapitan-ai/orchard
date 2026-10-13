@@ -145,6 +145,19 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
   @spec from_failed_event(InferenceEvent.t()) :: t()
+  def from_failed_event(%InferenceEvent{
+        event: %InferenceEvent.Failed{
+          code: "context_length_exceeded",
+          message: message
+        }
+      }) do
+    build(:context_overflow,
+      detail: message,
+      source_code: "context_length_exceeded",
+      source_message: message
+    )
+  end
+
   def from_failed_event(%InferenceEvent{event: %InferenceEvent.Failed{} = failed}) do
     kind = failed_event_kind(failed.code)
 
@@ -515,6 +528,15 @@ defmodule Orchard.Inference.ChatError do
       http_status: 504,
       error_code: error.source_code || "queue_timeout",
       error_message: error.source_message || "Request timed out waiting for admission"
+    }
+  end
+
+  def terminal_attrs(%__MODULE__{kind: :context_overflow} = error) do
+    %{
+      state: :failed,
+      http_status: 400,
+      error_code: error.source_code || "context_length_exceeded",
+      error_message: error.source_message || error.detail
     }
   end
 

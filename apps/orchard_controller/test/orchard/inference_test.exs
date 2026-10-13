@@ -343,6 +343,25 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "source-dev runtime endpoint transport config" do
+    test "dev.exs preserves request deadline defaults and accepts bounded overrides" do
+      defaults =
+        read_dev_controller_inference!(%{
+          "ORCHARD_REQUEST_TIMEOUT_MS" => nil,
+          "ORCHARD_MAX_REQUEST_DEADLINE_MS" => nil
+        })
+
+      overridden =
+        read_dev_controller_inference!(%{
+          "ORCHARD_REQUEST_TIMEOUT_MS" => "360000",
+          "ORCHARD_MAX_REQUEST_DEADLINE_MS" => "360000"
+        })
+
+      assert Keyword.fetch!(defaults, :request_timeout_ms) == 120_000
+      assert Keyword.fetch!(defaults, :max_request_deadline_ms) == 360_000
+      assert Keyword.fetch!(overridden, :request_timeout_ms) == 360_000
+      assert Keyword.fetch!(overridden, :max_request_deadline_ms) == 360_000
+    end
+
     test "SPEC.md §7.5.0 peer-grant mode selects BEAM without legacy targets" do
       inference =
         read_dev_controller_inference!(%{

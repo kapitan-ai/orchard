@@ -23,9 +23,10 @@ by its answer.
 - Require a 131,072-rendered-input OpenCode envelope plus a separately reserved
   8,192-token output budget, meaningful long-context semantics, and explicit
   compaction, overflow, parser, usage, latency, and resource evidence.
-- Add isolated short repair and long-context OpenCode smokes with external
-  fallback disabled, genuine client-side tools, independent fixture checks,
-  approval evidence, and no qualification inference.
+- Add short repair and long-context smokes using the pinned installed OpenCode
+  host client with Orchard as its configured model API, independent fixture
+  checks, owner-authorization evidence, and no client-confinement or
+  qualification claim.
 - Add only the thin development adapter and disposable setup needed to preserve
   Orchard's existing scheduling/runtime path.
 - Record provider-custody, cancellation, capacity-release, security,

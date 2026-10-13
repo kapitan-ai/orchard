@@ -87,6 +87,153 @@ authority. Test its orchestration without a container or network pull using:
 scripts/test-with-disposable-dev-postgres.sh
 ```
 
+### Owner-gated KAP-112 Linux inference proof tooling
+
+KAP-112 adds source tooling for one separately gated, disposable inference
+proof. It does not extend the accepted model-free Linux compatibility profile
+and must not be run merely because the tooling is present. Repository Owner
+acceptance of the exact implementation commit/tree and executable mutation
+plan is required before model download, provider activation, GPU use, database
+fixture creation, or inference.
+
+The proof is fixed to Qwen/Qwen3.8-27B revision
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, vLLM 0.27.1 image digest
+`sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`,
+the owner-approved GPU from required `ORCHARD_KAP112_GPU_UUID`, and loopback port 58080.
+The supervisor fails closed when the GPU variable is unset or not a single UUID.
+After Gate 2, create an owner-only proof root and download through the already
+cached image while recording and verifying every immutable Hub file:
+
+```bash
+umask 077
+proof_root="$(mktemp -d "$PWD/artifacts/kap112-poc.XXXXXX")"
+scripts/download-kap112-snapshot.sh --proof-root "$proof_root"
+
+mise exec -- uv run --directory native/orchard_worker_mlx \
+  python ../../scripts/kap112_build_fixture_bundle.py \
+  "$proof_root/model" "$proof_root/model-evidence.json" "$proof_root/bundle"
+```
+
+An optional Hugging Face token may be passed only through an owner-mode env
+file in the proof root and must be removed with that root. Never put it on the
+command line or in evidence. Image, source revision, Hub metadata, aggregate
+55,586,114,863-byte 32-file identity, free disk/RAM, selected-GPU process state, ports
+4000/50071/55432/58080, container/volume inventory, Git state, and existing
+`tmp/dev` paths are preflight stop conditions before these commands.
+The download helper pins the container to the invoking numeric UID:GID and
+requires the snapshot and mode-0600 evidence to remain owned by that identity;
+it also confines the in-image Hub/Xet cache to the owner-owned proof root. These
+controls prevent root-owned or globally unwritable output from bypassing the
+owner-side verifier.
+
+The generated bundle contains the exact snapshot tokenizer and template but a
+placeholder weight entrypoint because the externally supervised proof provider
+owns the real read-only snapshot. Its derived tokenizer config only adds the
+existing `qwen2` XML marker declaration needed for Orchard's tool-rendering
+preflight. Its capability evidence remains `runtime_qualification:
+not_established`. These are explicit proof-only compatibility shortcuts, not a
+qualified Model Bundle.
+
+The source-only smoke runner and frozen fixture manifest are
+`scripts/kap112_smoke_runner.py` and `scripts/fixtures/kap112/manifest.json`.
+Their presence does not authorize execution. Read-only inspection found
+pre-existing OpenCode 1.18.31 at
+`${ORCHARD_KAP112_SNAPSHOT_ROOT}/opencode/bin/opencode`, 185,030,784 bytes, SHA-256
+`f9dab32248695e9ebd56b16a1921798fd85112cf5a69c7dfd0cabc1e17be4a11`.
+The runner also pins the existing 54,894,473-byte OpenCode plugin dependency
+seed at SHA-256
+`c657fd182fbca23b25e461483b17519d45ebface6f616a5ff9e0fb006f7296d7`.
+Set `ORCHARD_KAP112_SNAPSHOT_ROOT` to the owner-approved local root containing
+`opencode/bin/opencode` and the `opencode` dependency seed. The runner expands
+this variable in the manifest paths and retains the exact identity checks.
+Gate 2 must reverify and accept those exact identities and the runner's exact
+clean implementation commit/tree before these commands may run.
+
+After the snapshot and bundle are present, run the runner's offline preparation
+phase while ports 4000, 50071, 55432, and 58080 remain clear:
+
+```bash
+accepted_commit='<owner-accepted-runner-commit>'
+accepted_tree='<owner-accepted-runner-tree>'
+mise exec -- python scripts/kap112_smoke_runner.py \
+  --prepare-only \
+  --accepted-commit "$accepted_commit" \
+  --accepted-tree "$accepted_tree" \
+  --proof-root "$proof_root" \
+  --bundle-dir "$proof_root/bundle" \
+  --token-file "$proof_root/api-token"
+```
+
+Preparation uses OpenCode only against a temporary loopback capture endpoint.
+It binary-searches the frozen context recipe with the exact snapshot tokenizer,
+requires adjacent 131,072- and 131,073-rendered-token constructions, writes an
+owner-only provenance receipt binding the tokenizer, tokenizer configuration,
+and chat-template hashes, and restores its temporary state. It does not start
+vLLM, PostgreSQL, Orchard, or the GPU. Any inability to reach both exact token
+boundaries stops the proof.
+
+The separately approved live command is then exactly:
+
+```bash
+scripts/with-kap112-vllm-poc.sh \
+  --model-dir "$proof_root/model" \
+  --evidence "$proof_root/model-evidence.json" -- \
+  scripts/with-disposable-dev-postgres.sh --port 55432 \
+  --database orchard_kap112_poc -- \
+  mise exec -- python scripts/kap112_smoke_runner.py \
+    --accepted-commit "$accepted_commit" \
+    --accepted-tree "$accepted_tree" \
+    --proof-root "$proof_root" \
+    --bundle-dir "$proof_root/bundle" \
+    --token-file "$proof_root/api-token"
+```
+
+The runner revalidates the calibration receipt and supplies disposable XDG
+config, data, state, and cache paths plus the disposable fixture workspace so
+proof state can be removed without changing persistent OpenCode configuration.
+OpenCode otherwise runs as the ordinary installed host client: the proof does
+not proxy, sandbox, enumerate, restrict, or qualify its tools or commands.
+External model fallback, sharing, and auto-update remain disabled to attribute
+model requests to Orchard. The runner recounts both adjacent fixtures, starts
+Orchard in its owned foreground process group, and waits for health. It submits the frozen
+direct `/v1/responses` request; checks model, text, usage, terminal status,
+latency and the Console request route; runs the short repair and exact
+131,072-token OpenCode smokes; requires completed client-side tool activity,
+protected-file hashes, the exact repair diff and passing test; and requires the adjacent
+131,073-token typed refusal exactly once. A loopback counting proxy detects
+client retries and records the exact refusal HTTP status, type, and code; the
+refusal also requires a zero durable Request-count delta. This does not prove
+the absence of transient dispatch activity. Finally it requests logical unload
+over the local Runtime Endpoint and requires both an acknowledgement and an
+unloaded status. That remains logical proof-only state, not native cessation or
+capacity release evidence. It then stops Orchard and removes its temporary token
+and runner state. Binary, source/tree, fixture, listener, response, event, or
+cleanup drift stops the proof rather than relaxing an assertion. Durable count
+queries use one exact tagged non-negative integer so Ecto logs cannot corrupt
+parsing. Atomic mode-0600 closed-field receipts preserve each stage's timing,
+usage, route, tool-protocol, and outcome checks, or a failure type/hash/length,
+without prompts, output, tool arguments, file content, secrets, or sensitive
+paths; they survive runner-state cleanup for private evidence capture.
+
+The runner leaves `kap112-calibration.json`, secret-redacted
+`kap112-stage-receipts.json`, and `kap112-result.json` in the proof root. Copy
+those records to the approved private evidence location before final cleanup.
+Cleanup removes the proof root,
+including its API token and proof-owned model
+artifact root, plus only newly created socket/log paths whose pre-state proved
+them absent. It must prove ports 4000, 50071, 55432, and 58080 clear; both proof
+containers and any new volumes absent; the selected GPU process list restored;
+protected pre-existing `tmp/dev` content unchanged; and Git clean. Any
+uncertainty retains only secret-redacted evidence, reports the proof incomplete,
+and stops.
+
+Validate the fake-backed provider lifecycle without an image, GPU, model, or
+network access using:
+
+```bash
+scripts/test-with-kap112-vllm-poc.sh
+```
+
 ## Quick Start
 
 ```bash

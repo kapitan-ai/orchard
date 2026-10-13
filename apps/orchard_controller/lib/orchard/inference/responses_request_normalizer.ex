@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.CanonicalRequest.Reasoning
   alias Orchard.Inference.ChatRequestNormalizer
 
   @spec normalize(map(), keyword()) :: {:ok, CanonicalRequest.t()}
@@ -33,6 +34,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
       canonical
       |> Map.put(:endpoint, :responses)
       |> Map.put(:store?, normalize_store(params))
+      |> put_reasoning(params)
 
     {:ok, normalized}
   end
@@ -91,6 +93,21 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
     do: raise(ArgumentError, "invalid store: #{inspect(value)}")
 
   defp normalize_store(_params), do: true
+
+  defp put_reasoning(canonical, %{"reasoning" => %{"effort" => "medium"}}) do
+    %{
+      canonical
+      | reasoning: %Reasoning{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :medium,
+          source: :explicit_public,
+          effective_contract: %{mode: :pending}
+        }
+    }
+  end
+
+  defp put_reasoning(canonical, _params), do: canonical
 
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

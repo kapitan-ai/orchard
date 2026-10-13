@@ -29,6 +29,7 @@ defmodule Orchard.Inference.RequestPreparation do
          {:ok, canonical} <- resolve_requested_tools(canonical),
          {:ok, canonical} <- attach_execution_snapshot(canonical),
          {:ok, model} <- resolve_model(canonical),
+         {:ok, canonical} <- bind_reasoning_contract(canonical, model),
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model),
          :ok <- enforce_context_window(canonical, model),
@@ -79,6 +80,119 @@ defmodule Orchard.Inference.RequestPreparation do
       %{state: state} ->
         {:error,
          {:model_not_found, "#{model_ref.model_id}@#{model_ref.version} is #{state}, not active"}}
+    end
+  end
+
+  defp bind_reasoning_contract(
+         %CanonicalRequest{
+           reasoning: %CanonicalRequest.Reasoning{
+             generation_policy: :enabled,
+             projection: :final_only,
+             reasoning_effort: :medium,
+             source: :explicit_public,
+             effective_contract: %{mode: :pending}
+           }
+         } = canonical,
+         model
+       ) do
+    with "1" <- System.get_env("ORCHARD_KAP112_DISPOSABLE_DB"),
+         proof_root when is_binary(proof_root) <- System.get_env("ORCHARD_KAP112_POC_ROOT"),
+         path when is_binary(path) <- System.get_env("ORCHARD_KAP112_REASONING_CONTRACT"),
+         :ok <- validate_reasoning_registration_file(path, proof_root),
+         {:ok, bytes} <- File.read(path),
+         {:ok, registration} <- Jason.decode(bytes),
+         :ok <- validate_kap112_reasoning_registration(registration, model) do
+      contract = %{
+        mode: :negotiated,
+        model_artifact_digest: registration["model_artifact_digest"],
+        chat_template_digest: registration["chat_template_digest"],
+        render_contract: registration["render_contract"],
+        render_contract_version: registration["render_contract_version"],
+        parser_family: registration["parser_family"],
+        parser_version: registration["parser_version"],
+        runtime_contract_version: registration["runtime_contract_version"],
+        event_binding_version: registration["event_binding_version"]
+      }
+
+      {:ok, put_in(canonical.reasoning.effective_contract, contract)}
+    else
+      _reason ->
+        {:error,
+         {:tokenization,
+          {:unsupported_reasoning_control,
+           "KAP-112 medium reasoning registration is absent, invalid, or does not match the exact artifact"}}}
+    end
+  end
+
+  defp bind_reasoning_contract(%CanonicalRequest{} = canonical, model) do
+    if kap112_model?(model) do
+      {:error,
+       {:tokenization,
+        {:unsupported_reasoning_control,
+         "KAP-112 requests require the exact explicit medium reasoning contract"}}}
+    else
+      {:ok, canonical}
+    end
+  end
+
+  defp kap112_model?(model) do
+    model.model_id == "Qwen/Qwen3.8-27B" and
+      model.version == "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0" and
+      model.runtime_requirements["adapter"] == "vllm_poc"
+  end
+
+  defp validate_reasoning_registration_file(path, proof_root) do
+    expanded_path = Path.expand(path)
+    expanded_root = Path.expand(proof_root)
+
+    with true <- expanded_path != expanded_root,
+         true <- String.starts_with?(expanded_path, expanded_root <> "/"),
+         {:ok, %{type: :regular, mode: mode}} <- File.lstat(expanded_path),
+         0o600 <- Bitwise.band(mode, 0o777) do
+      :ok
+    else
+      _reason -> :error
+    end
+  end
+
+  defp validate_kap112_reasoning_registration(registration, model) do
+    expected = %{
+      "schema_version" => 1,
+      "proof_only" => true,
+      "model_id" => "Qwen/Qwen3.8-27B",
+      "version" => "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "model_artifact_digest" => model.artifact_sha256,
+      "chat_template_digest" =>
+        get_in(model.capability_evidence, ["tool_calling", "chat_template_sha256"]),
+      "generation_policy" => "enabled",
+      "projection" => "final_only",
+      "reasoning_effort" => "medium",
+      "render_contract" => "kap112-qwen3.8-medium",
+      "render_contract_version" => "1",
+      "parser_family" => "prompt_opened",
+      "parser_version" => "v1",
+      "runtime_contract_version" => "vllm-poc-v1",
+      "event_binding_version" => "worker-runtime-v1",
+      "template_arguments" => %{"enable_thinking" => true},
+      "reasoning_effort_template_argument" => %{
+        "key" => "reasoning_effort",
+        "value" => "medium"
+      },
+      "sampling" => %{
+        "temperature" => 1.0,
+        "top_p" => 0.95,
+        "top_k" => 20,
+        "min_p" => 0.0,
+        "presence_penalty" => 0.0,
+        "repetition_penalty" => 1.0
+      }
+    }
+
+    if registration == expected and model.model_id == expected["model_id"] and
+         model.version == expected["version"] do
+      :ok
+    else
+      :error
     end
   end
 

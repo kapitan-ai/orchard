@@ -393,6 +393,18 @@ dev_node_identity_root =
   System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
     Keyword.fetch!(node_runtime_defaults, :node_identity_root)
 
+dev_node_identity_path =
+  env_source_dev_path.("ORCHARD_NODE_IDENTITY_PATH") ||
+    Keyword.fetch!(node_runtime_defaults, :node_identity_path)
+
+dev_models_root =
+  env_source_dev_path.("ORCHARD_MODELS_ROOT") ||
+    Keyword.fetch!(node_runtime_defaults, :models_root)
+
+dev_worker_log_dir =
+  env_source_dev_path.("ORCHARD_WORKER_LOG_DIR") ||
+    Keyword.fetch!(node_runtime_defaults, :worker_log_dir)
+
 beam_peer_grant_descriptor =
   env_optional_string.("ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR")
 
@@ -452,7 +464,7 @@ worker_generation_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
-         if worker_backend == "stub" do
+         if worker_backend in ["stub", "vllm_poc"] do
            "stream"
          else
            Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
@@ -528,6 +540,16 @@ config :orchard_controller,
         runtime_client_targets: dev_runtime_targets,
         allow_static_runtime_target_fallback:
           env_bool.("ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK", true),
+        request_timeout_ms:
+          env_int.(
+            "ORCHARD_REQUEST_TIMEOUT_MS",
+            Keyword.fetch!(controller_inference_defaults, :request_timeout_ms)
+          ),
+        max_request_deadline_ms:
+          env_int.(
+            "ORCHARD_MAX_REQUEST_DEADLINE_MS",
+            Keyword.fetch!(controller_inference_defaults, :max_request_deadline_ms)
+          ),
         tokenizer_executable:
           System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
             Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
@@ -578,15 +600,18 @@ config :orchard_node_agent,
   runtime:
     Keyword.merge(
       node_runtime_defaults,
+      node_identity_path: dev_node_identity_path,
       node_identity_root: dev_node_identity_root,
       runtime_grpc_listener_enabled: node_grpc_listener_enabled?,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
+      models_root: dev_models_root,
       force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:
         env_source_dev_path.("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_socket_dir: worker_socket_dir,
       worker_backend: worker_backend,
+      worker_log_dir: dev_worker_log_dir,
       worker_prefix_cache_mode: worker_prefix_cache_mode,
       worker_generation_mode: worker_generation_mode,
       worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,

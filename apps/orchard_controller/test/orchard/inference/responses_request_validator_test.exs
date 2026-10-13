@@ -26,10 +26,23 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
     assert {:ok, _} = ResponsesRequestValidator.validate(params)
   end
 
-  test "rejects unaccepted reasoning controls and arbitrary template keyword arguments" do
-    assert {:error, :unsupported_parameter, "reasoning"} =
+  test "accepts only the proof-bound medium reasoning input" do
+    assert {:ok, _params} =
+             @valid_params
+             |> Map.put("reasoning", %{"effort" => "medium"})
+             |> ResponsesRequestValidator.validate()
+
+    assert {:error, :invalid_value, "reasoning", _reason} =
              @valid_params
              |> Map.put("reasoning", %{"effort" => "low"})
+             |> ResponsesRequestValidator.validate()
+
+    assert {:error, :invalid_value, "reasoning", _reason} =
+             @valid_params
+             |> Map.put("reasoning", %{
+               "effort" => "medium",
+               "generation_policy" => "disabled"
+             })
              |> ResponsesRequestValidator.validate()
 
     assert {:error, :unsupported_parameter, "template_kwargs"} =

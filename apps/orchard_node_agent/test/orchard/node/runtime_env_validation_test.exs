@@ -261,6 +261,15 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_generation_mode] == "stream"
   end
 
+  test "runtime.exs rejects proof-only vLLM backend in prod" do
+    assert_raise RuntimeError, ~r/development-only/, fn ->
+      read_runtime_config!(%{
+        "ORCHARD_WORKER_BACKEND" => "vllm_poc",
+        "ORCHARD_WORKER_GENERATION_MODE" => "stream"
+      })
+    end
+  end
+
   test "runtime.exs explicit generation mode overrides stub backend default in prod" do
     runtime =
       read_runtime_config!(%{
@@ -281,6 +290,16 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "stream"
+  end
+
+  test "dev.exs defaults proof-only vLLM backend generation to stream" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_BACKEND" => "vllm_poc"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "vllm_poc"
     assert runtime[:worker_generation_mode] == "stream"
   end
 
@@ -310,6 +329,27 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:worker_socket_dir] == "/tmp/orchard-worker-sockets"
+  end
+
+  test "dev.exs confines mutable node runtime paths when explicitly overridden" do
+    root = Path.join(System.tmp_dir!(), "orchard-dev-runtime-override")
+
+    runtime =
+      read_dev_config!(%{
+        "ORCHARD_NODE_IDENTITY_PATH" => Path.join(root, "data/node-id"),
+        "ORCHARD_NODE_IDENTITY_ROOT" => Path.join(root, "node-identity"),
+        "ORCHARD_MODELS_ROOT" => Path.join(root, "models"),
+        "ORCHARD_WORKER_SOCKET_DIR" => Path.join(root, "ws"),
+        "ORCHARD_WORKER_LOG_DIR" => Path.join(root, "worker-logs")
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:node_identity_path] == Path.join(root, "data/node-id")
+    assert runtime[:node_identity_root] == Path.join(root, "node-identity")
+    assert runtime[:models_root] == Path.join(root, "models")
+    assert runtime[:worker_socket_dir] == Path.join(root, "ws")
+    assert runtime[:worker_log_dir] == Path.join(root, "worker-logs")
   end
 
   test "dev.exs treats an empty worker socket override as unset" do

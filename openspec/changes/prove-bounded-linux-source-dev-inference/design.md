@@ -43,13 +43,18 @@ Unit tests use a fake loopback HTTP server and require no GPU, image, or model.
 
 Because the legacy completions endpoint does not apply vLLM's chat tool or
 reasoning parsers, the adapter owns an exact Qwen3.8 raw-stream parser. It
-discards reasoning without retention, converts validated complete Qwen XML tool
-blocks into Worker `ToolCallDelta` events, emits only final answer text, and
-fails closed on malformed, partial, unknown, or unrequested output. Tests split
-all markers across stream chunks. Orchard keeps omitted `model_default`
-rendering with the exact snapshot template; the POC neither injects
-`enable_thinking` nor invokes production reasoning negotiation on an unmanaged
-target.
+starts inside the reasoning frame opened by the exact snapshot template,
+discards reasoning without retention through the streamed closing marker,
+converts validated complete Qwen XML tool blocks into Worker `ToolCallDelta`
+events, emits only final answer text, and fails closed on malformed, partial,
+unknown, or unrequested output. Tests split all streamed markers across chunks.
+Orchard resolves one proof-root-contained, mode-0600 registration for the exact
+artifact and chat-template digests. It selects explicit `enabled + final_only +
+medium`, passes only `enable_thinking = true` and `reasoning_effort = medium` to
+the renderer, and fails closed rather than accepting an implicit/default or
+`xhigh` path. The adapter enforces the official sampler: temperature `1.0`,
+top-p `0.95`, top-k `20`, min-p `0`, presence penalty `0`, and repetition
+penalty `1`.
 
 The provider runs separately under the bounded proof wrapper. This keeps the
 implementation small but does not satisfy Node Agent child custody. Logical
@@ -68,18 +73,21 @@ must be repeatable and scoped so production configuration cannot enable it.
 
 ### Direct API and OpenCode evidence
 
-Submit a temperature-zero `/v1/responses` request asking for the literal phrase
-`Orchard Linux inference POC`, with at most 32 output tokens. Success is a
-non-empty real generated response, not exact wording; the request configuration
-is deterministic but model output need not be. Record the existing
-request terminal state, exact model identity, elapsed latency, usage where
-reported, Worker event path, and Console request/model visibility.
+Submit an explicit-medium `/v1/responses` request using the official thinking
+sampler and asking for the frozen literal `ORCHARD_KAP112_DIRECT_OK`, with at
+most 128 output tokens. Success
+requires that exact marker as deterministic fixture-conformance evidence, not
+as a model-quality claim. Record the existing request terminal state, exact
+model identity, elapsed latency, usage where reported, Worker event path, and
+Console request/model visibility.
 
-Run two isolated OpenCode smokes through Orchard with sharing, auto-update, and
-external-provider fallback disabled. The short smoke performs one frozen
-repair with real client-side tool calls, an independently checked result,
-protected hashes and edit-scope enforcement, plus one denied/no-change and one
-approved/executed action. The long-context smoke exercises at least 131,072
+Run two OpenCode API-client smokes through Orchard with sharing, auto-update,
+and external-provider fallback disabled. The pinned installed OpenCode binary
+runs normally on the host from disposable config/state and workspace paths; the
+proof does not sandbox or police its client-side tools. The short smoke performs
+one frozen repair with real client-side tool calls and accepts only the
+independently checked result, protected hashes and edit scope—not a prescribed
+tool or command transcript. The long-context smoke exercises at least 131,072
 actual provider-tokenizer rendered input tokens plus the separate 8,192-token
 output reservation. Its frozen fixture covers multi-position retrieval, later
 instruction precedence, distant code dependencies, and tool-result continuity.
@@ -87,6 +95,13 @@ Record client/provider identities, rendered counts, requested/effective output,
 compaction/overflow, parser mode, usage, latency and resources. Prove an
 oversized input is rejected without silent truncation. These are POC smokes,
 not coding-agent qualification.
+
+The exact Qwen parser preserves a post-reasoning public-text prefix when it is
+followed immediately by complete requested tool blocks. It emits the prefix as
+public text and the blocks as typed calls, preserving source order and allowing
+only whitespace between or after blocks. Any interleaved or trailing text is
+rejected rather than dropped or guessed to be reasoning. This narrow shape
+matches the Responses output model while keeping malformed output fail-closed.
 
 Use one attempt and no automatic provider/model retries. Direct and overflow
 probes each stop at ten minutes. The short smoke stops at 20 model turns, 20
@@ -118,8 +133,8 @@ afterward.
 
 ## Execution Gate
 
-Gate one accepts this contract, including the tuple, 55,615,875,685-byte
-Hugging Face snapshot, Apache-2.0 license, cached 21,417,065,539-byte image,
+Gate one accepts this contract, including the tuple, 55,586,114,863-byte,
+32-file Hugging Face snapshot, Apache-2.0 license, cached 21,417,065,539-byte image,
 selected GPU, 0.80 vLLM GPU-memory target, 139,264-token minimum total envelope,
 ports, adapter/setup design, direct and OpenCode smokes, stop conditions, and
 cleanup plan, before implementation.

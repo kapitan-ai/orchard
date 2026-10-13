@@ -146,6 +146,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
   test "returns context_length_exceeded for an oversized request" do
     %{token: token} = create_api_key_with_token!("responses-context-overflow")
+    before_count = Repo.aggregate(Request, :count, :id)
 
     model =
       create_model!(%{
@@ -167,6 +168,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     body = Jason.decode!(conn.resp_body)
     assert body["error"]["type"] == "invalid_request_error"
     assert body["error"]["code"] == "context_length_exceeded"
+    assert Repo.aggregate(Request, :count, :id) == before_count
   end
 
   test "returns model_not_found for a valid request with an unknown model" do

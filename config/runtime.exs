@@ -94,7 +94,7 @@ env_optional_string = fn env_name ->
 end
 
 default_worker_generation_mode = fn
-  "stub" -> "stream"
+  backend when backend in ["stub", "vllm_poc"] -> "stream"
   _backend -> "batch"
 end
 
@@ -662,6 +662,10 @@ if config_env() == :prod do
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
 
   runtime_worker_backend = System.get_env("ORCHARD_WORKER_BACKEND") || "mlx"
+
+  if runtime_worker_backend == "vllm_poc" do
+    raise "ORCHARD_WORKER_BACKEND=vllm_poc is development-only and unavailable in production"
+  end
 
   config :orchard_controller, :node_trust,
     root:

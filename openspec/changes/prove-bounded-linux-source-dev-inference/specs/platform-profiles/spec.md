@@ -25,18 +25,21 @@ loopback or owner-only socket transports and disposable development state,
 record every compatibility shortcut, and remove all proof-owned state. For this
 proof only, an owner-invoked wrapper MAY supervise the loopback provider outside
 Node Agent child custody while the Agent supervises the Worker adapter. Passing
-SHALL prove only the exact direct-API and isolated OpenCode paths exercised and
+SHALL prove only the exact direct-API and installed OpenCode API-client paths
+exercised and
 SHALL NOT create any production authority, custody precedent, provider/model or
 coding-agent qualification, reliability, capacity-release, or support claim.
 
 For the exact proof tuple only, the development Worker adapter MAY apply one
-pinned artifact-bound parser after Orchard's unchanged omitted-mode rendering.
+pinned artifact-bound parser after an owner-only disposable registration selects
+the exact `enabled + final_only + medium` render contract and official sampler.
 It MAY discard reasoning without retention, normalize complete validated
 model-native tool blocks, emit only final answer text and tool events, and fail
 closed on malformed, incomplete, unknown, unrequested, or ambiguous output.
-This exception MUST NOT change Request normalization, rendering, hashes,
-capture identity, production tool/stop ordering, reasoning advertisement, or
-negotiation, and MUST NOT be available outside the disposable exact tuple.
+The registration MUST bind the imported artifact and chat template and reject
+implicit/default or `xhigh` behavior. This exception MUST NOT create production
+reasoning advertisement or negotiation authority and MUST NOT be available
+outside the disposable exact tuple.
 
 #### Scenario: Model-free developer smoke succeeds
 

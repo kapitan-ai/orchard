@@ -16,7 +16,8 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
                       "store",
                       "stream",
                       "tools",
-                      "tool_choice"
+                      "tool_choice",
+                      "reasoning"
                     ])
 
   @type validation_error ::
@@ -34,6 +35,7 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
          :ok <- check_temperature(params),
          :ok <- check_top_p(params),
          :ok <- check_max_output_tokens(params),
+         :ok <- check_reasoning(params),
          :ok <- ToolingValidation.validate(params),
          :ok <- check_metadata(params),
          :ok <- check_store(params),
@@ -96,6 +98,16 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
   end
 
   defp check_max_output_tokens(_), do: :ok
+
+  defp check_reasoning(%{"reasoning" => %{"effort" => "medium"} = reasoning})
+       when map_size(reasoning) == 1,
+       do: :ok
+
+  defp check_reasoning(%{"reasoning" => _reasoning}) do
+    {:error, :invalid_value, "reasoning", "must be exactly {effort: medium}"}
+  end
+
+  defp check_reasoning(_params), do: :ok
 
   defp check_metadata(%{"metadata" => metadata}) when is_map(metadata) or is_nil(metadata),
     do: :ok
