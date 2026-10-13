@@ -13,7 +13,7 @@
 
 - [x] S2.1 Stream reasoning/raw text and safe final prefixes incrementally; preserve split markers, raw passthrough and clean-stop/length distinctions.
 - [x] S2.2 Forward authoritative prompt IDs using the inspected vLLM 0.27.1 schema, fall back only when absent and retain strict usage equality.
-- [x] S2.3 Preserve request-scoped disconnect, report unconfirmed native cessation and latch unhealthy admission.
+- [x] S2.3 Preserve request-scoped disconnect and unconfirmed native cessation reporting; permit reuse after bounded reader settlement and retain only the unsettled-reader unhealthy latch. ADR 0037 records the accepted serialization policy and slice-3 receipt prerequisite.
 - [ ] S2.4 Confirm native cessation through bounded provider polling. Blocked: pinned vLLM has no request-scoped fresh receipt or execution fence; aggregate metrics cannot prove it. ADR 0037 records options rather than an invented confirmed test path.
 - [ ] S2.5 Add N-slot admission and matching supervisor sequence limit. Stopped: SPEC.md §7.5.3 requires stream-mode Node and placement concurrency one. Retain the existing single-slot behavior; ADR 0037 records the separately approved amendment or deferral options.
 - [x] S2.6 Accept the exact template's thinking-disabled legacy prompt suffix without adding a tokenizer effort profile.

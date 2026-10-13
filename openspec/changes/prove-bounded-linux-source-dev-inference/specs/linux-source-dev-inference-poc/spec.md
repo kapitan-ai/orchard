@@ -108,11 +108,18 @@ SHALL NOT discard bytes to fit the bound.
 Each request SHALL own its provider connection and random request ID. The Worker
 SHALL validate supplied response IDs and close only the cancelled request's
 transport. Local reader settlement SHALL remain bounded. The cancelled terminal
-SHALL retain code `cancelled` and report `native cessation unconfirmed` in its
-message; premature-stream cleanup SHALL log this outcome with the provider
-request ID. Unconfirmed cessation SHALL make the Worker unhealthy and deny new
-local admission until replacement, including after logical unload/reload.
+SHALL retain code `cancelled` and report `cancel accepted; native cessation
+unconfirmed` in its message and cancellation cleanup logs. Other premature-stream
+cleanup SHALL log unconfirmed cessation with the provider request ID. Settled
+reader cleanup SHALL permit new local admission despite unconfirmed cessation.
+Only an unsettled reader SHALL latch the Worker unhealthy and deny new local
+admission until replacement, including after logical unload/reload.
 Cancel acceptance SHALL NOT be represented as native cessation confirmation.
+
+This reuse policy SHALL retain exclusive provider ownership, Worker concurrency
+one and supervisor `--max-num-seqs 1`. It relies on vLLM serialization and native
+execution/block-reuse fences, with possible next-request latency. Slice 3 SHALL
+revisit a provider-side cessation receipt before concurrency above one.
 
 Pinned vLLM's aggregate metrics SHALL NOT authorize a confirmed result: they have
 neither a request identity nor a freshness barrier or native execution fence.
@@ -123,7 +130,13 @@ as recorded in ADR 0037. This experiment adds no resource-release authority.
 
 - **WHEN** an active request is cancelled
 - **THEN** its transport closes and it receives exactly one cancelled terminal with unconfirmed cessation
-- **AND** new admission is denied, even after logical unload/reload
+- **AND** once its reader settles within the bound, the Worker remains healthy and admits a subsequent request
+
+#### Scenario: A cancelled request's reader does not settle
+
+- **WHEN** the reader fails to settle within the two-second cleanup bound
+- **THEN** the cancelled terminal still reports unconfirmed cessation
+- **AND** the Worker remains unhealthy and denies new admission even after logical unload/reload
 
 #### Scenario: An aggregate snapshot reports zero running and waiting requests
 

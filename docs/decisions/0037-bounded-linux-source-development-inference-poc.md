@@ -107,30 +107,59 @@ qualification. This slice selects deferral and does not change SPEC.md.
 ### Native cessation remains unconfirmed
 
 vLLM disconnect cancellation sends an asynchronous engine abort, not an
-engine-origin cessation receipt. The pinned
-[AsyncLLM implementation](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/async_llm.py)
-and [metrics logger](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/metrics/loggers.py)
-expose no request-scoped read-only cessation query through completions HTTP.
-`num_requests_running` and `num_requests_waiting` are model/engine snapshots;
-scraping does not refresh the scheduler. A zero can predate admission, and a
-count drop under concurrency cannot identify which request stopped. Repeated
-zero samples cannot establish freshness or fence already-issued native work.
+engine-origin cessation receipt. Read-only inspection of pinned v0.27.1 found:
+
+- [async_llm.py:608-616](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/async_llm.py#L608-L616)
+  catches disconnect cancellation; [729-738](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/async_llm.py#L729-L738)
+  removes frontend state before sending the EngineCore abort.
+- [output_processor.py:494-515](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/output_processor.py#L494-L515)
+  emits a local ABORT output without finished-request statistics;
+  [619-629](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/output_processor.py#L619-L629)
+  ignores subsequent outputs for removed requests.
+  [core.py:485-491](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/core.py#L485-L491)
+  removes the scheduler request without an ABORT completion receipt. This path
+  does not increment `vllm:request_success_total{finished_reason="abort"}`.
+- [loggers.py:1108-1122](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/metrics/loggers.py#L1108-L1122)
+  updates running/waiting gauges before finished counters at
+  [1221-1224](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/metrics/loggers.py#L1221-L1224).
+  [core.py:591-594](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/engine/core.py#L591-L594)
+  returns without stats when idle. Scraping does not refresh the scheduler:
+  zero can predate admission, and no exported update sequence proves freshness.
+- [/metrics exposure:56-82](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/instrumentator/metrics.py#L56-L82)
+  serves the registry. [loggers.py:468-474](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/metrics/loggers.py#L468-L474)
+  labels metrics by served `model_name` and `engine`, not request identity.
+  [scheduler.py:2341-2380](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/v1/core/sched/scheduler.py#L2341-L2380)
+  separately fences block reuse while native writes remain outstanding. Queue
+  counts cannot establish that this execution fence has settled.
 
 Do not implement an affirmative confirmation path using these metrics. The
-cancelled terminal retains code `cancelled` and reports `native cessation
-unconfirmed` in its message. A stream closed before `[DONE]` also logs that
-outcome with the adapter-owned request ID. Unconfirmed cessation sets a sticky
-unhealthy latch and denies new local admission, including after logical reload;
-no provider-wide abort is sent. Local reader settlement is bounded at two
-seconds and remains separate from remote cessation. Cancel acceptance still
-means only acceptance. Neither terminal nor telemetry proves resource release.
+cancelled terminal retains code `cancelled` and reports `cancel accepted; native
+cessation unconfirmed` in its message. Cancellation cleanup logs the same outcome
+with the adapter-owned request ID; other premature stream closure logs disconnect
+propagation with native cessation unconfirmed. No provider-wide abort is sent.
 
-Confirmed, delayed-confirmed and never-confirmed provider polling remains
-blocked: stock 0.27.1 has no trustworthy signal to test against. Future options
-are retaining this conservative Worker/provider replacement requirement or a
-separately approved provider extension with a request-specific, engine-origin
-acknowledgment and execution fence. Changing the pin or claiming confirmation
-from aggregate metrics is not part of this slice.
+Najib's accepted slice-2 decision restores admission once the request-owned
+socket closes and its reader settles within the existing two-second bound.
+Unconfirmed native cessation alone does not make the Worker unhealthy. A reader
+that fails to settle still sets the sticky `provider_reader_unsettled` latch,
+denying admission even after logical unload/reload until Worker replacement.
+
+This decision assumes exclusive ownership of the supervisor's vLLM instance,
+Worker concurrency one, and `--max-num-seqs 1`. A new request waits in vLLM while
+the old request occupies the scheduled slot rather than running as a second
+sequence. Outstanding aborted GPU work remains subject to vLLM's execution and
+block-reuse fences, not an Orchard inference from reader exit. The accepted
+residual risk is additional next-request latency, not output corruption or
+unsafe memory overlap. Request-owned transports and response IDs remain separate.
+This is a local reuse policy, not evidence of native cessation, request-slot
+release or resource release, and supplies no new Controller capacity authority.
+
+Confirmed provider polling remains blocked. Slice 3 must revisit cessation with
+a provider-side receipt before concurrency above one: a newer vLLM with suitable
+evidence, a request-scoped engine-origin abort acknowledgment and execution fence,
+or engine-incarnation evidence under a separately accepted lifecycle contract.
+Changing the pin or claiming confirmation from aggregate metrics is not part of
+this slice. No live execution or native safety qualification is claimed here.
 
 ### Historical reference, not a support tuple
 

@@ -80,19 +80,29 @@ not the strict check or the requirement for separately approved live evidence.
 
 Disconnect remains the cancel mechanism. Pinned vLLM's aggregate running/waiting
 gauges can predate admission and have no request-scoped freshness barrier or
-execution fence. Polling them cannot distinguish a stopped target from stopped
-siblings or certify native cessation. ADR 0037 links the inspected source.
-Do not add a fake affirmative receipt unsupported by that source. Report
-`native cessation unconfirmed` in the cancelled terminal and premature-stream
-cleanup telemetry. Keep local reader settlement bounded at two seconds. An
-unconfirmed result is sticky, denies new admission after logical reload, and
-does not send a provider-wide abort. Cancel acceptance is not native
-cessation, and reader exit is not capacity release.
+execution fence. The disconnect-abort path removes frontend state without
+incrementing the abort success counter. ADR 0037 cites the inspected v0.27.1
+source. Do not add a fake affirmative receipt unsupported by that source.
+Report `cancel accepted; native cessation unconfirmed` in the cancelled terminal
+and cancellation cleanup telemetry; other premature-stream cleanup also reports
+unconfirmed cessation. Keep local reader settlement bounded at two seconds.
+Only an unsettled reader sets the sticky unhealthy latch and denies admission,
+including after logical reload. Settled disconnect cleanup permits reuse without
+a provider-wide abort. Cancel acceptance is not native cessation, and reader exit
+is not capacity release.
 
-Confirmed/delayed-confirmed polling is blocked pending a separately approved
-request-specific engine-origin acknowledgment and execution fence. Retaining the
-conservative Worker/provider replacement requirement is the in-scope alternative;
-there is no provider pin change, fabricated confirmation or live claim here.
+The accepted slice-2 policy assumes exclusive provider ownership, Worker
+concurrency one and supervisor `--max-num-seqs 1`. vLLM queues the next request
+while the prior request occupies its scheduled slot and owns the execution and
+block-reuse fences for outstanding aborted work. The accepted residual risk is
+next-request latency, not output corruption or unsafe memory overlap. This is
+not a live native-safety qualification or new Controller capacity authority.
+
+Confirmed polling remains blocked. Slice 3 must revisit a provider-side receipt
+before concurrency above one, through a suitable newer vLLM, request-scoped abort
+acknowledgment and execution fence, or separately accepted engine-incarnation
+evidence. There is no provider pin change, fabricated confirmation or live claim
+here.
 
 ## Historical fixture incompatibility and gates
 

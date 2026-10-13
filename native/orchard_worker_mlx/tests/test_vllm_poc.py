@@ -830,10 +830,10 @@ def test_silent_and_midline_cancel_settles_reader_repeatedly(
     tmp_path: Path, stall_bytes: bytes
 ) -> None:
     baseline = {thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"}
-    with _FakeVLLM() as server:
+    with _FakeVLLM(_provider_events(["after cancellation"])) as server:
         server.stall_bytes = stall_bytes
+        backend = _loaded_backend(server, tmp_path)
         for _ in range(3):
-            backend = _loaded_backend(server, tmp_path)
             server.headers_sent.clear()
             server.client_closed.clear()
             cancel = threading.Event()
@@ -850,15 +850,18 @@ def test_silent_and_midline_cancel_settles_reader_repeatedly(
             consumer.join(timeout=0.7)
             assert not consumer.is_alive()
             backend.finish_generation()
+            assert len(result) == 1
             assert result[0]["code"] == "cancelled"
+            assert result[0]["message"] == "cancel accepted; native cessation unconfirmed"
             assert server.client_closed.wait(timeout=1)
-            assert backend.health()["code"] == "provider_cessation_unconfirmed"
-            with pytest.raises(BackendError) as rejected:
-                backend.start_generation()
-            assert rejected.value.code == "provider_cessation_unconfirmed"
+            assert backend.health()["ready"] is True
             assert {
                 thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"
             } == baseline
+        server.stall_bytes = None
+        completed = _generate(backend, _request())
+        assert _text(completed) == "brief reasoning</think>after cancellation"
+        assert completed[-1]["kind"] == "completed"
 
 
 def test_unsettled_connect_blocks_new_admission_even_after_unload(
@@ -890,9 +893,12 @@ def test_unsettled_connect_blocks_new_admission_even_after_unload(
             cancel.set()
             consumer.join(timeout=3)
             assert not consumer.is_alive()
+            assert len(result) == 1
             assert result[0]["code"] == "cancelled"
+            assert result[0]["message"] == "cancel accepted; native cessation unconfirmed"
             backend.finish_generation()
             backend.unload_model()
+            assert backend.health()["ready"] is False
             assert backend.health()["code"] == "provider_reader_unsettled"
             with pytest.raises(BackendError) as exc_info:
                 backend.start_generation()
@@ -906,7 +912,7 @@ def test_unsettled_connect_blocks_new_admission_even_after_unload(
                 reader.join(timeout=1)
 
 
-def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:
+def test_cancellation_closes_provider_stream(tmp_path: Path, caplog) -> None:
     with _FakeVLLM() as server:
         server.stall = True
         backend = _loaded_backend(server, tmp_path)
@@ -926,11 +932,12 @@ def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:
             {
                 "kind": "failed",
                 "code": "cancelled",
-                "message": "request cancelled; native cessation unconfirmed",
+                "message": "cancel accepted; native cessation unconfirmed",
                 "retryable": False,
             }
         ]
         assert server.client_closed.wait(timeout=2)
+        assert "cancel accepted; native cessation unconfirmed" in caplog.text
 
 
 @pytest.mark.parametrize("delivered", [0, 1, 2, 3])
@@ -961,7 +968,7 @@ def test_cancellation_during_delivery_emits_one_cancelled_terminal(
                 {
                     "kind": "failed",
                     "code": "cancelled",
-                    "message": "request cancelled; native cessation unconfirmed",
+                    "message": "cancel accepted; native cessation unconfirmed",
                     "retryable": False,
                 }
             ]
@@ -1248,19 +1255,24 @@ def test_raw_passthrough_cannot_satisfy_required_tool(
             assert exc_info.value.code == "tool_choice_not_satisfied"
 
 
-def test_closing_incremental_consumer_denies_reuse_without_cessation(tmp_path: Path) -> None:
+def test_closing_incremental_consumer_allows_reuse_after_reader_settles(tmp_path: Path) -> None:
     with _FakeVLLM(_provider_events(["answer"])) as server:
         gate = threading.Event()
         server.gates[1] = gate
         backend = _loaded_backend(server, tmp_path)
+        backend.start_generation()
         iterator = backend.generate(_request(), threading.Event())
         try:
             assert next(iterator)["delta"] == "brief reasoning</think>"
             iterator.close()
-            assert backend.health()["code"] == "provider_cessation_unconfirmed"
+            assert backend.health()["ready"] is True
         finally:
             gate.set()
             iterator.close()
+            backend.finish_generation()
+        completed = _generate(backend, _request())
+        assert _text(completed) == "brief reasoning</think>answer"
+        assert completed[-1]["kind"] == "completed"
 
 
 def test_token_id_prompt_still_requires_exact_provider_usage(tmp_path: Path) -> None:
@@ -1273,7 +1285,7 @@ def test_token_id_prompt_still_requires_exact_provider_usage(tmp_path: Path) -> 
         assert server.payload["prompt"] == [11, 22, 33]
 
 
-def test_grpc_cancel_reports_unconfirmed_cessation_and_denies_reuse(tmp_path: Path) -> None:
+def test_grpc_cancel_reports_unconfirmed_cessation_and_allows_reuse(tmp_path: Path) -> None:
     # macOS Unix sockets have a 104-byte path limit; pytest's temp root can exceed it.
     with (
         _FakeVLLM(_provider_events(["answer"])) as provider,
@@ -1314,18 +1326,18 @@ def test_grpc_cancel_reports_unconfirmed_cessation_and_denies_reuse(tmp_path: Pa
                 terminal = list(stream)
                 assert len(terminal) == 1
                 assert terminal[0].failed.code == "cancelled"
-                assert (
-                    terminal[0].failed.message == "request cancelled; native cessation unconfirmed"
-                )
-                backend.unload_model()
-                backend.load_model(
-                    model_id=MODEL_ID, version=MODEL_VERSION, model_path=str(tmp_path)
-                )
-                assert backend.health()["ready"] is False
+                assert terminal[0].failed.message == "cancel accepted; native cessation unconfirmed"
+                assert backend.health()["ready"] is True
+                gate.set()
                 request.request_id = "next-fixture"
-                rejected = list(stub.Generate(request, timeout=1))
-                assert len(rejected) == 1
-                assert rejected[0].failed.code == "provider_cessation_unconfirmed"
+                completed = list(stub.Generate(request, timeout=2))
+                assert (
+                    "".join(event.output_text_delta.delta for event in completed)
+                    == "brief reasoning</think>answer"
+                )
+                assert [event.WhichOneof("event") for event in completed].count("completed") == 1
+                assert completed[-1].WhichOneof("event") == "completed"
+                assert not any(event.HasField("failed") for event in completed)
         finally:
             gate.set()
             server.stop(0).wait(timeout=2)

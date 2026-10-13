@@ -26,9 +26,12 @@ accepted `reconcile-linux-node-source-dev-contract` change.
   prompt IDs when present (rendered string otherwise), reject token-ID output and
   logprobs, and use UUID tool-call IDs under KAP-116.
 - Keep cancellation transports request-scoped. Report native cessation as
-  unconfirmed and deny new admission after unconfirmed cleanup. Confirmed polling
-  is blocked because pinned vLLM has no request-scoped, fresh cessation receipt;
-  aggregate metrics cannot prove it. Record the limitation in ADR 0037.
+  unconfirmed but permit reuse after bounded reader settlement; only an unsettled
+  reader latches unhealthy admission. This relies on exclusive provider ownership
+  and `--max-num-seqs 1`, with next-request latency as the accepted residual risk.
+  Confirmed polling is blocked because pinned vLLM has no fresh cessation receipt;
+  aggregate metrics cannot prove it. Slice 3 must revisit provider-side evidence
+  before concurrency above one. Record the decision and source in ADR 0037.
 - Keep historical setup and live runner disabled; retain deterministic evidence
   only. No new Controller/shared/tokenizer registration or public final-only
   contract is introduced.

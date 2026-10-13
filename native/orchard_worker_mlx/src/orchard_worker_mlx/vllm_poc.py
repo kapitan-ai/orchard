@@ -90,7 +90,6 @@ class VLLMPocBackend:
         self._active_request_count = 0
         self._lock = threading.Lock()
         self._reader_unsettled = False
-        self._cessation_unconfirmed = False
 
     def status(self) -> BackendStatus:
         with self._lock:
@@ -108,12 +107,6 @@ class VLLMPocBackend:
                     ready=False,
                     code="provider_reader_unsettled",
                     message="provider reader did not settle; replace the Worker",
-                )
-            if self._cessation_unconfirmed:
-                return BackendHealth(
-                    ready=False,
-                    code="provider_cessation_unconfirmed",
-                    message="provider cessation is unconfirmed; replace the Worker and provider",
                 )
         return BackendHealth(ready=True, code="", message="")
 
@@ -164,10 +157,6 @@ class VLLMPocBackend:
             if self._reader_unsettled:
                 raise BackendError(
                     "provider_reader_unsettled", "provider reader did not settle", False
-                )
-            if self._cessation_unconfirmed:
-                raise BackendError(
-                    "provider_cessation_unconfirmed", "provider cessation is unconfirmed", False
                 )
             if self._loaded_model is None:
                 raise BackendError("model_not_loaded", "model is not loaded", False)
@@ -311,10 +300,8 @@ class VLLMPocBackend:
     def _cancelled_event(self) -> dict[str, Any]:
         # Stock vLLM has no request-scoped, engine-origin cessation receipt.
         # Aggregate metrics can predate admission, even when scraped after cancel.
-        with self._lock:
-            self._cessation_unconfirmed = True
         event = cancelled_event()
-        event["message"] = "request cancelled; native cessation unconfirmed"
+        event["message"] = "cancel accepted; native cessation unconfirmed"
         return event
 
     def _verify_provider_identity(self) -> None:
@@ -620,11 +607,10 @@ class VLLMPocBackend:
                 _shutdown_socket(transport_socket)
             reader.join(timeout=2.0)
             if not done:
-                with self._lock:
-                    self._cessation_unconfirmed = True
                 logger.warning(
-                    "vllm_poc request_id=%s disconnect propagated; native cessation unconfirmed",
+                    "vllm_poc request_id=%s %s; native cessation unconfirmed",
                     payload["request_id"],
+                    "cancel accepted" if cancel_event.is_set() else "disconnect propagated",
                 )
             if reader.is_alive():
                 with self._lock:
