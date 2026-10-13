@@ -1451,6 +1451,48 @@ def test_score_prefix_cache_disabled_config_precedes_backend_and_validation() ->
     backend.score_prefix_cache.assert_not_called()
 
 
+def _strict_prefix_service_config() -> PrefixCacheLoadConfig:
+    from orchard_worker_mlx.strict_prefix_checkpoints import StrictPrefixCheckpointConfig
+
+    return PrefixCacheLoadConfig(
+        mode="strict_prefix",
+        strict_prefix=StrictPrefixCheckpointConfig(slots=2, slot_bytes=4096, budget_bytes=8192),
+    )
+
+
+def test_score_prefix_cache_strict_prefix_is_disabled_before_the_backend() -> None:
+    # SPEC.md 7.5.3: strict-prefix checkpoints do not score fingerprints.
+    backend = HappyBackend()
+    backend.score_prefix_cache = MagicMock(side_effect=AssertionError("must not score"))
+    servicer = WorkerRuntimeServicer(backend, prefix_cache_config=_strict_prefix_service_config())
+
+    response = servicer.ScorePrefixCache(runtime_pb2.ScorePrefixCacheRequest(), MagicMock())
+
+    assert response.status_code == "disabled"
+    assert "strict-prefix" in response.status_message
+    backend.score_prefix_cache.assert_not_called()
+
+
+def test_get_status_strict_prefix_reads_the_backend_and_reports_slots_and_budget() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status=_ok_prefix_cache_status(
+                checkpoint_uncertain_count=1, checkpoint_retained_bytes=3000
+            )
+        ),
+        prefix_cache_config=_strict_prefix_service_config(),
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "ok"
+    assert status.prefix_cache.implementation == "strict_prefix"
+    assert status.prefix_cache.configured_max_entries == 2
+    assert status.prefix_cache.configured_max_bytes == 8192
+    assert status.prefix_cache.checkpoint_uncertain_count == 1
+    assert status.prefix_cache.checkpoint_retained_bytes == 3000
+
+
 def test_score_prefix_cache_backend_error_maps_to_error_status() -> None:
     class FailingScoringBackend(HappyBackend):
         def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:

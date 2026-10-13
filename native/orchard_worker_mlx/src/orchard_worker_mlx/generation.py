@@ -137,6 +137,9 @@ class _CacheLookupResult:
 _STRICT_LOOKUP_UNAVAILABLE = "unavailable"
 _STRICT_LOOKUP_IDENTITY_MISMATCH = "identity_mismatch"
 _STRICT_CAPTURE_NOT_TARGETED = "not_targeted"
+# The request ended before the strict-prefix lookup ran: no output tokens were
+# requested, its parameters were refused, it was cancelled, or encoding failed.
+_STRICT_LOOKUP_NOT_STARTED = "not_started"
 
 
 @dataclass(slots=True)
@@ -2838,10 +2841,13 @@ def generate_events(
                 store=store_result,
                 final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
             )
-        elif strict_plan is not None:
+        else:
             _emit_strict_prefix_log(
                 prompt_tokens=prompt_tokens,
-                plan=strict_plan,
+                plan=strict_plan
+                or _StrictPrefixPlan(
+                    lookup_status=_STRICT_LOOKUP_NOT_STARTED, stream_prompt_ids=[]
+                ),
                 store=strict_store,
             )
         if not deps.uses_shared_batch_runtime:

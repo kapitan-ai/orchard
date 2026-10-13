@@ -372,7 +372,21 @@ def _prefix_cache_disabled(prefix_cache_config: Any | None) -> bool:
     return _status_string(getattr(prefix_cache_config, "mode", "")) == "disabled"
 
 
+def _prefix_cache_scoring_disabled(prefix_cache_config: Any | None) -> bool:
+    # Strict-prefix checkpoints do not score cache-affinity fingerprints.
+    return _status_string(getattr(prefix_cache_config, "mode", "")) in (
+        "disabled",
+        _CHECKPOINT_IMPLEMENTATION,
+    )
+
+
 def _prefix_cache_caps(prefix_cache_config: Any | None) -> tuple[int, int]:
+    strict_prefix = getattr(prefix_cache_config, "strict_prefix", None)
+    if _status_string(getattr(prefix_cache_config, "mode", "")) == _CHECKPOINT_IMPLEMENTATION:
+        return (
+            _status_uint32(getattr(strict_prefix, "slots", 0)),
+            _status_uint64(getattr(strict_prefix, "budget_bytes", 0)),
+        )
     return (
         _status_uint32(getattr(prefix_cache_config, "max_entries", 0)),
         _status_uint64(getattr(prefix_cache_config, "max_bytes", 0)),
@@ -695,10 +709,14 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     ) -> runtime_pb2.ScorePrefixCacheResponse:
         del context
 
-        if _prefix_cache_disabled(self._prefix_cache_config):
+        if _prefix_cache_scoring_disabled(self._prefix_cache_config):
             return runtime_pb2.ScorePrefixCacheResponse(
                 status_code="disabled",
-                status_message="prefix cache disabled by config",
+                status_message=(
+                    "strict-prefix checkpoints do not score cache-affinity fingerprints"
+                    if not _prefix_cache_disabled(self._prefix_cache_config)
+                    else "prefix cache disabled by config"
+                ),
                 resident_fingerprint_match=False,
                 score_tier="unknown",
                 session_started_unix_ms=0,
