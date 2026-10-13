@@ -27,6 +27,6 @@
 ## 5. Before promotion (separate change)
 
 - [ ] 5.1 Decide whether strict-prefix reuse becomes a supported mode for a qualified tuple, and update SPEC.md in that change.
-- [ ] 5.2 Make stock prefill cancellable at chunk boundaries.
-- [ ] 5.3 Add a config mode, Node Agent error mapping, headroom accounting, cache-affinity fingerprints and per-model enablement.
+- [x] 5.2 Make stock prefill cancellable at chunk boundaries (change `stop-stream-prefill-on-cancel`).
+- [x] 5.3 Add a config mode, Node Agent error mapping, headroom accounting and per-model enablement (change `harden-stock-strict-prefix-checkpoints`). Cache-affinity fingerprints for checkpoints are a separate change.
 - [ ] 5.4 After archive or sync, review generated specs and remove placeholder prose such as "Purpose TBD".

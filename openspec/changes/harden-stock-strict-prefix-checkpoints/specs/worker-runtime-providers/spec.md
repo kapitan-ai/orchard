@@ -34,11 +34,15 @@ When strict-prefix reuse is enabled for a model, the Worker SHALL subtract the f
 - **THEN** the model loads, and published headroom and recommended context are zero
 
 ### Requirement: Strict-prefix status
-When strict-prefix reuse is enabled, the Worker SHALL report prefix-cache status with implementation `strict_prefix`: retained checkpoints as the entry count, the fixed charge for occupied slots as total bytes, slots and budget as the configured maximums, and the uncertain checkpoint count and measured retained bytes in their own fields. The Controller SHALL keep the checkpoint fields only for `strict_prefix` status. A strict-prefix Worker SHALL publish no cache-affinity fingerprints and SHALL NOT advertise the prefix-cache capability.
+When strict-prefix reuse is enabled, the Worker SHALL report prefix-cache status with implementation `strict_prefix`: retained checkpoints as the entry count, the fixed charge for occupied slots as total bytes, slots and budget as the configured maximums, and the uncertain checkpoint count and measured retained bytes in their own fields. The Controller SHALL keep the checkpoint fields only from an `ok` `strict_prefix` status. A strict-prefix Worker SHALL publish no cache-affinity fingerprints and SHALL NOT advertise the prefix-cache capability.
 
 #### Scenario: Status of a strict-prefix Worker
 - **WHEN** the Controller reads the status of a strict-prefix Worker that holds one retained and one uncertain checkpoint
 - **THEN** it sees implementation `strict_prefix`, entry count 1, uncertain count 1, and no fingerprints
+
+#### Scenario: Strict-prefix status that is not ok
+- **WHEN** a strict-prefix Worker reports status `error`, `unavailable` or `invalid_status`, with or without nonzero counters
+- **THEN** the Controller records no checkpoint counters for it
 
 #### Scenario: Other implementations
 - **WHEN** a `kv` Worker reports zero checkpoint counters

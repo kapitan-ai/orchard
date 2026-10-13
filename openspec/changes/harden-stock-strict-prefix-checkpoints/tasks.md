@@ -9,14 +9,14 @@
 
 ## 2. Activation
 
-- [ ] 2.1 Add the per-model settings file, its resolver and the fixed launch policy. Refuse invalid combinations before spawn.
-- [ ] 2.2 Add `strict_prefix` to the Worker CLI with explicit strict-prefix flags. Remove the environment variables, and launch Workers with the old enabling variable removed.
-- [ ] 2.3 Emit the new load-refusal codes, require `observe` memory mode, and subtract the configured budget once from published headroom.
-- [ ] 2.4 Publish strict-prefix status from the Worker service, including the counters, and log requests that end before prefill.
-- [ ] 2.5 Restrict the fingerprint buffer, publication, scoring and the prefix-cache capability to `kv` and `trie`.
-- [ ] 2.6 Test old and new Node and Worker versions in both directions, and update `docs/local-dev.md`.
+- [x] 2.1 Add the per-model settings file, its resolver and the fixed launch policy. Refuse invalid combinations before spawn.
+- [x] 2.2 Add `strict_prefix` to the Worker CLI with explicit strict-prefix flags. Remove the environment variables, and launch Workers with the old enabling variable removed.
+- [x] 2.3 Emit the new load-refusal codes, require `observe` memory mode, and subtract the configured budget once from published headroom.
+- [x] 2.4 Publish strict-prefix status from the Worker service, including the counters, and log requests that end before prefill.
+- [x] 2.5 Restrict the fingerprint buffer, publication, scoring and the prefix-cache capability to `kv` and `trie`.
+- [x] 2.6 Test old and new Node and Worker versions in both directions, and update `docs/local-dev.md`.
 
 ## 3. Validation
 
-- [ ] 3.1 Run the Elixir and Python/native workflows, and strict OpenSpec validation.
-- [ ] 3.2 Update the spike change's task 5.3 when activation lands.
+- [x] 3.1 Run the Elixir and Python/native workflows, and strict OpenSpec validation.
+- [x] 3.2 Update the spike change's task 5.3 when activation lands.

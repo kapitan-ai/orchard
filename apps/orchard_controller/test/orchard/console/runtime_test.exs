@@ -835,13 +835,14 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "SPEC 7.5.3 keeps checkpoint counters only from an ok status" do
-      for status_code <- ~w(invalid_status error unavailable disabled) do
+      for status_code <- ~w(invalid_status error unavailable disabled),
+          {uncertain, retained} <- [{0, 0}, {3, 3_000}] do
         status =
           PrefixCacheStatus.normalize(%{
             implementation: "strict_prefix",
             status_code: status_code,
-            checkpoint_uncertain_count: 0,
-            checkpoint_retained_bytes: 0
+            checkpoint_uncertain_count: uncertain,
+            checkpoint_retained_bytes: retained
           })
 
         assert status.status_code == status_code

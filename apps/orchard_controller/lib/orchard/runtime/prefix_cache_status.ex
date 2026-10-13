@@ -72,8 +72,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     :session_started_unix_ms
   ]
 
-  # Checkpoint fields are plain proto3 scalars, so other implementations report
-  # zero. They are validated and kept only for strict-prefix status.
+  # Checkpoint fields are plain proto3 scalars, so other implementations and
+  # non-ok statuses report zero. They are validated only for strict-prefix
+  # status and kept only from an ok strict-prefix status.
   @checkpoint_implementation "strict_prefix"
 
   @doc """

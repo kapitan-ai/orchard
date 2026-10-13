@@ -550,6 +550,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     assert flag_value(args, "--strict-prefix-reply-marker") == "<|r|>"
   end
 
+  test "a model without an override launches with only flags an older Worker accepts" do
+    {:ok, options} =
+      Orchard.Node.WorkerLaunchPolicy.resolve(
+        %ModelRef{model_id: "test/model", version: "v1"},
+        %{},
+        Orchard.Node.worker_launch_globals()
+      )
+
+    args = launched_worker_args(Keyword.delete(options, :backend))
+
+    refute Enum.any?(args, &String.starts_with?(&1, "--strict-prefix"))
+    assert flag_value(args, "--prefix-cache-mode") in ["disabled", "kv", "trie"]
+  end
+
   test "Workers start without the spike's strict-prefix enabling variable" do
     previous = System.get_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS")
     System.put_env("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", "enabled")
