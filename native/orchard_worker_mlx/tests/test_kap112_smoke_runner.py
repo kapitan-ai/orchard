@@ -1607,9 +1607,15 @@ open(sys.argv[1], "w").write(str(child.pid))
 
     child_pid = int(child_pid_path.read_text())
     deadline = time.monotonic() + 2
-    while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+    while True:
+        status = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(child_pid)], capture_output=True, text=True
+        )
+        assert status.returncode in (0, 1)
+        if status.returncode == 1 or status.stdout.strip().startswith("Z"):
+            break
+        assert time.monotonic() < deadline, "owned child survived process-group termination"
         time.sleep(0.02)
-    assert not Path(f"/proc/{child_pid}").exists()
 
 
 def test_logical_unload_requires_acknowledged_unloaded_status(tmp_path: Path) -> None:
@@ -2234,9 +2240,9 @@ def test_direct_response_drift_reports_bounded_identity() -> None:
         runner.validate_response(payload, "expected")
 
 
-def test_worker_socket_budget_checks_complete_generated_path(tmp_path: Path) -> None:
+def test_worker_socket_budget_checks_complete_generated_path() -> None:
     runner = _runner()
-    work_root = tmp_path / "r"
+    work_root = Path("/k")
 
     runner.require_worker_socket_path_budget(work_root)
 
@@ -2244,9 +2250,10 @@ def test_worker_socket_budget_checks_complete_generated_path(tmp_path: Path) -> 
     assert len(os.fsencode(candidate)) <= runner.LINUX_UNIX_SOCKET_PATH_MAX_BYTES
 
 
-def test_worker_socket_budget_rejects_overlong_proof_root(tmp_path: Path) -> None:
+def test_worker_socket_budget_rejects_overlong_proof_root() -> None:
     runner = _runner()
-    work_root = tmp_path / ("x" * 100)
+    work_root = Path("/k") / ("x" * 100)
+    assert len(os.fsencode(work_root)) <= runner.LINUX_UNIX_SOCKET_PATH_MAX_BYTES
 
     with pytest.raises(runner.ProofFailure, match="Unix-socket path budget"):
         runner.require_worker_socket_path_budget(work_root)
