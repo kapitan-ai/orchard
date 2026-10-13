@@ -2725,6 +2725,8 @@ def stop_process_group(process: subprocess.Popen[Any]) -> None:
     except ProcessLookupError:
         process.wait()
         return
+    except PermissionError:
+        pass
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         process.poll()
@@ -2733,12 +2735,16 @@ def stop_process_group(process: subprocess.Popen[Any]) -> None:
         except ProcessLookupError:
             process.wait()
             return
+        except PermissionError:
+            pass
         time.sleep(0.05)
     try:
         os.killpg(process_group, signal.SIGKILL)
     except ProcessLookupError:
         process.wait()
         return
+    except PermissionError:
+        pass
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         process.poll()
@@ -2747,8 +2753,10 @@ def stop_process_group(process: subprocess.Popen[Any]) -> None:
         except ProcessLookupError:
             process.wait()
             return
+        except PermissionError:
+            pass
         time.sleep(0.05)
-    raise ProofFailure("owned process group did not terminate")
+    raise ProofFailure("owned process group termination could not be confirmed after SIGKILL")
 
 
 def preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> tuple[str, str, Path]:

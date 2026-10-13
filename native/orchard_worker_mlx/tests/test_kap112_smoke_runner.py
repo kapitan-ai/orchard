@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 import socket
 import stat
 import subprocess
@@ -1586,6 +1587,10 @@ def test_normalizes_observed_opencode_attachment_capture() -> None:
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Linux proof requires ESRCH confirmation of owned process-group disappearance",
+)
 def test_opencode_timeout_terminates_owned_process_group(tmp_path: Path) -> None:
     runner = _runner()
     child_pid_path = tmp_path / "child.pid"
@@ -1616,6 +1621,50 @@ open(sys.argv[1], "w").write(str(child.pid))
             break
         assert time.monotonic() < deadline, "owned child survived process-group termination"
         time.sleep(0.02)
+
+
+@pytest.mark.parametrize(
+    ("term_denied", "disappears_after"), [(False, 0.05), (True, 10.05), (True, None)]
+)
+def test_process_group_permission_errors_require_confirmed_disappearance(
+    monkeypatch: pytest.MonkeyPatch, term_denied: bool, disappears_after: float | None
+) -> None:
+    runner = _runner()
+    elapsed = 0.0
+    killed = False
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    def killpg(_group: int, signum: int) -> None:
+        nonlocal killed
+        if signum == signal.SIGTERM:
+            if term_denied:
+                raise PermissionError
+            return
+        if signum == signal.SIGKILL:
+            killed = True
+            raise PermissionError
+        if (
+            disappears_after is not None
+            and elapsed >= disappears_after
+            and (disappears_after < 10 or killed)
+        ):
+            raise ProcessLookupError
+        raise PermissionError
+
+    monkeypatch.setattr(runner.os, "killpg", killpg)
+    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep))
+    process = SimpleNamespace(pid=123, poll=lambda: 0, wait=lambda: 0)
+
+    if disappears_after is None:
+        with pytest.raises(runner.ProofFailure, match="termination could not be confirmed"):
+            runner.stop_process_group(process)
+        assert 15 <= elapsed <= 15.1
+    else:
+        runner.stop_process_group(process)
+        assert disappears_after <= elapsed <= disappears_after + 0.1
 
 
 def test_logical_unload_requires_acknowledged_unloaded_status(tmp_path: Path) -> None:
