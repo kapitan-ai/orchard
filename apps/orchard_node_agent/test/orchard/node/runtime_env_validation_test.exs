@@ -35,7 +35,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
-  # SPEC §7.2.9: selecting the experiment cannot enable a release backend.
+  # ADR 0037: the source-development experiment cannot enable a release backend.
   test "runtime.exs rejects vllm_poc in every production release role" do
     for release <- ["orchard_node_agent", "orchard_controller", "orchard_cli", nil],
         backend <- ["vllm_poc", " vllm_poc "] do

@@ -1,10 +1,10 @@
 ## Context and scope
 
-ADR 0037 records the historical reference and exact SPEC impact. This experiment
-is independent of ADR 0035's Linux Node candidate; it supplies no platform,
-production trust, lifecycle or M9 qualification evidence. Historical vLLM
-0.27.1 image/model identities remain immutable reference metadata, not current
-support or authorization.
+ADR 0037 records the historical reference and source-development boundary. No
+SPEC.md amendment is required. This experiment is independent of ADR 0035's
+Linux Node candidate; it supplies no platform, production trust, lifecycle or
+M9 qualification evidence. Historical vLLM 0.27.1 image/model identities remain
+immutable reference metadata, not current support or authorization.
 
 ## Worker boundary
 

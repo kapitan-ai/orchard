@@ -1,6 +1,6 @@
 ## 1. Current-main contract review
 
-- [x] 1.1 Review ADR 0037 and the minimal §7.2.9 permission against KAP-49, KAP-116, ADR 0035 and M9.
+- [x] 1.1 Confirm no SPEC.md amendment is required (§1.5) and record the boundary in ADR 0037.
 - [x] 1.2 Validate this change and all OpenSpec packages strictly; record results without importing historical completed tasks.
 
 ## 2. Deterministic implementation verification

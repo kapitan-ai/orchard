@@ -8,7 +8,7 @@ accepted `reconcile-linux-node-source-dev-contract` change.
 
 ## What Changes
 
-- Permit separately selected `vllm_poc` behind existing local gRPC and loopback
+- Add separately selected `vllm_poc` behind existing local gRPC and loopback
   HTTP `/v1/completions` on 58080, with logical load/unload and concurrency one.
 - Preserve rendered prompts and legacy-blended generated reasoning; use stateful
   framing only to locate an unambiguous final suffix for fail-closed Qwen XML
@@ -35,8 +35,8 @@ None. Platform qualification contracts remain unchanged.
 
 ## Impact
 
-`SPEC.md` §7.2.9 gains only the permission quoted in ADR 0037. `SPEC.md` §1.4,
-§1.5, §4.10, M9 and ADR 0035 remain authoritative and unchanged. This proposal
-grants no live execution, native cessation, custody, capacity, model/provider/
-platform qualification or support. Historical acceptance does not accept this
-revision; no current-main real API/OpenCode proof is claimed.
+No `SPEC.md` change is required. ADR 0037 records the source-development boundary.
+`SPEC.md` §1.4, §1.5, §4.10, §7.2.9, M9 and ADR 0035 remain authoritative and
+unchanged. This proposal grants no live execution, native cessation, custody,
+capacity, model/provider/platform qualification or support. Historical acceptance
+does not accept this revision; no current-main real API/OpenCode proof is claimed.

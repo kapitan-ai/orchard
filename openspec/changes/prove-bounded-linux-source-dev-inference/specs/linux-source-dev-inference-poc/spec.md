@@ -89,7 +89,7 @@ under current registration or separately accept a new artifact profile;
 The pinned vLLM 0.27.1 image tuple in ADR 0037 SHALL remain a historical proven
 reference only. This independent experiment SHALL NOT fulfill
 `reconcile-linux-node-source-dev-contract`, change `SPEC.md` §1.4, §1.5, §4.10,
-§7.2.9 or M9 beyond the quoted experiment permission, or weaken ADR 0035.
+§7.2.9 or M9, or weaken ADR 0035.
 It SHALL grant no live execution authorization, native cessation, custody,
 capacity, model/provider/platform qualification or support. No current-main
 real API/OpenCode proof SHALL be claimed.

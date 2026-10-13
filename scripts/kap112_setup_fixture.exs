@@ -1,2 +1,2 @@
-# SPEC §7.2.9: historical registration cannot authorize current-main rendering.
+# ADR 0037: the source-development boundary grants no historical registration authority.
 raise "historical KAP-112 setup is disabled pending current-main rendered-effort fixture reconciliation"

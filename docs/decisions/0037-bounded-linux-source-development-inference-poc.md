@@ -15,11 +15,12 @@ one bounded vLLM route. Their runtime registration and final-only projection do
 not match main's KAP-49 rendered-effort and legacy-blended contract. Replaying
 their completed tasks or execution permissions would misrepresent current truth.
 
-This is an independent implementation experiment under `SPEC.md` §7.2.9, not
-fulfillment of `reconcile-linux-node-source-dev-contract`. [ADR 0035](0035-experimental-linux-node-source-development.md),
-`SPEC.md` §1.4, §1.5, §4.10 and Milestone 9 continue to own platform, provider,
-runtime-foundation and qualification boundaries. The accepted Linux Node change
-remains untouched, with its implementation and qualification still pending.
+This is an independent source-development experiment within the existing
+support and qualification boundaries of `SPEC.md` §1.4, §1.5, §4.10 and
+Milestone 9, not fulfillment of `reconcile-linux-node-source-dev-contract`.
+[ADR 0035](0035-experimental-linux-node-source-development.md) remains unchanged.
+The accepted Linux Node change remains untouched, with its implementation and
+qualification still pending.
 
 ## Decision
 
@@ -119,6 +120,8 @@ current live evidence or permission to change the tokenizer contract.
 
 ## SPEC.md impact
 
-Append one paragraph to §7.2.9, quoted exactly:
-
-> A separately selected, default-off `vllm_poc` source-development experiment MAY use existing rendered prompts and legacy-blended output through the existing local gRPC Worker path. This permission grants no live execution authorization, native cessation, custody, capacity, model, provider, or platform qualification or support; §1.4, §1.5, §4.10, Milestone 9, and ADR 0035 remain unchanged.
+No SPEC.md amendment is required. This default-off source-development experiment
+uses the existing local Worker seam without changing Controller admission,
+public APIs, or the requirements of §4.10. The support and qualification
+boundaries in §1.4, §1.5, §7.2.9, Milestone 9, and ADR 0035 remain unchanged.
+This decision grants no live execution authorization.
