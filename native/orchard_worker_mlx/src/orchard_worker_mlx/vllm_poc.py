@@ -44,6 +44,7 @@ SAMPLING_CONTROLS = {
 }
 
 _MAX_HTTP_BODY_BYTES = 1_048_576
+_MAX_ERROR_BODY_BYTES = 4_096
 _MAX_SSE_LINE_BYTES = 1_048_576
 _MAX_DECODED_OUTPUT_CHARS = 4_194_304
 _TOOL_START = "<tool_call>"
@@ -276,26 +277,34 @@ class VLLMPocBackend:
                 "provider_usage_missing", "provider did not return token usage", False
             )
 
-        events, tool_calls = output_parser.finish(provider_finish)
-        for event in events:
+        try:
+            events, tool_calls = output_parser.finish(provider_finish)
+            for event in events:
+                if cancel_event.is_set():
+                    yield self._cancelled_event()
+                    return
+                yield event
             if cancel_event.is_set():
                 yield self._cancelled_event()
                 return
-            yield event
-        if cancel_event.is_set():
-            yield self._cancelled_event()
-            return
-        yield {
-            "kind": "completed",
-            "finish_reason": (
-                "FINISH_REASON_TOOL_CALLS"
-                if tool_calls
-                else (
-                    "FINISH_REASON_LENGTH" if provider_finish == "length" else "FINISH_REASON_STOP"
-                )
-            ),
-            "usage": usage,
-        }
+            yield {
+                "kind": "completed",
+                "finish_reason": (
+                    "FINISH_REASON_TOOL_CALLS"
+                    if tool_calls
+                    else (
+                        "FINISH_REASON_LENGTH"
+                        if provider_finish == "length"
+                        else "FINISH_REASON_STOP"
+                    )
+                ),
+                "usage": usage,
+            }
+        except BackendError:
+            if cancel_event.is_set():
+                yield self._cancelled_event()
+                return
+            raise
 
     def _cancelled_event(self) -> dict[str, Any]:
         # Stock vLLM has no request-scoped, engine-origin cessation receipt.
@@ -525,8 +534,19 @@ class VLLMPocBackend:
                 )
                 response = connection.getresponse()
                 if response.status != 200:
-                    response.read(_MAX_HTTP_BODY_BYTES + 1)
-                    enqueue("error", "provider rejected the request")
+                    error_body = response.read(_MAX_ERROR_BODY_BYTES + 1)
+                    code = (
+                        "invalid_prompt"
+                        if 400 <= response.status < 500 and response.status not in {404, 405}
+                        else "provider_protocol_error"
+                    )
+                    logger.warning(
+                        "vllm_poc request_id=%s provider_http_status=%s body_excerpt=%s",
+                        payload["request_id"],
+                        response.status,
+                        _redacted_error_excerpt(error_body),
+                    )
+                    enqueue("rejected", BackendError(code, "provider rejected the request", False))
                     return
                 if response.getheader("Content-Type", "").split(";", 1)[0].strip() != (
                     "text/event-stream"
@@ -572,6 +592,7 @@ class VLLMPocBackend:
         reader.start()
         deadline = time.monotonic() + self._config.request_timeout_s
         done = False
+        exit_reason = "consumer_closed"
         try:
             while True:
                 if cancel_event.is_set():
@@ -599,8 +620,13 @@ class VLLMPocBackend:
                     raise BackendError(
                         "provider_missing_terminal", "provider stream ended before [DONE]", False
                     )
+                elif kind == "rejected":
+                    raise value
                 else:
                     raise BackendError("provider_protocol_error", str(value), False)
+        except BackendError as exc:
+            exit_reason = exc.code
+            raise
         finally:
             stop_reader.set()
             with transport_lock:
@@ -608,14 +634,33 @@ class VLLMPocBackend:
             reader.join(timeout=2.0)
             if not done:
                 logger.warning(
-                    "vllm_poc request_id=%s %s; native cessation unconfirmed",
+                    "vllm_poc request_id=%s exit_reason=%s; %snative cessation unconfirmed",
                     payload["request_id"],
-                    "cancel accepted" if cancel_event.is_set() else "disconnect propagated",
+                    "cancelled" if cancel_event.is_set() else exit_reason,
+                    "cancel accepted; " if cancel_event.is_set() else "",
                 )
             if reader.is_alive():
                 with self._lock:
                     self._reader_unsettled = True
                 logger.error("vllm_poc provider reader did not stop after connection close")
+
+
+def _redacted_error_excerpt(body: bytes) -> str:
+    if len(body) > _MAX_ERROR_BODY_BYTES:
+        return "[oversized error body omitted]"
+    try:
+        error = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return "[unparseable error body omitted]"
+    if isinstance(error, dict):
+        error = error.get("error", error)
+    if not isinstance(error, dict):
+        return "[unrecognized error body omitted]"
+    # Free-form messages, parameters and unknown type strings can echo prompts.
+    error_type = error.get("type")
+    if error_type not in ("BadRequestError", "NotFoundError", "InternalServerError"):
+        error_type = "[redacted]"
+    return json.dumps({"type": error_type, "message": "[redacted]"})[:128]
 
 
 class _QwenPocOutputParser:

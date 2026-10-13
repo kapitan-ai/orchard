@@ -57,6 +57,8 @@ marker, releasing it when it cannot do so. Once a complete control marker is
 seen, subsequent bytes SHALL remain buffered until terminal parsing. Tool calls
 SHALL be validated before emission; terminal text SHALL exclude already-emitted
 bytes. Later malformed reasoning framing SHALL retain raw passthrough semantics.
+Terminal validation MAY fail after text deltas have been delivered, ending with
+exactly one failed terminal and no completion, without retracting delivered text.
 First-token timing SHALL retain the existing first emitted legacy text boundary
 in `SPEC.md` §5.8.
 

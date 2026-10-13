@@ -47,6 +47,7 @@ class _FakeVLLM(ThreadingHTTPServer):
         self.model_id = SERVED_MODEL_ID
         self.identity_payload: Any | None = None
         self.response_status = 200
+        self.error_body = b"rejected"
         self.content_type = "text/event-stream"
         self.stall = False
         self.stall_bytes: bytes | None = None
@@ -111,7 +112,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.server.headers_sent.set()
         if self.server.response_status != 200 or self.server.content_type != "text/event-stream":
-            self.wfile.write(b"rejected")
+            self.wfile.write(self.server.error_body)
             return
         if self.server.stall_bytes is not None:
             self.wfile.write(self.server.stall_bytes)
@@ -701,6 +702,69 @@ def test_provider_protocol_errors_fail_closed(
 
 
 @pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (400, "invalid_prompt"),
+        (429, "invalid_prompt"),
+        (404, "provider_protocol_error"),
+        (405, "provider_protocol_error"),
+        (503, "provider_protocol_error"),
+    ],
+)
+def test_provider_http_rejection_is_classified_without_prompt_echo(
+    tmp_path: Path, caplog, status: int, code: str
+) -> None:
+    prompt_echo = "sensitive prompt fixture" * 80
+    with _FakeVLLM() as server:
+        server.response_status = status
+        server.error_body = json.dumps(
+            {"error": {"type": "BadRequestError", "message": prompt_echo, "param": prompt_echo}}
+        ).encode()
+        request = _request()
+        request.prompt_token_ids = [999999, 2, 3]
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), request)
+    assert exc_info.value.code == code
+    assert exc_info.value.retryable is False
+    assert "sensitive prompt fixture" not in caplog.text
+    messages = [
+        record.getMessage() for record in caplog.records if "body_excerpt=" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert f"provider_http_status={status}" in messages[0]
+    excerpt = messages[0].split("body_excerpt=", 1)[1]
+    assert len(excerpt) <= 128
+    assert json.loads(excerpt) == {"type": "BadRequestError", "message": "[redacted]"}
+    assert f"exit_reason={code}; native cessation unconfirmed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        json.dumps({"type": "sensitive prompt fixture\nforged log", "message": "echo"}).encode(),
+        b"sensitive prompt fixture: not JSON",
+        b"sensitive prompt fixture" + b"x" * 4096,
+    ],
+)
+def test_provider_error_excerpt_redacts_unknown_malformed_and_oversized_bodies(
+    tmp_path: Path, caplog, body: bytes
+) -> None:
+    with _FakeVLLM() as server:
+        server.response_status = 400
+        server.error_body = body
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), _request())
+    assert exc_info.value.code == "invalid_prompt"
+    assert "sensitive prompt fixture" not in caplog.text
+    assert "forged log" not in caplog.text
+    messages = [
+        record.getMessage() for record in caplog.records if "body_excerpt=" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert len(messages[0].split("body_excerpt=", 1)[1]) <= 128
+
+
+@pytest.mark.parametrize(
     ("events", "code"),
     [
         ([{"id": "cmpl-wrong-request", "choices": []}], "provider_protocol_error"),
@@ -773,7 +837,7 @@ def test_usage_must_be_a_single_post_terminal_trailer(tmp_path: Path, placement:
     ],
 )
 def test_invalid_sse_transport_fails_closed(
-    tmp_path: Path, raw_event: bytes, send_done: bool, code: str
+    tmp_path: Path, caplog, raw_event: bytes, send_done: bool, code: str
 ) -> None:
     with _FakeVLLM() as server:
         server.raw_events = [raw_event]
@@ -782,6 +846,9 @@ def test_invalid_sse_transport_fails_closed(
         with pytest.raises(BackendError) as exc_info:
             list(backend.generate(_request(), threading.Event()))
     assert exc_info.value.code == code
+    assert f"exit_reason={code}; native cessation unconfirmed" in caplog.text
+    assert "disconnect propagated" not in caplog.text
+    assert "cancel accepted" not in caplog.text
 
 
 def test_reasoning_bytes_count_toward_output_bound(tmp_path: Path, monkeypatch) -> None:
@@ -937,7 +1004,7 @@ def test_cancellation_closes_provider_stream(tmp_path: Path, caplog) -> None:
             }
         ]
         assert server.client_closed.wait(timeout=2)
-        assert "cancel accepted; native cessation unconfirmed" in caplog.text
+        assert "exit_reason=cancelled; cancel accepted; native cessation unconfirmed" in caplog.text
 
 
 @pytest.mark.parametrize("delivered", [0, 1, 2, 3])
@@ -974,6 +1041,40 @@ def test_cancellation_during_delivery_emits_one_cancelled_terminal(
             ]
         finally:
             backend.finish_generation()
+
+
+@pytest.mark.parametrize("code", ["tool_call_parse_failed", "tool_choice_not_satisfied"])
+@pytest.mark.parametrize("cancel_during_validation", [False, True])
+def test_cancel_during_terminal_validation_takes_precedence(
+    tmp_path: Path, monkeypatch, code: str, cancel_during_validation: bool
+) -> None:
+    cancel = threading.Event()
+
+    def fail_validation(*_args):
+        if cancel_during_validation:
+            cancel.set()
+        raise BackendError(code, "invalid tool output", False)
+
+    monkeypatch.setattr("orchard_worker_mlx.vllm_poc._parse_final_output", fail_validation)
+    with _FakeVLLM(_provider_events(["answer"])) as server:
+        backend = _loaded_backend(server, tmp_path)
+        iterator = backend.generate(_request(), cancel)
+        assert next(iterator) == {"kind": "output_text_delta", "delta": "brief reasoning</think>"}
+        assert next(iterator) == {"kind": "output_text_delta", "delta": "answer"}
+        if cancel_during_validation:
+            assert list(iterator) == [
+                {
+                    "kind": "failed",
+                    "code": "cancelled",
+                    "message": "cancel accepted; native cessation unconfirmed",
+                    "retryable": False,
+                }
+            ]
+        else:
+            with pytest.raises(BackendError) as exc_info:
+                list(iterator)
+            assert exc_info.value.code == code
+        assert list(iterator) == []
 
 
 def test_single_flight_and_logical_unload(tmp_path: Path) -> None:
@@ -1025,6 +1126,41 @@ def test_fake_provider_crosses_worker_runtime_protocol(tmp_path: Path) -> None:
         "brief reasoning</think>protocol ok"
     )
     assert events[-1].completed.usage.total_tokens == 5
+
+
+def test_streamed_text_can_precede_one_tool_validation_failure(tmp_path: Path) -> None:
+    parts = ["r</think>see <para", "graph> ok<tool_call><function=read></function></tool_call>"]
+    with _FakeVLLM(_provider_events(parts, close_prompt_reasoning=False)) as server:
+        servicer = WorkerRuntimeServicer(_loaded_backend(server, tmp_path))
+        events = list(
+            servicer.Generate(
+                runtime_pb2.ExecuteInferenceRequest(
+                    request_id="post-commit-failure",
+                    model_id=MODEL_ID,
+                    version=MODEL_VERSION,
+                    rendered_prompt_utf8=b"prompt<think>\n",
+                    input_tokens=3,
+                    params=common_pb2.GenerationParams(
+                        max_output_tokens=8,
+                        temperature=1.0,
+                        top_p=0.95,
+                        tools_json=json.dumps([{"function": {"name": "read"}}]).encode(),
+                    ),
+                ),
+                SimpleNamespace(add_callback=lambda _callback: True),
+            )
+        )
+    assert [event.WhichOneof("event") for event in events] == [
+        "output_text_delta",
+        "output_text_delta",
+        "failed",
+    ]
+    assert [event.output_text_delta.delta for event in events[:-1]] == [
+        "r</think>see ",
+        "<paragraph> ok",
+    ]
+    assert events[-1].failed.code == "tool_call_parse_failed"
+    assert events[-1].failed.retryable is False
 
 
 def test_parser_preserves_truncated_reasoning_marker_as_legacy_text() -> None:

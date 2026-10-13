@@ -83,7 +83,9 @@ the suffix that could begin a tool control marker until it resolves. Once a
 complete control marker appears, retain its output until terminal parsing and
 validation; do not leak tool blocks as ordinary text. Preserve raw passthrough
 if later reasoning framing becomes malformed. Terminal parsing emits only text
-not already delivered and complete tool calls. The Controller's existing
+not already delivered and complete tool calls. Terminal validation may fail after
+text deltas have already been delivered, ending with one failed terminal rather
+than retracting that text or completing. The Controller's existing
 `first_token_at` therefore follows the first emitted legacy text delta, not the
 provider's terminal. No Worker timing or public event schema is added.
 
@@ -93,6 +95,14 @@ retained transport socket even when the response owns it; an unsettled reader
 makes the Worker unhealthy and blocks further local admission until replacement.
 Each attempt has its own transport and random provider request ID. Validate
 response IDs when supplied. Cancellation closes only that request's socket.
+
+Provider HTTP 4xx responses map to non-retryable `invalid_prompt`, except 404/405,
+which indicate a missing endpoint or unsupported method and remain
+`provider_protocol_error`; 5xx remains a provider error. Error-body reads are
+capped at 4 KiB plus one overflow byte. Log at most 128 characters of redacted JSON
+excerpt, retaining only allowlisted error types; omit free-form messages,
+parameters and unknown values because they may echo prompts. Malformed or
+oversized bodies produce an omission label, never raw content.
 
 ### Concurrency above one is deferred
 
@@ -135,8 +145,9 @@ engine-origin cessation receipt. Read-only inspection of pinned v0.27.1 found:
 Do not implement an affirmative confirmation path using these metrics. The
 cancelled terminal retains code `cancelled` and reports `cancel accepted; native
 cessation unconfirmed` in its message. Cancellation cleanup logs the same outcome
-with the adapter-owned request ID; other premature stream closure logs disconnect
-propagation with native cessation unconfirmed. No provider-wide abort is sent.
+with the adapter-owned request ID; cleanup logs distinguish cancellation, provider
+error codes and consumer closure while retaining native cessation unconfirmed.
+No provider-wide abort is sent.
 
 Najib's accepted slice-2 decision restores admission once the request-owned
 socket closes and its reader settles within the existing two-second bound.
@@ -210,6 +221,7 @@ GPU, downloading a model or asserting current real API/OpenCode success.
 The string fallback retains the live risk of Controller/provider tokenization
 divergence. Authoritative IDs avoid provider retokenization, but do not establish
 live compatibility, tokenizer registration authority or a new supported tuple.
+`supports_prompt_token_ids=true` also satisfies the TensorFold token-ID gate, but `gate_tensorfold_route` requires an explicit TensorFold Node allowlist, so projected requests reach this backend only through operator misconfiguration.
 
 ## SPEC.md impact
 
