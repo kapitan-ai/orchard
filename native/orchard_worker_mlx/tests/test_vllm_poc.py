@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -10,12 +12,17 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
+import grpc
 import pytest
 
 from orchard_worker_mlx.backends import Backend, BackendError
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, runtime_pb2
-from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
-from orchard_worker_mlx.service import WorkerRuntimeServicer
+from orchard_worker_mlx.generated.orchard.worker.v1 import (
+    worker_runtime_pb2,
+    worker_runtime_pb2_grpc,
+)
+from orchard_worker_mlx.model_loader import GenerationRuntimeConfig
+from orchard_worker_mlx.service import WorkerRuntimeServicer, build_server
 from orchard_worker_mlx.vllm_poc import (
     MAX_INPUT_TOKENS,
     MAX_OUTPUT_TOKENS,
@@ -40,6 +47,7 @@ class _FakeVLLM(ThreadingHTTPServer):
         self.model_id = SERVED_MODEL_ID
         self.identity_payload: Any | None = None
         self.response_status = 200
+        self.error_body = b"rejected"
         self.content_type = "text/event-stream"
         self.stall = False
         self.stall_bytes: bytes | None = None
@@ -48,6 +56,7 @@ class _FakeVLLM(ThreadingHTTPServer):
         self.headers_sent = threading.Event()
         self.client_closed = threading.Event()
         self.payload: dict[str, Any] | None = None
+        self.gates: dict[int, threading.Event] = {}
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
 
     @property
@@ -95,14 +104,15 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
-        self.server.payload = json.loads(self.rfile.read(length))
+        payload = json.loads(self.rfile.read(length))
+        self.server.payload = payload
         self.server.request_seen.set()
         self.send_response(self.server.response_status)
         self.send_header("Content-Type", self.server.content_type)
         self.end_headers()
         self.server.headers_sent.set()
         if self.server.response_status != 200 or self.server.content_type != "text/event-stream":
-            self.wfile.write(b"rejected")
+            self.wfile.write(self.server.error_body)
             return
         if self.server.stall_bytes is not None:
             self.wfile.write(self.server.stall_bytes)
@@ -125,9 +135,12 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
             return
         try:
             raw_events = self.server.raw_events or [
-                json.dumps(event).encode() for event in self.server.events
+                json.dumps({"id": f"cmpl-{payload['request_id']}", **event}).encode()
+                for event in self.server.events
             ]
-            for event in raw_events:
+            for index, event in enumerate(raw_events):
+                if index in self.server.gates:
+                    self.server.gates[index].wait(timeout=5)
                 self.wfile.write(b"data: " + event + b"\n\n")
                 self.wfile.flush()
             if self.server.send_done:
@@ -241,7 +254,7 @@ def test_backend_satisfies_protocol_and_reports_proof_only_capability() -> None:
         "loaded": False,
         "active_request_count": 0,
         "max_concurrency": 1,
-        "supports_prompt_token_ids": False,
+        "supports_prompt_token_ids": True,
     }
     assert backend.prefix_cache_status()["status_code"] == "unavailable"
     assert backend.health()["ready"] is True
@@ -335,14 +348,13 @@ def test_text_stream_preserves_split_legacy_reasoning_and_usage(tmp_path: Path) 
         backend = _loaded_backend(server, tmp_path)
         events = _generate(backend, _request())
 
-    assert events == [
-        {"kind": "output_text_delta", "delta": "private chain</think>Orchard Linux inference POC"},
-        {
-            "kind": "completed",
-            "finish_reason": "FINISH_REASON_STOP",
-            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
-        },
-    ]
+    assert _text(events) == "private chain</think>Orchard Linux inference POC"
+    assert events[-1] == {
+        "kind": "completed",
+        "finish_reason": "FINISH_REASON_STOP",
+        "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+    }
+    assert UUID(server.payload.pop("request_id")).version == 4
     assert server.payload == {
         "model": SERVED_MODEL_ID,
         "prompt": "prompt<think>\n",
@@ -397,8 +409,8 @@ def test_legacy_blended_preserves_raw_bytes_and_provider_terminal(
     provider_events[-2]["choices"][0]["finish_reason"] = finish_reason
     with _FakeVLLM(provider_events) as server:
         result = _generate(_loaded_backend(server, tmp_path), _request())
-    assert result[0] == {"kind": "output_text_delta", "delta": raw}
-    assert [event["kind"] for event in result] == ["output_text_delta", "completed"]
+    assert _text(result) == raw
+    assert all(event["kind"] == "output_text_delta" for event in result[:-1])
     assert result[-1]["finish_reason"] == (
         "FINISH_REASON_LENGTH" if finish_reason == "length" else "FINISH_REASON_STOP"
     )
@@ -420,10 +432,10 @@ def test_split_qwen_tool_call_is_validated_and_normalized(tmp_path: Path) -> Non
         backend = _loaded_backend(server, tmp_path)
         events = _generate(backend, _request(tools=tools, tool_choice="required"))
 
-    assert events[0] == {"kind": "output_text_delta", "delta": "inspect</think>"}
-    assert events[1]["kind"] == "tool_call_delta"
-    assert UUID(events[1]["tool_call_id"].removeprefix("call_")).version == 4
-    assert events[1]["delta"]["function"] == {
+    assert _text(events) == "inspect</think>"
+    assert events[-2]["kind"] == "tool_call_delta"
+    assert UUID(events[-2]["tool_call_id"].removeprefix("call_")).version == 4
+    assert events[-2]["delta"]["function"] == {
         "name": "read",
         "arguments_delta": '{"path":"fixture.txt","line":2}',
     }
@@ -535,9 +547,9 @@ def test_public_text_prefix_is_preserved_before_typed_tool_calls(
         backend = _loaded_backend(server, tmp_path)
         events = _generate(backend, _request(tools=tools, tool_choice="auto"))
 
-    assert events[0] == {"kind": "output_text_delta", "delta": "inspect</think>" + public_prefix}
-    assert events[1]["kind"] == "tool_call_delta"
-    assert events[1]["delta"]["function"] == {
+    assert _text(events) == "inspect</think>" + public_prefix
+    assert events[-2]["kind"] == "tool_call_delta"
+    assert events[-2]["delta"]["function"] == {
         "name": "read",
         "arguments_delta": '{"path":"fixture.txt"}',
     }
@@ -585,11 +597,8 @@ def test_parser_fails_closed(text: str, tool_choice: Any, code: str) -> None:
 
 def test_parser_preserves_reasoning_without_a_final_answer() -> None:
     parser = _QwenPocOutputParser(_params())
-    parser.push("reasoning</think>")
-    assert parser.finish("stop") == (
-        [{"kind": "output_text_delta", "delta": "reasoning</think>"}],
-        False,
-    )
+    assert parser.push("reasoning</think>") == "reasoning</think>"
+    assert parser.finish("stop") == ([], False)
 
 
 @pytest.mark.parametrize(
@@ -634,6 +643,7 @@ def test_context_envelope_boundaries(
         ("return_logprobs", True, "unsupported_generation_params"),
         ("rendered_prompt_utf8", b"\xff", "invalid_prompt"),
         ("rendered_prompt_utf8", b"prompt", "unsupported_rendered_prompt"),
+        ("rendered_prompt_utf8", b"prompt<think>\n</think>\n", "unsupported_rendered_prompt"),
         ("input_tokens", True, "invalid_generation_params"),
         ("input_tokens", 0, "invalid_generation_params"),
         ("temperature", float("nan"), "invalid_generation_params"),
@@ -692,8 +702,72 @@ def test_provider_protocol_errors_fail_closed(
 
 
 @pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (400, "invalid_prompt"),
+        (429, "invalid_prompt"),
+        (404, "provider_protocol_error"),
+        (405, "provider_protocol_error"),
+        (503, "provider_protocol_error"),
+    ],
+)
+def test_provider_http_rejection_is_classified_without_prompt_echo(
+    tmp_path: Path, caplog, status: int, code: str
+) -> None:
+    prompt_echo = "sensitive prompt fixture" * 80
+    with _FakeVLLM() as server:
+        server.response_status = status
+        server.error_body = json.dumps(
+            {"error": {"type": "BadRequestError", "message": prompt_echo, "param": prompt_echo}}
+        ).encode()
+        request = _request()
+        request.prompt_token_ids = [999999, 2, 3]
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), request)
+    assert exc_info.value.code == code
+    assert exc_info.value.retryable is False
+    assert "sensitive prompt fixture" not in caplog.text
+    messages = [
+        record.getMessage() for record in caplog.records if "body_excerpt=" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert f"provider_http_status={status}" in messages[0]
+    excerpt = messages[0].split("body_excerpt=", 1)[1]
+    assert len(excerpt) <= 128
+    assert json.loads(excerpt) == {"type": "BadRequestError", "message": "[redacted]"}
+    assert f"exit_reason={code}; native cessation unconfirmed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        json.dumps({"type": "sensitive prompt fixture\nforged log", "message": "echo"}).encode(),
+        b"sensitive prompt fixture: not JSON",
+        b"sensitive prompt fixture" + b"x" * 4096,
+    ],
+)
+def test_provider_error_excerpt_redacts_unknown_malformed_and_oversized_bodies(
+    tmp_path: Path, caplog, body: bytes
+) -> None:
+    with _FakeVLLM() as server:
+        server.response_status = 400
+        server.error_body = body
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), _request())
+    assert exc_info.value.code == "invalid_prompt"
+    assert "sensitive prompt fixture" not in caplog.text
+    assert "forged log" not in caplog.text
+    messages = [
+        record.getMessage() for record in caplog.records if "body_excerpt=" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert len(messages[0].split("body_excerpt=", 1)[1]) <= 128
+
+
+@pytest.mark.parametrize(
     ("events", "code"),
     [
+        ([{"id": "cmpl-wrong-request", "choices": []}], "provider_protocol_error"),
         ([{"choices": "invalid"}], "provider_protocol_error"),
         ([{"choices": ["invalid"]}], "provider_protocol_error"),
         ([{"choices": [{"text": 1}]}], "provider_protocol_error"),
@@ -763,7 +837,7 @@ def test_usage_must_be_a_single_post_terminal_trailer(tmp_path: Path, placement:
     ],
 )
 def test_invalid_sse_transport_fails_closed(
-    tmp_path: Path, raw_event: bytes, send_done: bool, code: str
+    tmp_path: Path, caplog, raw_event: bytes, send_done: bool, code: str
 ) -> None:
     with _FakeVLLM() as server:
         server.raw_events = [raw_event]
@@ -772,6 +846,9 @@ def test_invalid_sse_transport_fails_closed(
         with pytest.raises(BackendError) as exc_info:
             list(backend.generate(_request(), threading.Event()))
     assert exc_info.value.code == code
+    assert f"exit_reason={code}; native cessation unconfirmed" in caplog.text
+    assert "disconnect propagated" not in caplog.text
+    assert "cancel accepted" not in caplog.text
 
 
 def test_reasoning_bytes_count_toward_output_bound(tmp_path: Path, monkeypatch) -> None:
@@ -820,7 +897,7 @@ def test_silent_and_midline_cancel_settles_reader_repeatedly(
     tmp_path: Path, stall_bytes: bytes
 ) -> None:
     baseline = {thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"}
-    with _FakeVLLM() as server:
+    with _FakeVLLM(_provider_events(["after cancellation"])) as server:
         server.stall_bytes = stall_bytes
         backend = _loaded_backend(server, tmp_path)
         for _ in range(3):
@@ -830,7 +907,7 @@ def test_silent_and_midline_cancel_settles_reader_repeatedly(
             result = []
             backend.start_generation()
             consumer = threading.Thread(
-                target=lambda result=result, cancel=cancel: result.extend(
+                target=lambda result=result, cancel=cancel, backend=backend: result.extend(
                     backend.generate(_request(), cancel)
                 )
             )
@@ -840,12 +917,18 @@ def test_silent_and_midline_cancel_settles_reader_repeatedly(
             consumer.join(timeout=0.7)
             assert not consumer.is_alive()
             backend.finish_generation()
+            assert len(result) == 1
             assert result[0]["code"] == "cancelled"
+            assert result[0]["message"] == "cancel accepted; native cessation unconfirmed"
             assert server.client_closed.wait(timeout=1)
-            assert backend.health()["ready"]
+            assert backend.health()["ready"] is True
             assert {
                 thread for thread in threading.enumerate() if thread.name == "vllm-poc-reader"
             } == baseline
+        server.stall_bytes = None
+        completed = _generate(backend, _request())
+        assert _text(completed) == "brief reasoning</think>after cancellation"
+        assert completed[-1]["kind"] == "completed"
 
 
 def test_unsettled_connect_blocks_new_admission_even_after_unload(
@@ -877,9 +960,12 @@ def test_unsettled_connect_blocks_new_admission_even_after_unload(
             cancel.set()
             consumer.join(timeout=3)
             assert not consumer.is_alive()
+            assert len(result) == 1
             assert result[0]["code"] == "cancelled"
+            assert result[0]["message"] == "cancel accepted; native cessation unconfirmed"
             backend.finish_generation()
             backend.unload_model()
+            assert backend.health()["ready"] is False
             assert backend.health()["code"] == "provider_reader_unsettled"
             with pytest.raises(BackendError) as exc_info:
                 backend.start_generation()
@@ -893,7 +979,7 @@ def test_unsettled_connect_blocks_new_admission_even_after_unload(
                 reader.join(timeout=1)
 
 
-def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:
+def test_cancellation_closes_provider_stream(tmp_path: Path, caplog) -> None:
     with _FakeVLLM() as server:
         server.stall = True
         backend = _loaded_backend(server, tmp_path)
@@ -913,15 +999,16 @@ def test_cancellation_closes_provider_stream(tmp_path: Path) -> None:
             {
                 "kind": "failed",
                 "code": "cancelled",
-                "message": "request cancelled",
+                "message": "cancel accepted; native cessation unconfirmed",
                 "retryable": False,
             }
         ]
         assert server.client_closed.wait(timeout=2)
+        assert "exit_reason=cancelled; cancel accepted; native cessation unconfirmed" in caplog.text
 
 
 @pytest.mark.parametrize("delivered", [0, 1, 2, 3])
-def test_cancellation_during_buffered_delivery_emits_one_cancelled_terminal(
+def test_cancellation_during_delivery_emits_one_cancelled_terminal(
     tmp_path: Path, monkeypatch, delivered: int
 ) -> None:
     cancel = threading.Event()
@@ -948,12 +1035,46 @@ def test_cancellation_during_buffered_delivery_emits_one_cancelled_terminal(
                 {
                     "kind": "failed",
                     "code": "cancelled",
-                    "message": "request cancelled",
+                    "message": "cancel accepted; native cessation unconfirmed",
                     "retryable": False,
                 }
             ]
         finally:
             backend.finish_generation()
+
+
+@pytest.mark.parametrize("code", ["tool_call_parse_failed", "tool_choice_not_satisfied"])
+@pytest.mark.parametrize("cancel_during_validation", [False, True])
+def test_cancel_during_terminal_validation_takes_precedence(
+    tmp_path: Path, monkeypatch, code: str, cancel_during_validation: bool
+) -> None:
+    cancel = threading.Event()
+
+    def fail_validation(*_args):
+        if cancel_during_validation:
+            cancel.set()
+        raise BackendError(code, "invalid tool output", False)
+
+    monkeypatch.setattr("orchard_worker_mlx.vllm_poc._parse_final_output", fail_validation)
+    with _FakeVLLM(_provider_events(["answer"])) as server:
+        backend = _loaded_backend(server, tmp_path)
+        iterator = backend.generate(_request(), cancel)
+        assert next(iterator) == {"kind": "output_text_delta", "delta": "brief reasoning</think>"}
+        assert next(iterator) == {"kind": "output_text_delta", "delta": "answer"}
+        if cancel_during_validation:
+            assert list(iterator) == [
+                {
+                    "kind": "failed",
+                    "code": "cancelled",
+                    "message": "cancel accepted; native cessation unconfirmed",
+                    "retryable": False,
+                }
+            ]
+        else:
+            with pytest.raises(BackendError) as exc_info:
+                list(iterator)
+            assert exc_info.value.code == code
+        assert list(iterator) == []
 
 
 def test_single_flight_and_logical_unload(tmp_path: Path) -> None:
@@ -982,6 +1103,7 @@ def test_fake_provider_crosses_worker_runtime_protocol(tmp_path: Path) -> None:
                     model_id=MODEL_ID,
                     version=MODEL_VERSION,
                     rendered_prompt_utf8=b"prompt<think>\n",
+                    prompt_token_ids=[101, 7, 99],
                     input_tokens=3,
                     params=common_pb2.GenerationParams(
                         max_output_tokens=8,
@@ -993,19 +1115,58 @@ def test_fake_provider_crosses_worker_runtime_protocol(tmp_path: Path) -> None:
             )
         )
 
-    assert status.supports_prompt_token_ids is False
+    assert status.supports_prompt_token_ids is True
+    assert server.payload["prompt"] == [101, 7, 99]
     assert [event.WhichOneof("event") for event in events] == [
+        "output_text_delta",
         "output_text_delta",
         "completed",
     ], events
-    assert events[0].output_text_delta.delta == "brief reasoning</think>protocol ok"
-    assert events[1].completed.usage.total_tokens == 5
+    assert "".join(event.output_text_delta.delta for event in events[:-1]) == (
+        "brief reasoning</think>protocol ok"
+    )
+    assert events[-1].completed.usage.total_tokens == 5
+
+
+def test_streamed_text_can_precede_one_tool_validation_failure(tmp_path: Path) -> None:
+    parts = ["r</think>see <para", "graph> ok<tool_call><function=read></function></tool_call>"]
+    with _FakeVLLM(_provider_events(parts, close_prompt_reasoning=False)) as server:
+        servicer = WorkerRuntimeServicer(_loaded_backend(server, tmp_path))
+        events = list(
+            servicer.Generate(
+                runtime_pb2.ExecuteInferenceRequest(
+                    request_id="post-commit-failure",
+                    model_id=MODEL_ID,
+                    version=MODEL_VERSION,
+                    rendered_prompt_utf8=b"prompt<think>\n",
+                    input_tokens=3,
+                    params=common_pb2.GenerationParams(
+                        max_output_tokens=8,
+                        temperature=1.0,
+                        top_p=0.95,
+                        tools_json=json.dumps([{"function": {"name": "read"}}]).encode(),
+                    ),
+                ),
+                SimpleNamespace(add_callback=lambda _callback: True),
+            )
+        )
+    assert [event.WhichOneof("event") for event in events] == [
+        "output_text_delta",
+        "output_text_delta",
+        "failed",
+    ]
+    assert [event.output_text_delta.delta for event in events[:-1]] == [
+        "r</think>see ",
+        "<paragraph> ok",
+    ]
+    assert events[-1].failed.code == "tool_call_parse_failed"
+    assert events[-1].failed.retryable is False
 
 
 def test_parser_preserves_truncated_reasoning_marker_as_legacy_text() -> None:
     parser = _QwenPocOutputParser(_params())
-    parser.push("<thi")
-    assert parser.finish("length") == ([{"kind": "output_text_delta", "delta": "<thi"}], False)
+    assert parser.push("<thi") == "<thi"
+    assert parser.finish("length") == ([], False)
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
@@ -1019,16 +1180,15 @@ def test_parser_rejects_every_truncated_tool_control_marker_prefix(
     for length in range(1, len(marker)):
         parser = _QwenPocOutputParser(_params())
         raw = f"reasoning</think>answer{marker[:length]}"
-        parser.push(raw)
+        emitted = parser.push(raw)
         if finish_reason == "length":
             with pytest.raises(BackendError) as exc_info:
                 parser.finish(finish_reason)
             assert exc_info.value.code == "tool_call_parse_failed"
         else:
-            assert parser.finish(finish_reason) == (
-                [{"kind": "output_text_delta", "delta": raw}],
-                False,
-            )
+            events, tool_calls = parser.finish(finish_reason)
+            assert emitted + _text(events) == raw
+            assert not tool_calls
 
     parser = _QwenPocOutputParser(_params())
     parser.push(f"reasoning</think>answer{marker}")
@@ -1126,3 +1286,194 @@ def test_parser_rejects_ambiguous_tool_output(text: str) -> None:
 
 def _consume(iterator: Iterator[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(iterator)
+
+
+def _text(events: list[dict[str, Any]]) -> str:
+    return "".join(event["delta"] for event in events if event["kind"] == "output_text_delta")
+
+
+def test_incremental_delivery_releases_nonmarkers_before_provider_terminal(tmp_path: Path) -> None:
+    parts = [
+        "thinking",
+        "</think>answer<to",
+        "ast",
+        "!<tool_",
+        "call><function=read></function></tool_call>",
+    ]
+    tools = [{"function": {"name": "read"}}]
+    with _FakeVLLM(_provider_events(parts, close_prompt_reasoning=False)) as server:
+        server.gates = {index: threading.Event() for index in range(1, len(parts) + 1)}
+        backend = _loaded_backend(server, tmp_path)
+        received = queue.Queue()
+        consumer = threading.Thread(
+            target=lambda: [
+                received.put(event)
+                for event in backend.generate(_request(tools=tools), threading.Event())
+            ]
+        )
+        consumer.start()
+        try:
+            # SPEC §5.8: first_token_at follows this first emitted legacy delta,
+            # not the terminal or the first final-answer byte.
+            for index, expected in enumerate(["thinking", "</think>answer", "<toast", "!"]):
+                if index:
+                    server.gates[index].set()
+                assert received.get(timeout=1) == {"kind": "output_text_delta", "delta": expected}
+            server.gates[4].set()
+            with pytest.raises(queue.Empty):
+                received.get(timeout=0.1)
+            server.gates[5].set()
+            assert received.get(timeout=1)["kind"] == "tool_call_delta"
+            assert received.get(timeout=1)["kind"] == "completed"
+        finally:
+            for gate in server.gates.values():
+                gate.set()
+            consumer.join(timeout=2)
+        assert not consumer.is_alive()
+        assert received.empty()
+
+
+@pytest.mark.parametrize("prompt_ids", [[3, 8], [3, -1, 8], [3, True, 8]])
+def test_token_id_prompts_reject_invalid_ids_and_count(tmp_path: Path, prompt_ids) -> None:
+    with _FakeVLLM() as server:
+        backend = _loaded_backend(server, tmp_path)
+        request = _request()
+        request.prompt_token_ids = prompt_ids
+        with pytest.raises(BackendError) as exc_info:
+            _generate(backend, request)
+        assert exc_info.value.code == "invalid_prompt"
+        assert not server.request_seen.is_set()
+
+
+@pytest.mark.parametrize("with_tool", [False, True])
+def test_thinking_disabled_prompt_parses_whole_output(tmp_path: Path, with_tool: bool) -> None:
+    # Exact suffix of the source-owned Qwen effort template fixture, not an
+    # advertised disabled-effort profile or negotiated reasoning capability.
+    text = "answer" + ("<tool_call><function=read></function></tool_call>" if with_tool else "")
+    with _FakeVLLM(_provider_events(list(text), close_prompt_reasoning=False)) as server:
+        request = _request(tools=[{"function": {"name": "read"}}])
+        request.rendered_prompt_utf8 = b"prompt<think>\n\n</think>\n\n"
+        result = _generate(_loaded_backend(server, tmp_path), request)
+    assert _text(result) == "answer"
+    assert [event["kind"] for event in result].count("tool_call_delta") == int(with_tool)
+    assert result[-1]["finish_reason"] == (
+        "FINISH_REASON_TOOL_CALLS" if with_tool else "FINISH_REASON_STOP"
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_choice", ["auto", "none", "required", {"function": {"name": "read"}}]
+)
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "still thinking<tool_call>",
+        "nested<think>frame</think><tool_call>",
+        "reason</think><tool_call><function=read></function></tool_call><think>late</think>",
+    ],
+)
+def test_raw_passthrough_cannot_satisfy_required_tool(
+    tmp_path: Path, tool_choice, raw: str
+) -> None:
+    events = _provider_events(list(raw), close_prompt_reasoning=False)
+    events[-2]["choices"][0]["finish_reason"] = "length"
+    with _FakeVLLM(events) as server:
+        backend = _loaded_backend(server, tmp_path)
+        request = _request(tools=[{"function": {"name": "read"}}], tool_choice=tool_choice)
+        if tool_choice in ("auto", "none"):
+            result = _generate(backend, request)
+            assert _text(result) == raw
+            assert all(event["kind"] == "output_text_delta" for event in result[:-1])
+            assert result[-1]["kind"] == "completed"
+        else:
+            with pytest.raises(BackendError) as exc_info:
+                _generate(backend, request)
+            assert exc_info.value.code == "tool_choice_not_satisfied"
+
+
+def test_closing_incremental_consumer_allows_reuse_after_reader_settles(tmp_path: Path) -> None:
+    with _FakeVLLM(_provider_events(["answer"])) as server:
+        gate = threading.Event()
+        server.gates[1] = gate
+        backend = _loaded_backend(server, tmp_path)
+        backend.start_generation()
+        iterator = backend.generate(_request(), threading.Event())
+        try:
+            assert next(iterator)["delta"] == "brief reasoning</think>"
+            iterator.close()
+            assert backend.health()["ready"] is True
+        finally:
+            gate.set()
+            iterator.close()
+            backend.finish_generation()
+        completed = _generate(backend, _request())
+        assert _text(completed) == "brief reasoning</think>answer"
+        assert completed[-1]["kind"] == "completed"
+
+
+def test_token_id_prompt_still_requires_exact_provider_usage(tmp_path: Path) -> None:
+    with _FakeVLLM(_provider_events(["answer"], input_tokens=4)) as server:
+        request = _request()
+        request.prompt_token_ids = [11, 22, 33]
+        with pytest.raises(BackendError) as exc_info:
+            _generate(_loaded_backend(server, tmp_path), request)
+        assert exc_info.value.code == "provider_usage_mismatch"
+        assert server.payload["prompt"] == [11, 22, 33]
+
+
+def test_grpc_cancel_reports_unconfirmed_cessation_and_allows_reuse(tmp_path: Path) -> None:
+    # macOS Unix sockets have a 104-byte path limit; pytest's temp root can exceed it.
+    with (
+        _FakeVLLM(_provider_events(["answer"])) as provider,
+        tempfile.TemporaryDirectory(prefix="o", dir="/tmp") as socket_dir,
+    ):
+        gate = threading.Event()
+        provider.gates[1] = gate
+        backend = _loaded_backend(provider, tmp_path)
+        server = build_server(
+            "vllm_poc",
+            backend_factory=lambda *_args, **_kwargs: backend,
+            generation_config=GenerationRuntimeConfig(mode="stream"),
+        )
+        target = f"unix://{socket_dir}/worker.sock"
+        assert server.add_insecure_port(target) != 0
+        server.start()
+        try:
+            with grpc.insecure_channel(target) as channel:
+                stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+                request = runtime_pb2.ExecuteInferenceRequest(
+                    request_id="cancel-fixture",
+                    model_id=MODEL_ID,
+                    version=MODEL_VERSION,
+                    rendered_prompt_utf8=b"prompt<think>\n",
+                    input_tokens=3,
+                    params=common_pb2.GenerationParams(
+                        max_output_tokens=8, temperature=1.0, top_p=0.95
+                    ),
+                )
+                stream = stub.Generate(request, timeout=4)
+                assert next(stream).output_text_delta.delta == "brief reasoning</think>"
+                status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), timeout=1)
+                assert status.active_request_count == status.max_concurrency == 1
+                ack = stub.Cancel(
+                    runtime_pb2.CancelInferenceRequest(request_id=request.request_id), timeout=1
+                )
+                assert ack.ok
+                terminal = list(stream)
+                assert len(terminal) == 1
+                assert terminal[0].failed.code == "cancelled"
+                assert terminal[0].failed.message == "cancel accepted; native cessation unconfirmed"
+                assert backend.health()["ready"] is True
+                gate.set()
+                request.request_id = "next-fixture"
+                completed = list(stub.Generate(request, timeout=2))
+                assert (
+                    "".join(event.output_text_delta.delta for event in completed)
+                    == "brief reasoning</think>answer"
+                )
+                assert [event.WhichOneof("event") for event in completed].count("completed") == 1
+                assert completed[-1].WhichOneof("event") == "completed"
+                assert not any(event.HasField("failed") for event in completed)
+        finally:
+            gate.set()
+            server.stop(0).wait(timeout=2)

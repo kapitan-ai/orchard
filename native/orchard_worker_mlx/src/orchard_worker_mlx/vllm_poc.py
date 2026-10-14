@@ -44,6 +44,7 @@ SAMPLING_CONTROLS = {
 }
 
 _MAX_HTTP_BODY_BYTES = 1_048_576
+_MAX_ERROR_BODY_BYTES = 4_096
 _MAX_SSE_LINE_BYTES = 1_048_576
 _MAX_DECODED_OUTPUT_CHARS = 4_194_304
 _TOOL_START = "<tool_call>"
@@ -57,6 +58,7 @@ _TOOL_CONTROL_MARKERS = (
     "</parameter>",
 )
 _NAME_RE = re.compile(r"[A-Za-z0-9_.:-]+")
+_THINKING_DISABLED_SUFFIX = "<think>\n\n</think>\n\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +98,7 @@ class VLLMPocBackend:
                 loaded=self._loaded_model is not None,
                 active_request_count=self._active_request_count,
                 max_concurrency=1,
-                supports_prompt_token_ids=False,
+                supports_prompt_token_ids=True,
             )
 
     def health(self) -> BackendHealth:
@@ -193,15 +195,20 @@ class VLLMPocBackend:
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         self._validate_request_binding(request)
         payload = self._request_payload(request)
-        output_parser = _QwenPocOutputParser(getattr(request, "params", None))
+        output_parser = _QwenPocOutputParser(
+            getattr(request, "params", None),
+            thinking_disabled=bytes(request.rendered_prompt_utf8).endswith(
+                _THINKING_DISABLED_SUFFIX.encode()
+            ),
+        )
         usage: dict[str, int] | None = None
         provider_finish: str | None = None
+        provider_stream = self._stream_provider(payload, cancel_event)
 
         try:
-            for item in self._stream_provider(payload, cancel_event):
+            for item in provider_stream:
                 if cancel_event.is_set():
-                    yield cancelled_event()
-                    return
+                    raise BackendError("cancelled", "request cancelled", False)
 
                 parsed_usage = _normalize_usage(item.get("usage"), request)
                 choices = item.get("choices")
@@ -236,7 +243,9 @@ class VLLMPocBackend:
                     raise BackendError(
                         "provider_protocol_error", "provider text delta was invalid", False
                     )
-                output_parser.push(text)
+                delta = output_parser.push(text)
+                if delta:
+                    yield {"kind": "output_text_delta", "delta": delta}
 
                 finish_reason = choice.get("finish_reason")
                 if finish_reason is not None:
@@ -248,13 +257,16 @@ class VLLMPocBackend:
                         )
                     provider_finish = finish_reason
         except BackendError as exc:
+            provider_stream.close()
             if exc.code == "cancelled" or cancel_event.is_set():
-                yield cancelled_event()
+                yield self._cancelled_event()
                 return
             raise
+        finally:
+            provider_stream.close()
 
         if cancel_event.is_set():
-            yield cancelled_event()
+            yield self._cancelled_event()
             return
         if provider_finish is None:
             raise BackendError(
@@ -265,26 +277,41 @@ class VLLMPocBackend:
                 "provider_usage_missing", "provider did not return token usage", False
             )
 
-        events, tool_calls = output_parser.finish(provider_finish)
-        for event in events:
+        try:
+            events, tool_calls = output_parser.finish(provider_finish)
+            for event in events:
+                if cancel_event.is_set():
+                    yield self._cancelled_event()
+                    return
+                yield event
             if cancel_event.is_set():
-                yield cancelled_event()
+                yield self._cancelled_event()
                 return
-            yield event
-        if cancel_event.is_set():
-            yield cancelled_event()
-            return
-        yield {
-            "kind": "completed",
-            "finish_reason": (
-                "FINISH_REASON_TOOL_CALLS"
-                if tool_calls
-                else (
-                    "FINISH_REASON_LENGTH" if provider_finish == "length" else "FINISH_REASON_STOP"
-                )
-            ),
-            "usage": usage,
-        }
+            yield {
+                "kind": "completed",
+                "finish_reason": (
+                    "FINISH_REASON_TOOL_CALLS"
+                    if tool_calls
+                    else (
+                        "FINISH_REASON_LENGTH"
+                        if provider_finish == "length"
+                        else "FINISH_REASON_STOP"
+                    )
+                ),
+                "usage": usage,
+            }
+        except BackendError:
+            if cancel_event.is_set():
+                yield self._cancelled_event()
+                return
+            raise
+
+    def _cancelled_event(self) -> dict[str, Any]:
+        # Stock vLLM has no request-scoped, engine-origin cessation receipt.
+        # Aggregate metrics can predate admission, even when scraped after cancel.
+        event = cancelled_event()
+        event["message"] = "cancel accepted; native cessation unconfirmed"
+        return event
 
     def _verify_provider_identity(self) -> None:
         parsed = urlsplit(self._config.endpoint)
@@ -356,13 +383,12 @@ class VLLMPocBackend:
 
     def _request_payload(self, request: Any) -> dict[str, Any]:
         if (
-            getattr(request, "prompt_token_ids", [])
-            or getattr(request, "return_token_ids", False) is True
+            getattr(request, "return_token_ids", False) is True
             or getattr(request, "return_logprobs", False) is True
         ):
             raise BackendError(
                 "unsupported_generation_params",
-                "vllm_poc accepts rendered prompts and text output only",
+                "vllm_poc supports text output only",
                 False,
             )
         prompt_bytes = getattr(request, "rendered_prompt_utf8", b"")
@@ -372,7 +398,7 @@ class VLLMPocBackend:
             prompt = prompt_bytes.decode("utf-8")
         except UnicodeDecodeError:
             raise BackendError("invalid_prompt", "rendered prompt is not UTF-8", False) from None
-        if not prompt.endswith("<think>\n"):
+        if not prompt.endswith(("<think>\n", _THINKING_DISABLED_SUFFIX)):
             raise BackendError(
                 "unsupported_rendered_prompt",
                 "vllm_poc requires the snapshot's prompt-opened legacy framing",
@@ -384,6 +410,17 @@ class VLLMPocBackend:
         output_tokens = getattr(params, "max_output_tokens", 0) if params is not None else 0
         if isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 1:
             raise BackendError("invalid_generation_params", "input token count is invalid", False)
+        prompt_ids = list(getattr(request, "prompt_token_ids", []))
+        if prompt_ids and (
+            len(prompt_ids) != input_tokens
+            or any(
+                isinstance(token, bool) or not isinstance(token, int) or token < 0
+                for token in prompt_ids
+            )
+        ):
+            raise BackendError(
+                "invalid_prompt", "prompt token IDs do not match input tokens", False
+            )
         if (
             isinstance(output_tokens, bool)
             or not isinstance(output_tokens, int)
@@ -442,7 +479,8 @@ class VLLMPocBackend:
 
         return {
             "model": SERVED_MODEL_ID,
-            "prompt": prompt,
+            "request_id": uuid4().hex,
+            "prompt": prompt_ids or prompt,
             "max_tokens": output_tokens,
             **SAMPLING_CONTROLS,
             "stop": stop_sequences or None,
@@ -496,8 +534,19 @@ class VLLMPocBackend:
                 )
                 response = connection.getresponse()
                 if response.status != 200:
-                    response.read(_MAX_HTTP_BODY_BYTES + 1)
-                    enqueue("error", "provider rejected the request")
+                    error_body = response.read(_MAX_ERROR_BODY_BYTES + 1)
+                    code = (
+                        "invalid_prompt"
+                        if 400 <= response.status < 500 and response.status not in {404, 405}
+                        else "provider_protocol_error"
+                    )
+                    logger.warning(
+                        "vllm_poc request_id=%s provider_http_status=%s body_excerpt=%s",
+                        payload["request_id"],
+                        response.status,
+                        _redacted_error_excerpt(error_body),
+                    )
+                    enqueue("rejected", BackendError(code, "provider rejected the request", False))
                     return
                 if response.getheader("Content-Type", "").split(";", 1)[0].strip() != (
                     "text/event-stream"
@@ -542,6 +591,8 @@ class VLLMPocBackend:
         reader = threading.Thread(target=read_stream, name="vllm-poc-reader", daemon=True)
         reader.start()
         deadline = time.monotonic() + self._config.request_timeout_s
+        done = False
+        exit_reason = "consumer_closed"
         try:
             while True:
                 if cancel_event.is_set():
@@ -554,30 +605,74 @@ class VLLMPocBackend:
                 except queue.Empty:
                     continue
                 if kind == "event":
+                    if (
+                        value.get("id", f"cmpl-{payload['request_id']}")
+                        != f"cmpl-{payload['request_id']}"
+                    ):
+                        raise BackendError(
+                            "provider_protocol_error", "provider response ID did not match", False
+                        )
                     yield value
                 elif kind == "done":
+                    done = True
                     return
                 elif kind == "eof":
                     raise BackendError(
                         "provider_missing_terminal", "provider stream ended before [DONE]", False
                     )
+                elif kind == "rejected":
+                    raise value
                 else:
                     raise BackendError("provider_protocol_error", str(value), False)
+        except BackendError as exc:
+            exit_reason = exc.code
+            raise
         finally:
             stop_reader.set()
             with transport_lock:
                 _shutdown_socket(transport_socket)
             reader.join(timeout=2.0)
+            if not done:
+                logger.warning(
+                    "vllm_poc request_id=%s exit_reason=%s; %snative cessation unconfirmed",
+                    payload["request_id"],
+                    "cancelled" if cancel_event.is_set() else exit_reason,
+                    "cancel accepted; " if cancel_event.is_set() else "",
+                )
             if reader.is_alive():
                 with self._lock:
                     self._reader_unsettled = True
                 logger.error("vllm_poc provider reader did not stop after connection close")
 
 
+def _redacted_error_excerpt(body: bytes) -> str:
+    if len(body) > _MAX_ERROR_BODY_BYTES:
+        return "[oversized error body omitted]"
+    try:
+        error = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return "[unparseable error body omitted]"
+    if isinstance(error, dict):
+        error = error.get("error", error)
+    if not isinstance(error, dict):
+        return "[unrecognized error body omitted]"
+    # Free-form messages, parameters and unknown type strings can echo prompts.
+    error_type = error.get("type")
+    if error_type not in ("BadRequestError", "NotFoundError", "InternalServerError"):
+        error_type = "[redacted]"
+    return json.dumps({"type": error_type, "message": "[redacted]"})[:128]
+
+
 class _QwenPocOutputParser:
-    def __init__(self, params: Any) -> None:
+    def __init__(self, params: Any, *, thinking_disabled: bool = False) -> None:
         self._raw_parts: list[str] = []
         self._char_count = 0
+        self._close_end: int | None = 0 if thinking_disabled else None
+        self._malformed = False
+        self._framing_tail = ""
+        self._pending = ""
+        self._tool_started = False
+        self._emitted_chars = 0
         self._tools = _decode_json_bytes(getattr(params, "tools_json", b""), "tools_json", [])
         self._tool_choice = _decode_json_bytes(
             getattr(params, "tool_choice_json", b""), "tool_choice_json", "auto"
@@ -601,32 +696,70 @@ class _QwenPocOutputParser:
                 False,
             )
 
-    def push(self, text: str) -> None:
+    def push(self, text: str) -> str:
+        previous_count = self._char_count
         self._char_count += len(text)
         if self._char_count > _MAX_DECODED_OUTPUT_CHARS:
             raise BackendError(
                 "provider_output_too_large", "provider output exceeded the size limit", False
             )
         self._raw_parts.append(text)
+        scan = self._framing_tail + text
+        offset = previous_count - len(self._framing_tail)
+        for marker in re.finditer(r"</?think>", scan):
+            end = offset + marker.end()
+            if end <= previous_count:
+                continue
+            if marker.group() == "<think>" or self._close_end is not None:
+                self._malformed = True
+            else:
+                self._close_end = end
+        self._framing_tail = scan[-7:]
+
+        if self._malformed or self._close_end is None:
+            delta = (
+                "".join(self._raw_parts)[self._emitted_chars :]
+                if self._tool_started
+                else self._pending + text
+            )
+            self._pending = ""
+            self._tool_started = False
+        else:
+            reasoning_length = max(0, self._close_end - previous_count)
+            delta = text[:reasoning_length]
+            if not self._tool_started:
+                self._pending += text[reasoning_length:]
+                boundary = len(self._pending)
+                for marker in _TOOL_CONTROL_MARKERS:
+                    start = self._pending.find(marker)
+                    if start != -1:
+                        boundary = min(boundary, start)
+                        self._tool_started = True
+                    for length in range(1, len(marker)):
+                        if self._pending.endswith(marker[:length]):
+                            boundary = min(boundary, len(self._pending) - length)
+                delta += self._pending[:boundary]
+                self._pending = self._pending[boundary:]
+        self._emitted_chars += len(delta)
+        return delta
 
     def finish(self, finish_reason: str) -> tuple[list[dict[str, Any]], bool]:
         raw = "".join(self._raw_parts)
-        reasoning, close, text = raw.partition("</think>")
-        if (
-            not close
-            or "<think>" in reasoning
-            or any(marker in text for marker in ("<think>", "</think>"))
-        ):
-            return ([{"kind": "output_text_delta", "delta": raw}] if raw else []), False
+        if self._malformed or self._close_end is None:
+            if _tool_choice_policy(self._tool_choice)[0]:
+                raise BackendError(
+                    "tool_choice_not_satisfied", "model did not emit a required tool call", False
+                )
+            remaining = raw[self._emitted_chars :]
+            return ([{"kind": "output_text_delta", "delta": remaining}] if remaining else []), False
         events, tool_calls = _parse_final_output(
-            text, self._tools, self._tool_choice, finish_reason
+            raw[self._close_end :], self._tools, self._tool_choice, finish_reason
         )
-        prefix = reasoning + close
-        if prefix:
-            if events and events[0]["kind"] == "output_text_delta":
-                events[0]["delta"] = prefix + events[0]["delta"]
-            else:
-                events.insert(0, {"kind": "output_text_delta", "delta": prefix})
+        # All streamed text is an exact prefix; tool bytes stay buffered until validated.
+        if events and events[0]["kind"] == "output_text_delta":
+            events[0]["delta"] = events[0]["delta"][max(0, self._emitted_chars - self._close_end) :]
+            if not events[0]["delta"]:
+                events.pop(0)
         return events, tool_calls
 
 

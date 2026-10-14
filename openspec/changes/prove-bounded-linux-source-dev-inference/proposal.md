@@ -10,15 +10,28 @@ accepted `reconcile-linux-node-source-dev-contract` change.
 
 - Add separately selected `vllm_poc` behind existing local gRPC and loopback
   HTTP `/v1/completions` on 58080, with logical load/unload and concurrency one.
+  N-slot admission remains deferred because `SPEC.md` §7.5.3 requires stream-mode
+  Node and placement concurrency one; no SPEC amendment is authorized here.
 - Preserve rendered prompts and legacy-blended generated reasoning; use stateful
   framing only to locate an unambiguous final suffix for fail-closed Qwen XML
   tool parsing. Raw output passes through at thinking length or malformed
   reasoning framing; tool marker prefixes remain text at clean stop, not length.
+  Emit safe text incrementally, and reject required/named tool choices when raw
+  passthrough cannot provide a parsed call. Accept the exact closed-empty-think
+  prompt suffix without registering a new effort profile.
 - Decode tool parameters by declared property type, retaining raw strings and
   vLLM qwen3 JSON-or-trimmed-text fallback for absent or unknown types, without
   claiming general JSON Schema validation.
-- Require pinned sampling and bounded total decoded output, reject token IDs and
+- Require pinned sampling and bounded total decoded output, forward authoritative
+  prompt IDs when present (rendered string otherwise), reject token-ID output and
   logprobs, and use UUID tool-call IDs under KAP-116.
+- Keep cancellation transports request-scoped. Report native cessation as
+  unconfirmed but permit reuse after bounded reader settlement; only an unsettled
+  reader latches unhealthy admission. This relies on exclusive provider ownership
+  and `--max-num-seqs 1`, with next-request latency as the accepted residual risk.
+  Confirmed polling is blocked because pinned vLLM has no fresh cessation receipt;
+  aggregate metrics cannot prove it. Slice 3 must revisit provider-side evidence
+  before concurrency above one. Record the decision and source in ADR 0037.
 - Keep historical setup and live runner disabled; retain deterministic evidence
   only. No new Controller/shared/tokenizer registration or public final-only
   contract is introduced.
