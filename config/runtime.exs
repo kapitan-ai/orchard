@@ -683,6 +683,10 @@ if config_env() == :prod do
 
   runtime_worker_backend = System.get_env("ORCHARD_WORKER_BACKEND") || "mlx"
 
+  if String.trim(runtime_worker_backend) == "vllm_poc" do
+    raise "ORCHARD_WORKER_BACKEND=vllm_poc is source-development only"
+  end
+
   config :orchard_controller, :node_trust,
     root:
       System.get_env("ORCHARD_NODE_TRUST_ROOT") ||

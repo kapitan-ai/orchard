@@ -1684,6 +1684,20 @@ def test_get_status_advertises_supports_prompt_token_ids() -> None:
     assert status.supports_prompt_token_ids is True
 
 
+def test_get_status_preserves_backend_prompt_token_id_capability() -> None:
+    backend = HappyBackend()
+    original_status = backend.status
+
+    def status_without_prompt_token_ids() -> BackendStatus:
+        status = original_status()
+        status["supports_prompt_token_ids"] = False
+        return status
+
+    backend.status = status_without_prompt_token_ids  # type: ignore[method-assign]
+    status = _make_servicer(backend).GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.supports_prompt_token_ids is False
+
+
 def test_get_status_includes_health_fields_unhealthy() -> None:
     """GetStatus includes ready=False with code/message for unhealthy backend."""
     servicer = _make_servicer(UnhealthyBackend())

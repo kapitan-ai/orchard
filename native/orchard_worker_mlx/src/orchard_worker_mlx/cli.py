@@ -122,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=["mlx", "stub"],
+        choices=["mlx", "stub", "vllm_poc"],
         default="stub",
         help="worker backend implementation",
     )
@@ -234,11 +234,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(__version__)
         return 0
 
-    if args.backend == "stub" and "--generation-mode" not in argv_list:
+    if args.backend in {"stub", "vllm_poc"} and "--generation-mode" not in argv_list:
         args.generation_mode = "stream"
 
-    if args.backend == "stub" and args.generation_mode == "batch":
-        parser.error("backend=stub does not support --generation-mode=batch")
+    if args.backend in {"stub", "vllm_poc"} and args.generation_mode == "batch":
+        parser.error(f"backend={args.backend} does not support --generation-mode=batch")
 
     _configure_logging(args.log_file)
 

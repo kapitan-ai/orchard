@@ -118,6 +118,7 @@ class BackendStatus(TypedDict):
     loaded: bool
     active_request_count: int
     max_concurrency: NotRequired[int]
+    supports_prompt_token_ids: NotRequired[bool]
     memory_budget: NotRequired[BackendMemoryBudgetStatus]
     capabilities: NotRequired[BackendCapabilities]
 
@@ -1106,6 +1107,21 @@ def build_backend(
         return StubBackend(
             max_fingerprint_buffer_size=_fingerprint_buffer_size_from_config(prefix_cache_config)
         )
+
+    if name == "vllm_poc":
+        mode = (
+            getattr(generation_config, "mode", "stream")
+            if generation_config is not None
+            else "stream"
+        )
+        if mode == "batch":
+            raise BackendError(
+                "unsupported_backend_config",
+                "backend=vllm_poc does not support generation_mode=batch",
+            )
+        from orchard_worker_mlx.vllm_poc import VLLMPocBackend
+
+        return VLLMPocBackend()
 
     if name == "mlx":
         return MLXBackend(
