@@ -54,6 +54,11 @@ SUPPORTED_MLX_LM_VERSION = "0.31.3"
 SUPPORTED_MLX_LM_COMMIT = "ab1806e8f5d6aa035973af194a1b9198ab4754dc"
 SUPPORTED_LAYER_TYPES = frozenset({"KVCache", "ArraysCache"})
 DEFAULT_REPLY_MARKER = "<|im_start|>assistant"
+# The prefix-cache mode that selects strict-prefix checkpoints.
+STRICT_PREFIX_MODE = "strict_prefix"
+STRICT_PREFIX_SCORING_DISABLED = (
+    "strict-prefix checkpoints do not score cache-affinity fingerprints"
+)
 MAX_SLOTS = 8
 
 _STAGED = "staged"

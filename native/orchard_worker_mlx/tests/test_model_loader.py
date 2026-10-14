@@ -2456,7 +2456,7 @@ def _strict_prefix_config(**overrides: Any) -> PrefixCacheLoadConfig:
         slot_bytes=overrides.pop("slot_bytes", 1 << 20),
         budget_bytes=overrides.pop("budget_bytes", 1 << 20),
     )
-    return PrefixCacheLoadConfig(mode="disabled", strict_prefix=strict)
+    return PrefixCacheLoadConfig(mode="strict_prefix", strict_prefix=strict)
 
 
 def _strict_prefix_deps(
@@ -2561,28 +2561,58 @@ def test_strict_prefix_store_is_built_for_a_supported_hybrid_cache(writable_bund
     assert session.strict_prefix_checkpoints is None
 
 
-def test_strict_prefix_config_requires_trim_cache_mode_disabled() -> None:
+def test_strict_prefix_settings_go_with_the_strict_prefix_mode() -> None:
     strict = StrictPrefixCheckpointConfig(slot_bytes=1, budget_bytes=1)
 
-    with pytest.raises(ValueError, match="requires mode 'disabled'"):
+    with pytest.raises(ValueError, match="require mode 'strict_prefix'"):
         PrefixCacheLoadConfig(mode="kv", strict_prefix=strict)
+    with pytest.raises(ValueError, match="require mode 'strict_prefix'"):
+        PrefixCacheLoadConfig(mode="disabled", strict_prefix=strict)
+    with pytest.raises(ValueError, match="requires strict_prefix settings"):
+        PrefixCacheLoadConfig(mode="strict_prefix")
     with pytest.raises(ValueError, match="StrictPrefixCheckpointConfig"):
-        PrefixCacheLoadConfig(mode="disabled", strict_prefix={"slots": 1})  # type: ignore[arg-type]
+        PrefixCacheLoadConfig(mode="strict_prefix", strict_prefix={"slots": 1})  # type: ignore[arg-type]
+    assert (
+        PrefixCacheLoadConfig(mode="strict_prefix", strict_prefix=strict).uses_fingerprints is False
+    )
+    assert PrefixCacheLoadConfig(mode="kv").uses_fingerprints is True
+    assert PrefixCacheLoadConfig(mode="trie").uses_fingerprints is True
+    assert PrefixCacheLoadConfig(mode="disabled").uses_fingerprints is False
 
 
+# SPEC.md 12.3: each refusal carries the code the Node Agent classifies.
 @pytest.mark.parametrize(
-    ("deps_kwargs", "generation_mode", "config_kwargs", "message"),
+    ("deps_kwargs", "generation_mode", "config_kwargs", "message", "code"),
     [
-        ({}, "batch", {}, "generation mode 'stream'"),
-        ({"versions": {"mlx": "0.31.2", "mlx_lm": "0.32.0"}}, "stream", {}, "mlx-lm 0.31.3"),
-        ({"runtime_versions_available": False}, "stream", {}, "mlx-lm 0.31.3"),
-        ({"layers": (KVCache, RotatingKVCache)}, "stream", {}, "RotatingKVCache"),
-        ({"layers": ()}, "stream", {}, "cache layers"),
+        ({}, "batch", {}, "generation mode 'stream'", "strict_prefix_runtime_unsupported"),
+        (
+            {"versions": {"mlx": "0.31.2", "mlx_lm": "0.32.0"}},
+            "stream",
+            {},
+            "mlx-lm 0.31.3",
+            "strict_prefix_runtime_unsupported",
+        ),
+        (
+            {"runtime_versions_available": False},
+            "stream",
+            {},
+            "mlx-lm 0.31.3",
+            "strict_prefix_runtime_unsupported",
+        ),
+        (
+            {"layers": (KVCache, RotatingKVCache)},
+            "stream",
+            {},
+            "RotatingKVCache",
+            "strict_prefix_model_unsupported",
+        ),
+        ({"layers": ()}, "stream", {}, "cache layers", "strict_prefix_model_unsupported"),
         (
             {},
             "stream",
             {"slots": 2, "slot_bytes": 8 << 30, "budget_bytes": 16 << 30},
             "exceeds estimated headroom",
+            "insufficient_memory",
         ),
     ],
 )
@@ -2592,6 +2622,7 @@ def test_strict_prefix_load_is_refused_when_unsupported(
     generation_mode: str,
     config_kwargs: dict[str, Any],
     message: str,
+    code: str,
 ) -> None:
     deps = _strict_prefix_deps(**deps_kwargs)
 
@@ -2603,7 +2634,7 @@ def test_strict_prefix_load_is_refused_when_unsupported(
             generation_mode=generation_mode,
         )
 
-    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+    assert exc_info.value.code == code
 
 
 def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
@@ -2613,8 +2644,10 @@ def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
     tokenizer = deps.load_tokenizer("unused")
     tokenizer.encode = MagicMock(side_effect=[[1, 2, 3], []])
 
-    with pytest.raises(ModelLoaderError, match="tokenizes to no tokens"):
+    with pytest.raises(ModelLoaderError, match="tokenizes to no tokens") as exc_info:
         _load_strict(writable_bundle, deps)
+
+    assert exc_info.value.code == "strict_prefix_model_unsupported"
 
 
 @pytest.mark.parametrize(
@@ -2633,7 +2666,13 @@ def test_strict_prefix_load_is_refused_when_the_marker_does_not_tokenize(
             {"mlx_lm": "0.31.3", "mlx_lm_commit": _PINNED_COMMIT},
             "stream",
             "enforce",
-            "memory-budget mode",
+            "memory-budget mode 'observe'",
+        ),
+        (
+            {"mlx_lm": "0.31.3", "mlx_lm_commit": _PINNED_COMMIT},
+            "stream",
+            "disabled",
+            "memory-budget mode 'observe'",
         ),
     ],
 )
@@ -2658,7 +2697,7 @@ def test_strict_prefix_runtime_refusals_happen_before_weights_load(
             memory_budget_config=MemoryBudgetConfig(mode=memory_budget_mode),
         )
 
-    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+    assert exc_info.value.code == "strict_prefix_runtime_unsupported"
     load_model.assert_not_called()
 
 
@@ -2673,7 +2712,7 @@ def test_strict_prefix_runtime_version_probe_error_is_a_load_refusal(
     with pytest.raises(ModelLoaderError, match="version probe failed") as exc_info:
         _load_strict(writable_bundle, deps)
 
-    assert exc_info.value.code == "strict_prefix_checkpoint_unsupported"
+    assert exc_info.value.code == "strict_prefix_runtime_unsupported"
 
 
 def test_strict_prefix_load_is_refused_without_a_prompt_cache_factory(
@@ -2681,8 +2720,84 @@ def test_strict_prefix_load_is_refused_without_a_prompt_cache_factory(
 ) -> None:
     deps = replace(_strict_prefix_deps(), make_prompt_cache=None)
 
-    with pytest.raises(ModelLoaderError, match="need make_prompt_cache"):
+    with pytest.raises(ModelLoaderError, match="need make_prompt_cache") as exc_info:
         _load_strict(writable_bundle, deps)
+
+    assert exc_info.value.code == "strict_prefix_runtime_unsupported"
+
+
+def _kv_memory_budget_status(bundle: Path, deps: MLXDeps) -> Any:
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(bundle),
+        deps=deps,
+    )
+    status = session.memory_budget_status
+    unload_session(session)
+    return status
+
+
+def test_strict_prefix_reserves_its_budget_once_in_published_headroom(
+    writable_bundle: Path,
+) -> None:
+    # SPEC.md 7.5.3: published headroom = target - resident - overhead - budget.
+    import orchard_worker_mlx.model_loader as ml
+
+    deps = _strict_prefix_deps()
+    base = _kv_memory_budget_status(writable_bundle, deps)
+    budget = 1 << 20
+    assert base.headroom_available
+    assert base.estimated_headroom_bytes > budget
+
+    session = _load_strict(
+        writable_bundle,
+        deps,
+        prefix_cache_config=_strict_prefix_config(slot_bytes=budget, budget_bytes=budget),
+    )
+
+    status = session.memory_budget_status
+    assert status.estimated_headroom_bytes == base.estimated_headroom_bytes - budget
+    assert status.target_working_set_bytes == base.target_working_set_bytes
+    assert status.recommended_context_tokens == ml._recommended_context_tokens(
+        session.manifest.max_context_tokens,
+        status.estimated_headroom_bytes,
+        status.kv_cache_bytes_per_token,
+    )
+    assert status.recommended_context_tokens <= base.recommended_context_tokens
+
+
+def test_strict_prefix_budget_equal_to_headroom_loads_with_zero_published_headroom(
+    writable_bundle: Path,
+) -> None:
+    deps = _strict_prefix_deps()
+    budget = _kv_memory_budget_status(writable_bundle, deps).estimated_headroom_bytes
+
+    session = _load_strict(
+        writable_bundle,
+        deps,
+        prefix_cache_config=_strict_prefix_config(slot_bytes=budget, budget_bytes=budget),
+    )
+
+    assert session.memory_budget_status.headroom_available
+    assert session.memory_budget_status.estimated_headroom_bytes == 0
+    assert session.memory_budget_status.recommended_context_tokens == 0
+
+
+def test_strict_prefix_budget_one_byte_over_headroom_is_insufficient_memory(
+    writable_bundle: Path,
+) -> None:
+    deps = _strict_prefix_deps()
+    budget = _kv_memory_budget_status(writable_bundle, deps).estimated_headroom_bytes + 1
+
+    with pytest.raises(ModelLoaderError, match="exceeds estimated headroom") as exc_info:
+        _load_strict(
+            writable_bundle,
+            deps,
+            prefix_cache_config=_strict_prefix_config(slot_bytes=budget, budget_bytes=budget),
+        )
+
+    assert exc_info.value.code == "insufficient_memory"
 
 
 def test_strict_prefix_load_is_refused_when_the_probe_raises(writable_bundle: Path) -> None:
@@ -2691,5 +2806,7 @@ def test_strict_prefix_load_is_refused_when_the_probe_raises(writable_bundle: Pa
 
     deps = replace(_strict_prefix_deps(), make_prompt_cache=broken_probe)
 
-    with pytest.raises(ModelLoaderError, match="probe failed"):
+    with pytest.raises(ModelLoaderError, match="probe failed") as exc_info:
         _load_strict(writable_bundle, deps)
+
+    assert exc_info.value.code == "strict_prefix_model_unsupported"

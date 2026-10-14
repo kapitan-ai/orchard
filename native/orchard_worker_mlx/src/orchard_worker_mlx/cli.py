@@ -10,48 +10,70 @@ from orchard_worker_mlx import __version__
 from orchard_worker_mlx.service import serve
 from orchard_worker_mlx.strict_prefix_checkpoints import (
     DEFAULT_REPLY_MARKER,
+    STRICT_PREFIX_MODE,
     StrictPrefixCheckpointConfig,
 )
 
 _LOG_FORMAT = "[%(levelname)s] %(name)s %(message)s"
 
-STRICT_PREFIX_ENV = "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS"
-STRICT_PREFIX_SLOTS_ENV = "ORCHARD_WORKER_STRICT_PREFIX_SLOTS"
-STRICT_PREFIX_SLOT_BYTES_ENV = "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES"
-STRICT_PREFIX_BUDGET_BYTES_ENV = "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES"
-STRICT_PREFIX_REPLY_MARKER_ENV = "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER"
+# The spike enabled strict-prefix reuse through this inherited variable.  The
+# Node Agent now launches Workers without it; a Worker that still sees it was
+# started by an older Node, so it refuses instead of enabling reuse for every
+# model on that Node.
+LEGACY_STRICT_PREFIX_ENV = "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS"
 
 
-def _env_int(environ: Mapping[str, str], name: str, default: int | None = None) -> int:
-    raw = environ.get(name)
-    if raw is None or raw == "":
-        if default is None:
-            raise ValueError(f"{name} is required when {STRICT_PREFIX_ENV}=enabled")
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+def refuse_legacy_strict_prefix_env(environ: Mapping[str, str]) -> None:
+    value = environ.get(LEGACY_STRICT_PREFIX_ENV, "")
+    if value not in ("", "disabled"):
+        raise ValueError(
+            f"{LEGACY_STRICT_PREFIX_ENV}={value} is no longer supported; unset it and enable "
+            "strict-prefix reuse per model with --prefix-cache-mode strict_prefix"
+        )
 
 
-def strict_prefix_config_from_env(
-    environ: Mapping[str, str],
-) -> StrictPrefixCheckpointConfig | None:
-    """Read the default-off strict-prefix checkpoint settings.
-
-    The Worker inherits these from the node-agent environment.  Unset or
-    ``disabled`` keeps current behavior.
-    """
-    mode = environ.get(STRICT_PREFIX_ENV, "disabled") or "disabled"
-    if mode == "disabled":
+def strict_prefix_config_from_args(args: argparse.Namespace) -> StrictPrefixCheckpointConfig | None:
+    """Build strict-prefix settings from the CLI, or refuse a bad combination."""
+    strict_flags = {
+        "--strict-prefix-slots": args.strict_prefix_slots,
+        "--strict-prefix-slot-bytes": args.strict_prefix_slot_bytes,
+        "--strict-prefix-budget-bytes": args.strict_prefix_budget_bytes,
+        "--strict-prefix-reply-marker": args.strict_prefix_reply_marker,
+    }
+    if args.prefix_cache_mode != STRICT_PREFIX_MODE:
+        given = sorted(flag for flag, value in strict_flags.items() if value is not None)
+        if given:
+            raise ValueError(f"{', '.join(given)} require --prefix-cache-mode {STRICT_PREFIX_MODE}")
         return None
-    if mode != "enabled":
-        raise ValueError(f"{STRICT_PREFIX_ENV} must be disabled|enabled, got {mode!r}")
+
+    missing = [
+        flag
+        for flag in ("--strict-prefix-slot-bytes", "--strict-prefix-budget-bytes")
+        if strict_flags[flag] is None
+    ]
+    if missing:
+        raise ValueError(
+            f"--prefix-cache-mode {STRICT_PREFIX_MODE} requires {' and '.join(missing)}"
+        )
+    if args.backend != "mlx":
+        raise ValueError(f"--prefix-cache-mode {STRICT_PREFIX_MODE} requires --backend=mlx")
+    if args.generation_mode != "stream":
+        raise ValueError(
+            f"--prefix-cache-mode {STRICT_PREFIX_MODE} requires --generation-mode=stream"
+        )
+    if args.memory_budget_mode != "observe":
+        raise ValueError(
+            f"--prefix-cache-mode {STRICT_PREFIX_MODE} requires --memory-budget-mode observe"
+        )
     return StrictPrefixCheckpointConfig(
-        slots=_env_int(environ, STRICT_PREFIX_SLOTS_ENV, default=1),
-        slot_bytes=_env_int(environ, STRICT_PREFIX_SLOT_BYTES_ENV),
-        budget_bytes=_env_int(environ, STRICT_PREFIX_BUDGET_BYTES_ENV),
-        reply_marker=environ.get(STRICT_PREFIX_REPLY_MARKER_ENV) or DEFAULT_REPLY_MARKER,
+        slots=1 if args.strict_prefix_slots is None else args.strict_prefix_slots,
+        slot_bytes=args.strict_prefix_slot_bytes,
+        budget_bytes=args.strict_prefix_budget_bytes,
+        reply_marker=(
+            DEFAULT_REPLY_MARKER
+            if args.strict_prefix_reply_marker is None
+            else args.strict_prefix_reply_marker
+        ),
     )
 
 
@@ -112,9 +134,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version", action="store_true", help="print the package version and exit")
     parser.add_argument(
         "--prefix-cache-mode",
-        choices=["disabled", "kv", "trie"],
+        choices=["disabled", "kv", "trie", STRICT_PREFIX_MODE],
         default="kv",
         help="prefix cache implementation (default: kv)",
+    )
+    parser.add_argument(
+        "--strict-prefix-slots",
+        type=int,
+        default=None,
+        help="strict_prefix only: checkpoint slots (default: 1)",
+    )
+    parser.add_argument(
+        "--strict-prefix-slot-bytes",
+        type=int,
+        default=None,
+        help="strict_prefix only: fixed charge per checkpoint slot in bytes",
+    )
+    parser.add_argument(
+        "--strict-prefix-budget-bytes",
+        type=int,
+        default=None,
+        help="strict_prefix only: checkpoint budget in bytes; must hold every slot",
+    )
+    parser.add_argument(
+        "--strict-prefix-reply-marker",
+        default=None,
+        help=f"strict_prefix only: reply marker text (default: {DEFAULT_REPLY_MARKER!r})",
     )
     parser.add_argument(
         "--prefix-cache-max-entries",
@@ -204,21 +249,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        strict_prefix = strict_prefix_config_from_env(os.environ)
-        if strict_prefix is not None:
-            if args.backend != "mlx":
-                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --backend=mlx")
-            if args.prefix_cache_mode != "disabled":
-                raise ValueError(
-                    f"{STRICT_PREFIX_ENV}=enabled requires --prefix-cache-mode disabled "
-                    "(ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled)"
-                )
-            if args.generation_mode != "stream":
-                raise ValueError(f"{STRICT_PREFIX_ENV}=enabled requires --generation-mode=stream")
-            if args.memory_budget_mode == "enforce":
-                raise ValueError(
-                    f"{STRICT_PREFIX_ENV}=enabled requires --memory-budget-mode disabled or observe"
-                )
+        refuse_legacy_strict_prefix_env(os.environ)
+        strict_prefix = strict_prefix_config_from_args(args)
         prefix_cache_config = PrefixCacheLoadConfig(
             mode=args.prefix_cache_mode,
             max_entries=args.prefix_cache_max_entries,

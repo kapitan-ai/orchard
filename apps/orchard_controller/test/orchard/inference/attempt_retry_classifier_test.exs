@@ -1,9 +1,11 @@
 defmodule Orchard.Inference.AttemptRetryClassifierTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Dispatch.AttemptOutcome
-  alias Orchard.Inference.AttemptRetryClassifier
-  alias Orchard.Requests.InferenceAttemptResult
+  alias Orchard.Inference.{AttemptRetryClassifier, ModelLoadFailure}
+  alias Orchard.Requests.{InferenceAttemptFailure, InferenceAttemptResult}
+  alias Orchard.RuntimeEndpoint.Operation
 
   @runtime_codes ~w(
     node_unavailable node_timeout runtime_unavailable resource_exhausted timeout
@@ -43,6 +45,59 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
 
       assert AttemptRetryClassifier.finalize_alternate(boundary, :identity_unresolved) ==
                :identity_unresolved
+    end
+  end
+
+  # The Node maps each code to its category (model_load_failure_test.exs).
+  # This checks that both Controller transports keep the Node code and
+  # category, that InferenceAttemptFailure (the normalizer the dispatcher uses
+  # for model-load evidence) records the category code, and that both
+  # categories are retried on another node. It does not run the dispatcher's
+  # own raw_source_code step.
+  test "SPEC.md §5.8 retries the categories the Node assigns to strict-prefix and memory refusals" do
+    for {code, node_category, category} <- [
+          {"strict_prefix_runtime_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+           :runtime_unavailable},
+          {"strict_prefix_model_unsupported", :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+           :runtime_unavailable},
+          {"strict_prefix_checkpoint_unsupported",
+           :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, :runtime_unavailable},
+          {"insufficient_memory", :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED,
+           :resource_exhausted}
+        ],
+        failure <- [
+          ModelLoadFailure.from_response(%EnsureModelLoadedResponse{
+            failure_category: node_category,
+            failure_code: code,
+            failure_message: "node message"
+          }),
+          ModelLoadFailure.from_result(%Operation.EnsureModelLoadedResult{
+            failure_category: category,
+            failure_code: code,
+            failure_message: "node message"
+          })
+        ] do
+      assert failure.category == category
+      assert failure.code == code
+
+      evidence =
+        InferenceAttemptFailure.normalize(%{
+          category: :model_load,
+          code: failure.category,
+          phase: :model_load
+        })
+
+      assert evidence["failure_code"] == Atom.to_string(category)
+
+      boundary =
+        boundary(%{
+          failure_class: "model_load_failure",
+          failure_code: evidence["failure_code"],
+          model_load_category: failure.category,
+          runtime_retryable: nil
+        })
+
+      assert AttemptRetryClassifier.pre_schedule(boundary) == :eligible_for_alternate
     end
   end
 
