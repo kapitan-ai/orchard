@@ -26,6 +26,10 @@ from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
 )
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
+    STRICT_PREFIX_SCORING_DISABLED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,11 @@ _PREFIX_CACHE_UINT64_FIELDS = (
     "configured_max_bytes",
     "session_started_unix_ms",
 )
+# Strict-prefix checkpoint fields (SPEC.md 7.5.3): checked and sent only for the
+# strict_prefix implementation; absent or None means zero.
+_CHECKPOINT_IMPLEMENTATION = STRICT_PREFIX_MODE
+_PREFIX_CACHE_OPTIONAL_UINT32_FIELDS = ("checkpoint_uncertain_count",)
+_PREFIX_CACHE_OPTIONAL_UINT64_FIELDS = ("checkpoint_retained_bytes",)
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
 _INVALID_PREFIX_CACHE_MESSAGE = "backend prefix cache status was invalid"
 _MAX_PREFIX_CACHE_FINGERPRINTS = 64
@@ -367,7 +376,16 @@ def _prefix_cache_disabled(prefix_cache_config: Any | None) -> bool:
     return _status_string(getattr(prefix_cache_config, "mode", "")) == "disabled"
 
 
+def _prefix_cache_scoring_disabled(prefix_cache_config: Any | None) -> bool:
+    # Only the trim-based caches score cache-affinity fingerprints.
+    return not bool(getattr(prefix_cache_config, "uses_fingerprints", True))
+
+
 def _prefix_cache_caps(prefix_cache_config: Any | None) -> tuple[int, int]:
+    # PrefixCacheLoadConfig.status_caps reports slots and budget for strict-prefix.
+    caps = getattr(prefix_cache_config, "status_caps", None)
+    if isinstance(caps, tuple) and len(caps) == 2:
+        return (_status_uint32(caps[0]), _status_uint64(caps[1]))
     return (
         _status_uint32(getattr(prefix_cache_config, "max_entries", 0)),
         _status_uint64(getattr(prefix_cache_config, "max_bytes", 0)),
@@ -435,12 +453,20 @@ def _invalid_prefix_cache_numeric_fields(prefix_cache: dict[str, Any]) -> list[s
             continue
 
         value = prefix_cache[field]
-        if (
-            not isinstance(value, int)
-            or isinstance(value, bool)
-            or value < 0
-            or value > _UINT64_MAX
-        ):
+        if not _valid_status_uint64(value):
+            invalid_fields.append(field)
+
+    if prefix_cache.get("implementation") != _CHECKPOINT_IMPLEMENTATION:
+        return invalid_fields
+
+    for field in _PREFIX_CACHE_OPTIONAL_UINT32_FIELDS:
+        value = prefix_cache.get(field)
+        if value is not None and not _valid_status_uint32(value):
+            invalid_fields.append(field)
+
+    for field in _PREFIX_CACHE_OPTIONAL_UINT64_FIELDS:
+        value = prefix_cache.get(field)
+        if value is not None and not _valid_status_uint64(value):
             invalid_fields.append(field)
 
     return invalid_fields
@@ -479,6 +505,7 @@ def _prefix_cache_status_response(
 
     configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
     fingerprints = _prefix_cache_fingerprints(prefix_cache.get("prefix_cache_fingerprints"))
+    checkpoint_counters = implementation == _CHECKPOINT_IMPLEMENTATION
 
     return worker_runtime_pb2.WorkerPrefixCacheStatus(
         implementation=implementation,
@@ -496,6 +523,16 @@ def _prefix_cache_status_response(
         status_message=_status_string(prefix_cache.get("status_message")),
         session_started_unix_ms=_status_uint64(prefix_cache.get("session_started_unix_ms")),
         prefix_cache_fingerprints=fingerprints,
+        checkpoint_uncertain_count=(
+            _status_uint32(prefix_cache.get("checkpoint_uncertain_count"))
+            if checkpoint_counters
+            else 0
+        ),
+        checkpoint_retained_bytes=(
+            _status_uint64(prefix_cache.get("checkpoint_retained_bytes"))
+            if checkpoint_counters
+            else 0
+        ),
     )
 
 
@@ -671,10 +708,14 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     ) -> runtime_pb2.ScorePrefixCacheResponse:
         del context
 
-        if _prefix_cache_disabled(self._prefix_cache_config):
+        if _prefix_cache_scoring_disabled(self._prefix_cache_config):
             return runtime_pb2.ScorePrefixCacheResponse(
                 status_code="disabled",
-                status_message="prefix cache disabled by config",
+                status_message=(
+                    "prefix cache disabled by config"
+                    if _prefix_cache_disabled(self._prefix_cache_config)
+                    else STRICT_PREFIX_SCORING_DISABLED
+                ),
                 resident_fingerprint_match=False,
                 score_tier="unknown",
                 session_started_unix_ms=0,

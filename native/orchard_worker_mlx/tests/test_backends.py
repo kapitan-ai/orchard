@@ -552,6 +552,165 @@ def test_mlx_backend_prefix_cache_status_ok() -> None:
     assert status["session_started_unix_ms"] == 444
 
 
+def _strict_prefix_load_config(budget_bytes: int = 8192) -> PrefixCacheLoadConfig:
+    from orchard_worker_mlx.strict_prefix_checkpoints import StrictPrefixCheckpointConfig
+
+    return PrefixCacheLoadConfig(
+        mode="strict_prefix",
+        strict_prefix=StrictPrefixCheckpointConfig(
+            slots=2, slot_bytes=budget_bytes // 2, budget_bytes=budget_bytes
+        ),
+    )
+
+
+def _strict_prefix_store(stats: Any = None, stats_error: Exception | None = None) -> Any:
+    from orchard_worker_mlx.strict_prefix_checkpoints import (
+        CheckpointIdentity,
+        StrictPrefixCheckpointStore,
+    )
+
+    class FixedStatsStore(StrictPrefixCheckpointStore):
+        def stats(self) -> Any:
+            if stats_error is not None:
+                raise stats_error
+            return stats if stats is not None else super().stats()
+
+    return FixedStatsStore(
+        identity=CheckpointIdentity(
+            model_id="m",
+            model_version="v",
+            artifact_sha256="0" * 64,
+            mlx_version="0.31.2",
+            mlx_lm_version="0.31.3",
+            mlx_lm_commit="0" * 40,
+            prefill_step_size=2048,
+            layer_types=("KVCache",),
+        ),
+        slots=2,
+        slot_bytes=4096,
+        reply_marker_ids=[1],
+    )
+
+
+def _strict_prefix_backend(store: Any) -> MLXBackend:
+    session = _make_fake_session()
+    session.prefix_cache = None
+    session.strict_prefix_checkpoints = store
+    session.session_started_unix_ms = 777
+    backend = _make_mlx_backend(
+        loader_session=session, prefix_cache_config=_strict_prefix_load_config()
+    )
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    return backend
+
+
+def test_mlx_backend_reports_strict_prefix_status_with_checkpoint_counters() -> None:
+    # SPEC.md 7.5.3: strict-prefix status uses the prefix-cache fields plus the
+    # two checkpoint counters, and publishes no fingerprints.
+    from orchard_worker_mlx.strict_prefix_checkpoints import StrictPrefixCheckpointStats
+
+    stats = StrictPrefixCheckpointStats(
+        slots=2,
+        slot_bytes=4096,
+        retained=1,
+        staged=0,
+        uncertain=1,
+        reserved_bytes=8192,
+        retained_snapshot_bytes=3000,
+        hits=5,
+        misses=2,
+        restore_failures=1,
+        stores=3,
+        copy_failures=1,
+        skipped_oversize=0,
+        skipped_no_slot=0,
+        evictions=4,
+    )
+    backend = _strict_prefix_backend(_strict_prefix_store(stats))
+    backend.record_fingerprint(_fingerprint(1))
+
+    status = backend.prefix_cache_status()
+
+    assert status["implementation"] == "strict_prefix"
+    assert status["status_code"] == "ok"
+    assert status["enabled"] is True
+    assert (status["entry_count"], status["total_bytes"]) == (1, 8192)
+    assert (status["hits"], status["misses"], status["stores"], status["evictions"]) == (5, 2, 3, 4)
+    assert status["failures"] == 2
+    assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
+    assert status["checkpoint_uncertain_count"] == 1
+    assert status["checkpoint_retained_bytes"] == 3000
+    assert status["session_started_unix_ms"] == 777
+    assert status["prefix_cache_fingerprints"] == []
+    assert backend.get_fingerprints() == []
+
+
+def test_mlx_backend_reports_an_empty_strict_prefix_store_as_ok() -> None:
+    status = _strict_prefix_backend(_strict_prefix_store()).prefix_cache_status()
+
+    assert status["status_code"] == "ok"
+    assert status["implementation"] == "strict_prefix"
+    assert status["entry_count"] == 0
+    assert status["checkpoint_uncertain_count"] == 0
+
+
+def test_mlx_backend_reports_strict_prefix_stats_failure_as_error() -> None:
+    backend = _strict_prefix_backend(_strict_prefix_store(stats_error=RuntimeError("boom")))
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "error"
+    assert status["implementation"] == "strict_prefix"
+    assert "boom" in status["status_message"]
+    assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
+
+
+def test_mlx_backend_strict_prefix_advertises_no_prefix_cache_and_does_not_score() -> None:
+    backend = _strict_prefix_backend(_strict_prefix_store())
+
+    profile = backend.status()["capabilities"]["profiles"][0]
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert profile["cache_capabilities"] == []
+    assert score["status_code"] == "disabled"
+    assert "strict-prefix" in score["status_message"]
+
+
+def test_mlx_backend_strict_prefix_reports_slots_and_budget_before_load() -> None:
+    backend = _make_mlx_backend(prefix_cache_config=_strict_prefix_load_config(budget_bytes=8192))
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "unavailable"
+    assert (status["configured_max_entries"], status["configured_max_bytes"]) == (2, 8192)
+
+
+@pytest.mark.parametrize("mode", ["disabled", "strict_prefix"])
+def test_mlx_backend_records_no_fingerprints_without_a_fingerprint_cache(mode: str) -> None:
+    config = (
+        _strict_prefix_load_config()
+        if mode == "strict_prefix"
+        else PrefixCacheLoadConfig(mode="disabled")
+    )
+    backend = _make_mlx_backend(prefix_cache_config=config)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    backend.record_fingerprint(_fingerprint(1))
+
+    assert backend.get_fingerprints() == []
+
+
+def test_mlx_backend_kv_mode_still_advertises_prefix_cache() -> None:
+    backend = _make_mlx_backend(prefix_cache_config=PrefixCacheLoadConfig(mode="kv"))
+
+    assert backend.status()["capabilities"]["profiles"][0]["cache_capabilities"] != []
+
+
 def test_mlx_backend_records_valid_fingerprint() -> None:
     backend = _make_mlx_backend()
     backend.load_model(model_id="m", version="v", model_path="/fake/path")

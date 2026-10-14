@@ -74,6 +74,8 @@ defmodule Orchard.Requests.CapturePolicy do
     model_load_timeout_ms
     queue_wait_ms
     request_timeout_ms
+    selected_prefix_cache_checkpoint_retained_bytes
+    selected_prefix_cache_checkpoint_uncertain_count
     selected_prefix_cache_entry_count
     selected_prefix_cache_evictions
     selected_prefix_cache_fingerprint_count
@@ -93,7 +95,7 @@ defmodule Orchard.Requests.CapturePolicy do
     "queue_wait_reason" =>
       ~w(live_node_capacity placement_capacity requested_model_path_capacity),
     "selected_cache_tier" => ~w(hint_not_selected no_hint warm_prefix),
-    "selected_prefix_cache_implementation" => ~w(disabled kv unknown),
+    "selected_prefix_cache_implementation" => ~w(disabled kv strict_prefix trie unknown),
     "selected_prefix_cache_score_source" => ~w(score_prefix_cache_rpc),
     "selected_prefix_cache_score_status_code" =>
       ~w(disabled error invalid_request model_not_loaded ok timeout unavailable unsupported_version),

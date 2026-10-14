@@ -21,31 +21,8 @@ defmodule Orchard.Node.ModelLoadFailure do
         }
 
   # Worker error codes from Python model_loader.py / backends.py that indicate
-  # the model artifact itself is invalid (not a runtime problem).
-  @worker_model_invalid_codes MapSet.new([
-                                "manifest_not_found",
-                                "manifest_read_failed",
-                                "manifest_decode_error",
-                                "manifest_validation_error",
-                                "model_identity_mismatch",
-                                "unsupported_model_format",
-                                "unsupported_artifact_layout",
-                                "unsupported_runtime_adapter",
-                                "unsupported_tokenizer_kind",
-                                "bundle_path_escape",
-                                "entrypoint_missing",
-                                "tokenizer_missing",
-                                "model_path_missing"
-                              ])
-
-  # Worker error codes indicating the runtime environment is unavailable.
-  @worker_runtime_unavailable_codes MapSet.new([
-                                      "mlx_backend_unavailable",
-                                      "mlx_probe_failed",
-                                      "metal_unavailable",
-                                      "batch_runtime_unavailable"
-                                    ])
-
+  # the model artifact itself is invalid (not a runtime problem). Each map below
+  # is the full set of codes for its category.
   @worker_model_invalid_messages %{
     "manifest_not_found" => "model manifest is missing",
     "manifest_read_failed" => "model manifest could not be read",
@@ -62,11 +39,29 @@ defmodule Orchard.Node.ModelLoadFailure do
     "model_path_missing" => "model weights path is missing"
   }
 
+  # Worker error codes indicating the runtime environment is unavailable.
+  # Strict-prefix refusals are node configuration problems, not artifact
+  # problems: another node without the setting can still load the model, so
+  # they stay retryable instead of MODEL_INVALID.
+  # `strict_prefix_checkpoint_unsupported` is the code older Workers emit for
+  # every strict-prefix refusal, including a budget above headroom, so its
+  # message does not name a cause.
   @worker_runtime_unavailable_messages %{
     "mlx_backend_unavailable" => "MLX backend is unavailable on this node",
     "mlx_probe_failed" => "MLX backend probe failed on this node",
     "metal_unavailable" => "Metal is unavailable on this node",
-    "batch_runtime_unavailable" => "MLX batch runtime is unavailable on this node"
+    "batch_runtime_unavailable" => "MLX batch runtime is unavailable on this node",
+    "strict_prefix_runtime_unsupported" =>
+      "installed runtime does not support strict-prefix checkpoints on this node",
+    "strict_prefix_model_unsupported" =>
+      "model cache layout does not support strict-prefix checkpoints on this node",
+    "strict_prefix_checkpoint_unsupported" =>
+      "model runtime refused strict-prefix checkpoints for this model on this node; see the Worker log"
+  }
+
+  # Worker error codes indicating the node lacks memory for the configuration.
+  @worker_resource_exhausted_messages %{
+    "insufficient_memory" => "node does not have enough memory headroom for this model"
   }
 
   @doc """
@@ -266,6 +261,14 @@ defmodule Orchard.Node.ModelLoadFailure do
         "model runtime supervision is unavailable on this node"
       )
 
+  def from_reason({:worker_launch_policy_invalid, _message}),
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_launch_policy_invalid",
+        "node Worker settings for this model are invalid; see the node agent log"
+      )
+
   def from_reason({:worker_exited, _status}),
     do:
       new(
@@ -448,13 +451,20 @@ defmodule Orchard.Node.ModelLoadFailure do
 
   defp classify_worker_load_code(code) do
     cond do
-      MapSet.member?(@worker_model_invalid_codes, code) ->
-        message = Map.fetch!(@worker_model_invalid_messages, code)
-        new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, code, message)
+      Map.has_key?(@worker_model_invalid_messages, code) ->
+        new(
+          :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+          code,
+          @worker_model_invalid_messages[code]
+        )
 
-      MapSet.member?(@worker_runtime_unavailable_codes, code) ->
-        message = Map.fetch!(@worker_runtime_unavailable_messages, code)
+      Map.has_key?(@worker_runtime_unavailable_messages, code) ->
+        message = @worker_runtime_unavailable_messages[code]
         new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, code, message)
+
+      Map.has_key?(@worker_resource_exhausted_messages, code) ->
+        message = @worker_resource_exhausted_messages[code]
+        new(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED, code, message)
 
       true ->
         new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, code, "model runtime failed to load the model")

@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from orchard_worker_mlx.prefix_cache import (
     TriePrefixCache,
 )
 from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
     SUPPORTED_LAYER_TYPES,
     SUPPORTED_MLX_LM_COMMIT,
     SUPPORTED_MLX_LM_VERSION,
@@ -37,7 +39,11 @@ DEFAULT_PREFILL_STEP_SIZE = 2048
 # Prefix-cache load configuration
 # ---------------------------------------------------------------------------
 
-_VALID_PREFIX_CACHE_MODES = frozenset({"disabled", "kv", "trie"})
+# Modes that keep a trim-based prefix cache with cache-affinity fingerprints.
+FINGERPRINT_PREFIX_CACHE_MODES = frozenset({"kv", "trie"})
+_VALID_PREFIX_CACHE_MODES = (
+    frozenset({"disabled", STRICT_PREFIX_MODE}) | FINGERPRINT_PREFIX_CACHE_MODES
+)
 _UINT32_MAX = 4_294_967_295
 _MAX_FINGERPRINT_BUFFER_SIZE = 64
 
@@ -50,9 +56,9 @@ class PrefixCacheLoadConfig:
     this together with manifest metadata to decide which cache
     implementation to provision.
 
-    ``strict_prefix`` is ``None`` by default.  When set, the loader provisions
-    strict-prefix checkpoints instead of a trim-based cache, so ``mode`` must
-    be ``"disabled"``.
+    ``strict_prefix`` holds the checkpoint settings and is required exactly
+    when ``mode`` is ``"strict_prefix"``.  In that mode the loader provisions
+    strict-prefix checkpoints instead of a trim-based cache.
     """
 
     mode: str = "kv"
@@ -72,8 +78,12 @@ class PrefixCacheLoadConfig:
                     "strict_prefix must be StrictPrefixCheckpointConfig or None, got "
                     f"{type(self.strict_prefix).__name__}"
                 )
-            if self.mode != "disabled":
-                raise ValueError(f"strict_prefix requires mode 'disabled', got {self.mode!r}")
+            if self.mode != STRICT_PREFIX_MODE:
+                raise ValueError(
+                    f"strict_prefix settings require mode {STRICT_PREFIX_MODE!r}, got {self.mode!r}"
+                )
+        elif self.mode == STRICT_PREFIX_MODE:
+            raise ValueError(f"mode {STRICT_PREFIX_MODE!r} requires strict_prefix settings")
         if not isinstance(self.max_entries, int) or isinstance(self.max_entries, bool):
             raise ValueError(f"max_entries must be int, got {type(self.max_entries).__name__}")
         if self.max_entries < 1:
@@ -100,6 +110,25 @@ class PrefixCacheLoadConfig:
                 "max_fingerprint_buffer_size must be <= "
                 f"{_MAX_FINGERPRINT_BUFFER_SIZE}, got {self.max_fingerprint_buffer_size}"
             )
+
+    @property
+    def status_caps(self) -> tuple[int, int]:
+        """Configured maximums reported in prefix-cache status: entries and bytes.
+
+        For strict-prefix checkpoints these are the slots and the budget.
+        """
+        if self.strict_prefix is not None:
+            return (self.strict_prefix.slots, self.strict_prefix.budget_bytes)
+        return (self.max_entries, self.max_bytes)
+
+    @property
+    def uses_fingerprints(self) -> bool:
+        """True for the trim-based caches that record cache-affinity fingerprints.
+
+        Strict-prefix checkpoints are keyed by exact token prefixes, which the
+        Controller's bounded-prefix fingerprint cannot identify (SPEC.md 7.5.3).
+        """
+        return self.mode in FINGERPRINT_PREFIX_CACHE_MODES
 
 
 DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
@@ -1300,14 +1329,14 @@ def _build_prefix_cache(
 
     Selection is driven by *prefix_cache_config* and model capability:
 
-    - ``mode="disabled"`` → ``None`` immediately.
+    - ``mode="disabled"`` or ``"strict_prefix"`` → ``None`` immediately.
     - Non-trimmable models → ``None`` (fail-open probe).
     - ``mode="kv"`` → ``KVPrefixCache``.
     - ``mode="trie"`` → ``TriePrefixCache``, with fallback to
       ``KVPrefixCache`` when a byte budget is configured but
       ``manifest.kv_cache_bytes_per_token`` is missing.
     """
-    if prefix_cache_config.mode == "disabled":
+    if not prefix_cache_config.uses_fingerprints:
         return None
 
     # --- Trimmability probe (unchanged, fail-open) -------------------------
@@ -1364,8 +1393,15 @@ def _build_prefix_cache(
     )
 
 
-def _refuse_strict_prefix(message: str) -> ModelLoaderError:
-    return ModelLoaderError("strict_prefix_checkpoint_unsupported", message)
+STRICT_PREFIX_RUNTIME_UNSUPPORTED = "strict_prefix_runtime_unsupported"
+STRICT_PREFIX_MODEL_UNSUPPORTED = "strict_prefix_model_unsupported"
+INSUFFICIENT_MEMORY = "insufficient_memory"
+
+
+def _refuse_strict_prefix(
+    message: str, code: str = STRICT_PREFIX_RUNTIME_UNSUPPORTED
+) -> ModelLoaderError:
+    return ModelLoaderError(code, message)
 
 
 def _check_strict_prefix_runtime(
@@ -1378,8 +1414,9 @@ def _check_strict_prefix_runtime(
     """Refuse an unusable strict-prefix runtime before any weights load.
 
     Returns the runtime versions, or an empty mapping when the setting is off.
-    Retained checkpoints sit outside the memory-budget working-set target, so
-    enforce mode would abort generations for memory the budget never planned.
+    Memory-budget mode must be ``observe``: enforce mode would abort
+    generations for retained checkpoints instead of evicting them, and
+    ``disabled`` leaves no headroom to check the budget against.
     """
     if prefix_cache_config.strict_prefix is None:
         return {}
@@ -1389,9 +1426,10 @@ def _check_strict_prefix_runtime(
             f"strict-prefix checkpoints require generation mode 'stream', "
             f"got {generation_config.mode!r}"
         )
-    if memory_budget_config.mode == "enforce":
+    if memory_budget_config.mode != "observe":
         raise _refuse_strict_prefix(
-            "strict-prefix checkpoints require memory-budget mode 'disabled' or 'observe'"
+            "strict-prefix checkpoints require memory-budget mode 'observe', "
+            f"got {memory_budget_config.mode!r}"
         )
 
     try:
@@ -1436,24 +1474,32 @@ def _build_strict_prefix_checkpoints(
         layer_types = tuple(type(layer).__name__ for layer in deps.make_prompt_cache(model))
         marker_ids = list(tokenizer.encode(config.reply_marker, add_special_tokens=False))
     except Exception as exc:
-        raise _refuse_strict_prefix(f"strict-prefix probe failed: {exc}") from exc
+        raise _refuse_strict_prefix(
+            f"strict-prefix probe failed: {exc}", STRICT_PREFIX_MODEL_UNSUPPORTED
+        ) from exc
     unsupported = sorted(set(layer_types) - SUPPORTED_LAYER_TYPES)
     if not layer_types or unsupported:
         raise _refuse_strict_prefix(
             "strict-prefix checkpoints support only "
-            f"{sorted(SUPPORTED_LAYER_TYPES)} cache layers, got {unsupported or 'none'}"
+            f"{sorted(SUPPORTED_LAYER_TYPES)} cache layers, got {unsupported or 'none'}",
+            STRICT_PREFIX_MODEL_UNSUPPORTED,
         )
 
     if not marker_ids:
-        raise _refuse_strict_prefix("strict-prefix reply marker tokenizes to no tokens")
+        raise _refuse_strict_prefix(
+            "strict-prefix reply marker tokenizes to no tokens", STRICT_PREFIX_MODEL_UNSUPPORTED
+        )
 
+    # The fit check uses headroom before the budget is reserved, so the budget
+    # is counted once (see _reserve_checkpoint_budget).
     if (
         memory_budget_status.headroom_available
         and memory_budget_status.estimated_headroom_bytes < config.budget_bytes
     ):
         raise _refuse_strict_prefix(
             f"strict-prefix budget {config.budget_bytes} bytes exceeds estimated headroom "
-            f"{memory_budget_status.estimated_headroom_bytes} bytes"
+            f"{memory_budget_status.estimated_headroom_bytes} bytes",
+            INSUFFICIENT_MEMORY,
         )
 
     identity = CheckpointIdentity(
@@ -1484,6 +1530,31 @@ def _build_strict_prefix_checkpoints(
         slot_bytes=config.slot_bytes,
         reply_marker_ids=marker_ids,
         materialize=deps.eval_fn,
+    )
+
+
+def _reserve_checkpoint_budget(
+    status: MemoryBudgetStatus,
+    manifest: BundleManifest,
+    budget_bytes: int,
+) -> MemoryBudgetStatus:
+    """Subtract the configured checkpoint budget once from published headroom.
+
+    The full budget is reserved, not the current occupancy, so the published
+    figure does not promise memory that later captures consume.  The target
+    working set is unchanged.  Unknown headroom stays unknown.
+    """
+    if not status.headroom_available:
+        return status
+    headroom = max(status.estimated_headroom_bytes - budget_bytes, 0)
+    return dataclass_replace(
+        status,
+        estimated_headroom_bytes=headroom,
+        recommended_context_tokens=_recommended_context_tokens(
+            manifest.max_context_tokens,
+            headroom,
+            status.kv_cache_bytes_per_token,
+        ),
     )
 
 
@@ -1659,6 +1730,12 @@ def load_session(
         _safe_clear_cache(deps.clear_cache)
         gc.collect()
         raise
+    if strict_prefix_checkpoints is not None and effective_config.strict_prefix is not None:
+        memory_budget_status = _reserve_checkpoint_budget(
+            memory_budget_status,
+            manifest,
+            effective_config.strict_prefix.budget_bytes,
+        )
 
     logger.info(
         "load_session memory_budget mode=%s status=%s budget_available=%s "

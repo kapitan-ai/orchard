@@ -16,6 +16,11 @@ from orchard_worker_mlx.capabilities import (
     installed_distribution_version,
     mlx_capabilities,
 )
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    STRICT_PREFIX_MODE,
+    STRICT_PREFIX_SCORING_DISABLED,
+    StrictPrefixCheckpointStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,8 @@ class BackendPrefixCacheStatus(TypedDict):
     status_message: str
     session_started_unix_ms: int
     prefix_cache_fingerprints: NotRequired[list[str]]
+    checkpoint_uncertain_count: NotRequired[int]
+    checkpoint_retained_bytes: NotRequired[int]
 
 
 class _NormalizedPrefixCacheStats(TypedDict):
@@ -411,8 +418,7 @@ class MLXBackend:
                 max_concurrency=self._max_concurrent_requests,
                 capabilities=mlx_capabilities(
                     max_concurrency=self._max_concurrent_requests,
-                    prefix_cache_enabled=getattr(self._prefix_cache_config, "mode", "")
-                    != "disabled",
+                    prefix_cache_enabled=_scores_fingerprints(self._prefix_cache_config),
                     provider_version=self._provider_version,
                 ),
             )
@@ -471,8 +477,9 @@ class MLXBackend:
                 getattr(session, "prefix_cache_fingerprints", []) if session is not None else []
             )
 
-        config_max_entries = _status_uint32(getattr(self._prefix_cache_config, "max_entries", 0))
-        config_max_bytes = _status_uint64(getattr(self._prefix_cache_config, "max_bytes", 0))
+        caps = self._prefix_cache_config.status_caps
+        config_max_entries = _status_uint32(caps[0])
+        config_max_bytes = _status_uint64(caps[1])
 
         if session is None:
             return _base_prefix_cache_status(
@@ -481,6 +488,17 @@ class MLXBackend:
                 status_code="unavailable",
                 status_message="model session is not loaded",
                 prefix_cache_fingerprints=fingerprints,
+            )
+
+        strict_store = getattr(session, "strict_prefix_checkpoints", None)
+        if isinstance(strict_store, StrictPrefixCheckpointStore):
+            return _strict_prefix_status(
+                strict_store,
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
+                session_started_unix_ms=_status_uint64(
+                    getattr(session, "session_started_unix_ms", 0)
+                ),
             )
 
         prefix_cache = getattr(session, "prefix_cache", None)
@@ -690,6 +708,8 @@ class MLXBackend:
     def record_fingerprint(self, fingerprint: str) -> None:
         if not valid_cache_affinity_fingerprint(fingerprint):
             return
+        if not _scores_fingerprints(self._prefix_cache_config):
+            return
 
         with self._lock:
             session = self._session
@@ -718,10 +738,10 @@ class MLXBackend:
         del request_id
 
         session_started_unix_ms = 0
-        if getattr(self._prefix_cache_config, "mode", "") == "disabled":
+        if not _scores_fingerprints(self._prefix_cache_config):
             return _score_prefix_cache_response(
                 status_code="disabled",
-                status_message="prefix cache disabled by config",
+                status_message=_score_disabled_message(self._prefix_cache_config),
             )
 
         with self._lock:
@@ -832,6 +852,71 @@ def _default_batch_runtime_factory() -> Callable[[Any], Any]:
     from orchard_worker_mlx.generation import BatchGeneratorRuntime
 
     return BatchGeneratorRuntime
+
+
+def _prefix_cache_mode(prefix_cache_config: Any) -> str:
+    mode = getattr(prefix_cache_config, "mode", "")
+    return mode if isinstance(mode, str) else ""
+
+
+def _scores_fingerprints(prefix_cache_config: Any) -> bool:
+    """Only the trim-based caches advertise and score cache-affinity fingerprints.
+
+    Strict-prefix checkpoints are keyed by exact token prefixes, which the
+    Controller's bounded-prefix fingerprint cannot identify (SPEC.md 7.5.3).
+    """
+    return bool(getattr(prefix_cache_config, "uses_fingerprints", True))
+
+
+def _score_disabled_message(prefix_cache_config: Any) -> str:
+    if _prefix_cache_mode(prefix_cache_config) == STRICT_PREFIX_MODE:
+        return STRICT_PREFIX_SCORING_DISABLED
+    return "prefix cache disabled by config"
+
+
+def _strict_prefix_status(
+    store: StrictPrefixCheckpointStore,
+    *,
+    configured_max_entries: int,
+    configured_max_bytes: int,
+    session_started_unix_ms: int,
+) -> BackendPrefixCacheStatus:
+    """Report strict-prefix checkpoints through the prefix-cache status fields.
+
+    ``total_bytes`` is the fixed charge for occupied slots, including
+    uncertain ones; ``checkpoint_retained_bytes`` is the measured size of
+    retained snapshots.  No fingerprints are published.
+    """
+    try:
+        stats = store.stats()
+    except Exception as exc:
+        return _base_prefix_cache_status(
+            implementation=STRICT_PREFIX_MODE,
+            configured_max_entries=configured_max_entries,
+            configured_max_bytes=configured_max_bytes,
+            status_code="error",
+            status_message=f"strict-prefix checkpoint stats read failed: {exc}",
+            session_started_unix_ms=session_started_unix_ms,
+        )
+    return BackendPrefixCacheStatus(
+        implementation=STRICT_PREFIX_MODE,
+        enabled=True,
+        entry_count=_status_uint32(stats.retained),
+        total_bytes=_status_uint64(stats.reserved_bytes),
+        hits=_status_uint64(stats.hits),
+        misses=_status_uint64(stats.misses),
+        failures=_status_uint64(stats.restore_failures + stats.copy_failures),
+        stores=_status_uint64(stats.stores),
+        evictions=_status_uint64(stats.evictions),
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code="ok",
+        status_message="",
+        session_started_unix_ms=session_started_unix_ms,
+        prefix_cache_fingerprints=[],
+        checkpoint_uncertain_count=_status_uint32(stats.uncertain),
+        checkpoint_retained_bytes=_status_uint64(stats.retained_snapshot_bytes),
+    )
 
 
 def _base_prefix_cache_status(

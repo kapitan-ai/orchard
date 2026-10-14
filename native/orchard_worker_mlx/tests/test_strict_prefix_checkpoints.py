@@ -909,6 +909,32 @@ def test_strict_path_logs_one_structured_line(caplog: pytest.LogCaptureFixture) 
     assert not [r for r in caplog.records if "prefix_cache_request" in r.getMessage()]
 
 
+@pytest.mark.parametrize("ends_before_prefill", ["cancelled", "no_output_tokens"])
+def test_strict_path_logs_a_request_that_ends_before_prefill(
+    caplog: pytest.LogCaptureFixture, ends_before_prefill: str
+) -> None:
+    store = _store()
+    caplog.set_level("INFO", logger="orchard_worker_mlx.generation")
+    request = _request(TURN_1)
+    cancel_event = threading.Event()
+    if ends_before_prefill == "cancelled":
+        cancel_event.set()
+    else:
+        request.params.max_output_tokens = 0
+    stream = _FaithfulStream()
+
+    list(generate_events(_session(store), request, cancel_event, deps=_deps(stream)))
+
+    assert stream.calls == []
+    [line] = [
+        r.getMessage()
+        for r in caplog.records
+        if "strict_prefix_checkpoint_request" in r.getMessage()
+    ]
+    assert "lookup_status=not_started" in line
+    assert "capture_status=not_targeted" in line
+
+
 def test_strict_path_skips_the_prefill_workspace_probe() -> None:
     """A checkpoint pins memory during prefill that is not prefill workspace."""
     samples: list[int] = []

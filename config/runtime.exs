@@ -599,6 +599,7 @@ default_node_runtime = fn root ->
     worker_memory_budget_mode: "observe",
     worker_memory_budget_utilization: 0.90,
     worker_memory_budget_overhead_bytes: 1_073_741_824,
+    worker_model_overrides_file: nil,
     max_loaded_models: 0,
     fake_runtime?: false,
     hf: default_hf_config.(),
@@ -1574,6 +1575,7 @@ if config_env() == :prod do
                end).(),
             worker_memory_budget_overhead_bytes:
               env_non_neg_int.("ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES", "1073741824"),
+            worker_model_overrides_file: System.get_env("ORCHARD_WORKER_MODEL_OVERRIDES_FILE"),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:

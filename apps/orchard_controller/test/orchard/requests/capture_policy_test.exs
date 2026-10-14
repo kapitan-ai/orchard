@@ -28,6 +28,8 @@ defmodule Orchard.Requests.CapturePolicyTest do
     model_load_timeout_ms
     queue_wait_ms
     request_timeout_ms
+    selected_prefix_cache_checkpoint_retained_bytes
+    selected_prefix_cache_checkpoint_uncertain_count
     selected_prefix_cache_entry_count
     selected_prefix_cache_evictions
     selected_prefix_cache_fingerprint_count
@@ -499,6 +501,21 @@ defmodule Orchard.Requests.CapturePolicyTest do
                  queue_granted_at: %{"content" => @prompt},
                  queued_at: [@prompt]
                }) == %{}
+      end
+    end
+
+    test "none and metadata keep every prefix-cache implementation and checkpoint counters" do
+      for mode <- [:none, :metadata],
+          implementation <- ~w(disabled kv strict_prefix trie unknown) do
+        assert CapturePolicy.schedule_attrs(mode, %{
+                 selected_prefix_cache_implementation: implementation,
+                 selected_prefix_cache_checkpoint_uncertain_count: 1,
+                 selected_prefix_cache_checkpoint_retained_bytes: 3_000
+               }) == %{
+                 "selected_prefix_cache_implementation" => implementation,
+                 "selected_prefix_cache_checkpoint_uncertain_count" => 1,
+                 "selected_prefix_cache_checkpoint_retained_bytes" => 3_000
+               }
       end
     end
 

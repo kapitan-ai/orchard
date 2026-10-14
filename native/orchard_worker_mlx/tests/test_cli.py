@@ -254,160 +254,158 @@ def test_main_accepts_enforce_memory_budget_mode(monkeypatch) -> None:
     assert memory_budget_config.mode == "enforce"
 
 
-_STRICT_PREFIX_ENV_NAMES = (
-    "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS",
-    "ORCHARD_WORKER_STRICT_PREFIX_SLOTS",
-    "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES",
-    "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES",
-    "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER",
+_LEGACY_STRICT_PREFIX_ENV = "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS"
+_STRICT_PREFIX_ARGS = (
+    "--prefix-cache-mode",
+    "strict_prefix",
+    "--generation-mode",
+    "stream",
+    "--strict-prefix-slot-bytes",
+    "100",
+    "--strict-prefix-budget-bytes",
+    "100",
 )
 
 
-def _run_main_capturing_prefix_config(monkeypatch, env: dict[str, str], *extra: str) -> object:
+def _run_main_capturing_prefix_config(
+    monkeypatch, *extra: str, env: dict[str, str] | None = None, backend: str = "mlx"
+) -> object:
     from orchard_worker_mlx import cli
 
-    for name in _STRICT_PREFIX_ENV_NAMES:
-        monkeypatch.delenv(name, raising=False)
-    for name, value in env.items():
+    monkeypatch.delenv(_LEGACY_STRICT_PREFIX_ENV, raising=False)
+    for name, value in (env or {}).items():
         monkeypatch.setenv(name, value)
     captured: dict[str, object] = {}
     monkeypatch.setattr(cli, "serve", lambda *_args, **kwargs: captured.update(kwargs))
     monkeypatch.setattr(cli, "_configure_logging", lambda *_args: None)
 
-    assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "mlx", *extra]) == 0
+    assert (
+        cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", backend, *extra]) == 0
+    )
     return captured["prefix_cache_config"]
 
 
 def test_main_leaves_strict_prefix_checkpoints_off_by_default(monkeypatch) -> None:
-    config = _run_main_capturing_prefix_config(monkeypatch, {})
+    config = _run_main_capturing_prefix_config(monkeypatch)
 
     assert config.strict_prefix is None
     assert config.mode == "kv"
 
 
-def test_main_reads_strict_prefix_checkpoints_from_the_environment(monkeypatch) -> None:
+def test_main_reads_strict_prefix_checkpoints_from_flags(monkeypatch) -> None:
     config = _run_main_capturing_prefix_config(
         monkeypatch,
-        {
-            "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "enabled",
-            "ORCHARD_WORKER_STRICT_PREFIX_SLOTS": "2",
-            "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "9663676416",
-            "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "19327352832",
-            "ORCHARD_WORKER_STRICT_PREFIX_REPLY_MARKER": "<|im_start|>assistant\n",
-        },
         "--prefix-cache-mode",
-        "disabled",
+        "strict_prefix",
         "--generation-mode",
         "stream",
+        "--strict-prefix-slots",
+        "2",
+        "--strict-prefix-slot-bytes",
+        "9663676416",
+        "--strict-prefix-budget-bytes",
+        "19327352832",
+        "--strict-prefix-reply-marker",
+        "<|im_start|>assistant\n",
     )
 
+    assert config.mode == "strict_prefix"
     strict = config.strict_prefix
     assert (strict.slots, strict.slot_bytes, strict.budget_bytes) == (2, 9663676416, 19327352832)
     assert strict.reply_marker == "<|im_start|>assistant\n"
 
 
+def test_main_defaults_strict_prefix_slots_and_reply_marker(monkeypatch) -> None:
+    from orchard_worker_mlx.strict_prefix_checkpoints import DEFAULT_REPLY_MARKER
+
+    config = _run_main_capturing_prefix_config(monkeypatch, *_STRICT_PREFIX_ARGS)
+
+    assert config.strict_prefix.slots == 1
+    assert config.strict_prefix.reply_marker == DEFAULT_REPLY_MARKER
+
+
 @pytest.mark.parametrize(
-    ("env", "extra", "message"),
+    ("args", "message"),
     [
         (
-            {
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
-                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
-            },
-            ("--prefix-cache-mode", "disabled", "--generation-mode", "batch"),
+            (
+                "--prefix-cache-mode",
+                "strict_prefix",
+                "--generation-mode",
+                "batch",
+                "--strict-prefix-slot-bytes",
+                "100",
+                "--strict-prefix-budget-bytes",
+                "100",
+            ),
             "requires --generation-mode=stream",
         ),
         (
-            {
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOTS": "2",
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
-                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "199",
-            },
-            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
+            (*_STRICT_PREFIX_ARGS, "--memory-budget-mode", "enforce"),
+            "requires --memory-budget-mode observe",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--memory-budget-mode", "disabled"),
+            "requires --memory-budget-mode observe",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--strict-prefix-slots", "2"),
             "cannot hold 2 slots",
         ),
         (
-            {"ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100"},
-            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
-            "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES is required",
-        ),
-        (
-            {
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "9GiB",
-                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
-            },
-            ("--prefix-cache-mode", "disabled", "--generation-mode", "stream"),
-            "must be an integer",
-        ),
-        (
-            {
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
-                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
-            },
-            ("--generation-mode", "stream"),
-            "ORCHARD_WORKER_PREFIX_CACHE_MODE=disabled",
-        ),
-        (
-            {
-                "ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES": "100",
-                "ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES": "100",
-            },
             (
                 "--prefix-cache-mode",
-                "disabled",
+                "strict_prefix",
                 "--generation-mode",
                 "stream",
-                "--memory-budget-mode",
-                "enforce",
+                "--strict-prefix-budget-bytes",
+                "100",
             ),
-            "--memory-budget-mode disabled or observe",
+            "requires --strict-prefix-slot-bytes",
+        ),
+        (
+            ("--prefix-cache-mode", "kv", "--strict-prefix-slot-bytes", "100"),
+            "--strict-prefix-slot-bytes require --prefix-cache-mode strict_prefix",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--strict-prefix-reply-marker", ""),
+            "reply_marker must be a non-empty string",
         ),
     ],
 )
 def test_main_refuses_unusable_strict_prefix_settings(
-    monkeypatch, capsys, env: dict[str, str], extra: tuple[str, ...], message: str
+    monkeypatch, capsys, args: tuple[str, ...], message: str
 ) -> None:
     with pytest.raises(SystemExit):
-        _run_main_capturing_prefix_config(
-            monkeypatch,
-            {"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "enabled", **env},
-            *extra,
-        )
+        _run_main_capturing_prefix_config(monkeypatch, *args)
 
     assert message in capsys.readouterr().err
 
 
 def test_main_refuses_strict_prefix_with_the_stub_backend(monkeypatch, capsys) -> None:
-    from orchard_worker_mlx import cli
-
-    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS", "enabled")
-    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_SLOT_BYTES", "100")
-    monkeypatch.setenv("ORCHARD_WORKER_STRICT_PREFIX_BUDGET_BYTES", "100")
-    monkeypatch.setattr(cli, "serve", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli, "_configure_logging", lambda *_args: None)
-
     with pytest.raises(SystemExit):
-        cli.main(
-            [
-                "--socket-path",
-                "/tmp/orchard-worker.sock",
-                "--backend",
-                "stub",
-                "--prefix-cache-mode",
-                "disabled",
-            ]
-        )
+        _run_main_capturing_prefix_config(monkeypatch, *_STRICT_PREFIX_ARGS, backend="stub")
 
     assert "requires --backend=mlx" in capsys.readouterr().err
 
 
-def test_main_refuses_an_unknown_strict_prefix_mode(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("value", ["enabled", "on"])
+def test_main_refuses_the_legacy_strict_prefix_variable(monkeypatch, capsys, value: str) -> None:
+    # An older Node Agent passes its environment to the Worker.  The Worker
+    # refuses rather than turn reuse on for every model on that Node.
     with pytest.raises(SystemExit):
-        _run_main_capturing_prefix_config(
-            monkeypatch, {"ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS": "on"}
-        )
+        _run_main_capturing_prefix_config(monkeypatch, env={_LEGACY_STRICT_PREFIX_ENV: value})
 
-    assert "must be disabled|enabled" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"{_LEGACY_STRICT_PREFIX_ENV}={value} is no longer supported" in err
+
+
+@pytest.mark.parametrize("value", ["", "disabled"])
+def test_main_ignores_an_unset_or_disabled_legacy_variable(monkeypatch, value: str) -> None:
+    config = _run_main_capturing_prefix_config(monkeypatch, env={_LEGACY_STRICT_PREFIX_ENV: value})
+
+    assert config.mode == "kv"
+    assert config.strict_prefix is None
 
 
 def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
