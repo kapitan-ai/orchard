@@ -3,6 +3,29 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-10-18
+
+### Breaking changes
+
+- Experimental strict-prefix checkpoint reuse now uses exact per-model settings instead of the spike's `ORCHARD_WORKER_STRICT_PREFIX_*` variables. **Required action:** move settings into the versioned JSON file named by `ORCHARD_WORKER_MODEL_OVERRIDES_FILE`, select `prefix_cache_mode: "strict_prefix"`, `generation_mode: "stream"`, and `memory_budget_mode: "observe"`, and unset the old variables. The Node strips the old enabling variable from Worker launches; a directly launched new Worker that still sees it refuses startup. Remove `strict_prefix` entries before rolling back to an older Worker. Models without overrides retain their existing settings. ([#523](https://github.com/kapitan-ai/orchard/pull/523))
+
+### Features
+
+- The stock MLX Worker now offers opt-in strict-prefix checkpoints for supported hybrid caches, restoring only exact, strictly shorter token prefixes without trimming state. Per-model launch validation, reserved checkpoint budgets, retryable load refusals, and retained/uncertain checkpoint status make the experiment configurable and observable. A loaded strict-prefix model limits the whole Node to one active request, publishes no cache-affinity fingerprints, and remains unqualified; memory checks are per model, not proof that several loaded models fit together. ([#512](https://github.com/kapitan-ai/orchard/pull/512), [#522](https://github.com/kapitan-ai/orchard/pull/522), [#523](https://github.com/kapitan-ai/orchard/pull/523))
+- Source development can explicitly select a default-off `vllm_poc` Worker adapter with bounded incremental legacy-blended text, authoritative token-ID prompts, and terminally validated Qwen tool calls. Production configuration refuses the backend. Cancellation permits local reuse only after the request socket closes and its reader settles, while native cessation remains unconfirmed and concurrency stays at one. Historical smoke execution remains disabled; this establishes no current live inference, Linux Node, model, or client qualification. ([#524](https://github.com/kapitan-ai/orchard/pull/524), [#525](https://github.com/kapitan-ai/orchard/pull/525))
+
+### Bug fixes
+
+- Stream-mode MLX prefill now stops a cancelled, timed-out, or disconnected execution at the next intermediate chunk boundary instead of waiting for the whole prompt. A checkpoint captured at that boundary remains reusable, and partial prefill no longer updates the workspace estimate. Cancellation during the last chunk still follows the decode stride, and shared batch behavior is unchanged; this is not an immediate native-cancellation guarantee. ([#521](https://github.com/kapitan-ai/orchard/pull/521))
+- Worker loss on an unmanaged Node without an inventory row now preserves the stable `worker_down` outcome, including HTTP 503 for synchronous requests, instead of failing breaker attribution as `orchestration_error` or streaming `internal_error`. Such attempts contribute to neither breaker; managed-Node attribution and other fail-closed breaker errors are unchanged. ([#519](https://github.com/kapitan-ai/orchard/pull/519))
+
+### Improvements
+
+- TensorFold is now explicitly documented as a frozen, unmaintained, default-off experiment outside required CI and `make setup`. Contributors must still test changes to it or its shared dependencies, and a real regression of its existing experiment contract remains a merge blocker; the documented direction is stock MLX-LM with strict-prefix reuse, not a new support claim. ([#520](https://github.com/kapitan-ai/orchard/pull/520))
+- The outbound HTTP stack now uses Mint 1.11.0, Finch 0.24.0, and HPAX 1.1.0 to remediate the applicable HTTP framing and resource-exhaustion advisories. The optional MLX environment also updates fsspec to 2026.9.0 to remove the vulnerable ReferenceFileSystem version without changing the MLX-LM pin. ([#493](https://github.com/kapitan-ai/orchard/pull/493), [#494](https://github.com/kapitan-ai/orchard/pull/494))
+- Pinned Elixir and Python runtimes were updated to security releases 1.20.4 and 3.11.16. Repository tooling now uses Node.js 24.21.0, npm 11.19.0, OpenSpec CLI 1.13.2, and Ruff 0.16.9; Ranch and development-only Tidewave were refreshed to 2.3.0 and 0.9.1. Contributors should run `mise install` to pick up the new toolchain. ([#498](https://github.com/kapitan-ai/orchard/pull/498), [#496](https://github.com/kapitan-ai/orchard/pull/496), [#495](https://github.com/kapitan-ai/orchard/pull/495), [#497](https://github.com/kapitan-ai/orchard/pull/497))
+- Controller identity and Peer Grant tests now issue certificates against the current clock instead of aging fixed dates, and the tiny real-MLX prefill-cancellation fixture now guards token-ID uniqueness before serialization can hide a duplicate. These changes harden validation without changing runtime behavior. ([#518](https://github.com/kapitan-ai/orchard/pull/518), [#526](https://github.com/kapitan-ai/orchard/pull/526))
+
 ## 2026-10-11
 
 ### Breaking changes
