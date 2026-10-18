@@ -336,6 +336,7 @@ ELIXIR
 | `ORCHARD_WORKER_PREFIX_CACHE_MODE` | `kv` (`disabled` for `tensorfold`) | Worker prefix cache (`disabled`, `kv`, or `trie`). |
 | `ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES` | `8` | Worker prefix cache entry limit (`>= 1`). |
 | `ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES` | `0` | Worker prefix cache byte limit (`>= 0`). |
+| `ORCHARD_WORKER_MODEL_OVERRIDES_FILE` | unset | JSON file of per-model Worker settings, keyed by exact `model_id@version`. The only way to enable strict-prefix checkpoint reuse. Checked when the Node Agent starts. See [Strict-prefix checkpoints](#strict-prefix-checkpoints-experimental). |
 | `ORCHARD_WORKER_MEMORY_BUDGET_MODE` | `observe` (`disabled` for `tensorfold`) | Worker memory budget (`disabled`, `observe`, or `enforce`). |
 | `ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION` | `0.9` | Worker memory budget utilization (`> 0.0` and `<= 1.0`). |
 | `ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES` | `1073741824` (`0` for `tensorfold`) | Worker memory budget overhead (`>= 0`). |
@@ -1247,6 +1248,10 @@ BundleBuilder will keep emitting the legacy field until a separate accepted chan
 ## TensorFold Experiment (Source Dev)
 
 The default-off TensorFold Worker is a source experiment under `SPEC.md` §7.2.9.
+Orchard no longer develops it: the direction for the coding-agent tuple is the
+stock MLX-LM Worker with strict-prefix reuse, and this package is not tested in
+CI or installed by `make setup`. See the
+[package README](../native/orchard_tensorfold_http/README.md#status-frozen-not-maintained).
 It runs through the normal source-dev launchers with the variables below.
 A successful start proves the configuration only. Native load, memory fit,
 cancellation settlement and process reaping need separately approved
@@ -1450,6 +1455,107 @@ To run beside other source-dev stacks on one host, use a separate worktree and
 set `PORT`, `ORCHARD_NODE_AGENT_LISTEN_PORT`, `ORCHARD_RUNTIME_CLIENT_PORT` and
 `PGDATABASE` to unused values.
 
+## Strict-prefix checkpoints (experimental)
+
+The `kv` and `trie` Worker prefix caches need a trimmable prompt cache. A
+hybrid model whose cache mixes `KVCache` and `ArraysCache` layers cannot be
+trimmed, so the `mlx` Worker runs it with no prefix reuse. Strict-prefix
+checkpoints are an opt-in, unqualified mode for that case. They are not a
+qualified serving profile and do not change scheduling or admission.
+
+Each request keeps at most one checkpoint: the full cache state at the last
+prefill-step boundary before the reply marker. A later request restores a
+checkpoint only when the checkpoint's tokens are an exact, strictly shorter
+prefix of its own prompt. A changed earlier turn therefore misses. Each slot
+charges its slot bytes before the copy starts.
+
+### Enable it for one model
+
+Strict-prefix reuse is enabled per exact `model_id@version`, in a JSON file
+named by `ORCHARD_WORKER_MODEL_OVERRIDES_FILE`. Models without an entry keep
+the global Worker settings.
+
+```json
+{
+  "version": 1,
+  "models": [
+    {
+      "model_id": "org/model",
+      "version": "v1",
+      "prefix_cache_mode": "strict_prefix",
+      "generation_mode": "stream",
+      "memory_budget_mode": "observe",
+      "strict_prefix": {
+        "slots": 1,
+        "slot_bytes": 10737418240,
+        "budget_bytes": 10737418240
+      }
+    }
+  ]
+}
+```
+
+An entry may set `prefix_cache_mode`, `generation_mode`, `memory_budget_mode`
+and `strict_prefix` (`slots` 1 to 8, default 1; `slot_bytes`; `budget_bytes`;
+optional `reply_marker`, default `<|im_start|>assistant`). Unknown keys and
+duplicate models are refused.
+
+Settings an entry omits come from the global Worker settings. The Node Agent
+checks the file when it starts and refuses to start when the file is invalid.
+Every entry must set at least one setting and needs `ORCHARD_WORKER_BACKEND=mlx`,
+because other backends own their Worker settings for the whole Node. For a
+strict-prefix model, the resolved settings must also meet these rules; the Node
+never changes a setting to make an entry valid:
+
+- `generation_mode` must be `stream`.
+- `memory_budget_mode` must be `observe`. Enforce mode would abort
+  generations for retained checkpoints instead of evicting them, and `disabled`
+  leaves no headroom to check the budget against.
+- `budget_bytes` must hold every slot.
+
+When it loads the model, the Worker also refuses:
+
+- mlx-lm other than 0.31.3 at the commit pinned in
+  `native/orchard_worker_mlx/pyproject.toml` (`strict_prefix_runtime_unsupported`);
+- a model cache with layers other than `KVCache` and `ArraysCache`, or a reply
+  marker that tokenizes to nothing (`strict_prefix_model_unsupported`);
+- a budget larger than the estimated memory headroom
+  (`insufficient_memory`). The Worker skips this check when headroom is unknown.
+
+The Node reports the first two as runtime unavailable and the third as resource
+exhausted, so the Controller can retry the request on another Node.
+
+### What changes on the Node
+
+- **Concurrency.** A strict-prefix Worker runs one generation. The Node takes
+  the lowest Worker limit, so while a strict-prefix model is loaded the whole
+  Node serves one request at a time.
+- **Memory.** Published headroom subtracts the full checkpoint budget once, and
+  the recommended context comes from that figure. Each model checks memory only
+  against itself, so run a strict-prefix model alone on its Node unless you
+  have checked that the models fit together.
+- **Status.** Prefix-cache status reports implementation `strict_prefix`:
+  retained checkpoints as the entry count, the fixed charge for occupied slots
+  as total bytes, slots and budget as the configured maximums, plus the
+  uncertain checkpoint count and measured retained bytes.
+- **Cache affinity.** A strict-prefix Worker publishes no cache-affinity
+  fingerprints, advertises no prefix-cache capability and does not score
+  fingerprints.
+
+Each request logs one `strict_prefix_checkpoint_request` line with the lookup
+and capture outcome, matched tokens, snapshot bytes and reserved bytes. A
+request that ends before prefill logs `lookup_status=not_started`.
+
+### Migrating from the environment variables
+
+The `ORCHARD_WORKER_STRICT_PREFIX_*` variables are removed. Move the settings
+into the per-model file and unset the variables. The Node Agent launches every
+Worker without `ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS`. A Worker that still
+sees it set (for example, a new Worker started by an older Node Agent) refuses
+to start and names the variable. Before rolling back to an older Worker, remove
+`strict_prefix` entries from the file: older Workers reject the mode.
+
+
 ## Legacy product-license compatibility
 
 Orchard no longer reads product-license environment variables or the historical local activation bundle.
@@ -1569,6 +1675,35 @@ mise exec -- iex -S mix phx.server
 ```
 
 ## Current Source-Dev Limitations
+
+### Default-off vLLM source experiment
+
+`vllm_poc` is a separately selected development Worker behind existing local
+gRPC, using loopback `/v1/completions` on port 58080 with logical load/unload and
+concurrency one. It consumes existing rendered prompts and preserves generated
+legacy-blended reasoning; it does not expose `final_only` or register a new
+reasoning artifact. It requires the prompt suffix `<think>\n`, temperature `1.0`
+and top-p `0.95`, rejects token IDs/logprobs, and bounds decoded reasoning plus
+final output. See [ADR 0037](decisions/0037-bounded-linux-source-development-inference-poc.md).
+
+Selection is `MIX_ENV=dev ORCHARD_WORKER_BACKEND=vllm_poc`; stream generation
+is the default for this backend, and `config/runtime.exs` rejects it in prod.
+The separately authorized provider command is
+`scripts/with-kap112-vllm-poc.sh --model-dir DIR --evidence FILE -- COMMAND`,
+with both paths beneath `ORCHARD_KAP112_SNAPSHOT_ROOT`. It verifies the pinned
+image and snapshot and supervises only its own container and command. Run
+`bash scripts/test-with-kap112-vllm-poc.sh` for the model-free fake-command lane.
+
+Historical smoke-runner `main`/`execute` fail before mutation and historical setup
+is disabled: its effort artifact digest is not main's source-owned registered
+digest, and the old registration environment variable is not consumed. Retained
+deterministic tests are not a current real API/OpenCode proof. Do not bypass
+these guards. The supervisor requires `ORCHARD_KAP112_GPU_UUID` and
+`ORCHARD_KAP112_SNAPSHOT_ROOT`, but live supervisor/download use needs separate
+owner approval and has not run for this port. The pinned vLLM 0.27.1 tuple is a
+historical reference, not platform/provider/model qualification or support.
+
+### General limitations
 
 - Source dev controller uses loopback HTTP (`127.0.0.1:4000`); app-installed
   releases default to degraded loopback HTTP until an operator selects

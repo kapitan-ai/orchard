@@ -151,6 +151,9 @@ defmodule Orchard.Cluster.V1.RuntimePrefixCacheStatus do
     type: :string,
     json_name: "prefixCacheFingerprints"
   )
+
+  field(:checkpoint_uncertain_count, 17, type: :uint32, json_name: "checkpointUncertainCount")
+  field(:checkpoint_retained_bytes, 18, type: :uint64, json_name: "checkpointRetainedBytes")
 end
 
 defmodule Orchard.Cluster.V1.HostedToolCapability do

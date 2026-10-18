@@ -27,3 +27,4 @@ The current sequence includes [ADR 0030: Managed Node composition and activation
 [ADR 0033: Named Console identities and shared management authorization](0033-cross-surface-authorization.md) is an accepted target contract whose implementation and cutover remain pending.
 [ADR 0035: Experimental Linux Node candidate uses source development](0035-experimental-linux-node-source-development.md) is an accepted experimental candidate contract whose implementation and qualification remain pending.
 [ADR 0036: Private-stage local-CA public artifact publication](0036-private-stage-local-ca-publication.md) defines how `orchardctl transport enable-local-https` publishes the local CA certificate and endpoint metadata.
+[ADR 0037: Bounded Linux source-development inference experiment](0037-bounded-linux-source-development-inference-poc.md) proposes an independent default-off Worker experiment; historical proof is not current-main qualification or live execution authorization.

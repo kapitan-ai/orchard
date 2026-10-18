@@ -4,7 +4,7 @@ defmodule Orchard.Node do
   """
 
   alias Orchard.Cluster.V1.ModelRef
-  alias Orchard.Node.{FakeRuntimeAdapter, WorkerRuntimeAdapter}
+  alias Orchard.Node.{FakeRuntimeAdapter, WorkerLaunchPolicy, WorkerRuntimeAdapter}
 
   require Logger
 
@@ -28,6 +28,7 @@ defmodule Orchard.Node do
   @worker_log_prefix "orchard-worker-"
   @worker_log_suffix ".log"
   @worker_identity_hash_length 16
+  @worker_launch_overrides_key {__MODULE__, :worker_launch_overrides}
 
   def runtime_config do
     Application.fetch_env!(:orchard_node_agent, :runtime)
@@ -305,6 +306,66 @@ defmodule Orchard.Node do
       n when is_integer(n) and n >= 0 -> n
       other -> raise "invalid worker_memory_budget_overhead_bytes: #{inspect(other)}"
     end
+  end
+
+  @doc "Global Worker settings as launch options, before any per-model override."
+  @spec worker_launch_globals() :: keyword()
+  def worker_launch_globals do
+    [
+      backend: worker_backend(),
+      prefix_cache_mode: worker_prefix_cache_mode(),
+      prefix_cache_max_entries: worker_prefix_cache_max_entries(),
+      prefix_cache_max_bytes: worker_prefix_cache_max_bytes(),
+      generation_mode: worker_generation_mode(),
+      max_concurrent_generations: worker_max_concurrent_requests_per_model(),
+      auto_max_concurrent_generations: worker_auto_max_concurrent_requests_per_model(),
+      memory_budget_mode: worker_memory_budget_mode(),
+      memory_budget_utilization: worker_memory_budget_utilization(),
+      memory_budget_overhead_bytes: worker_memory_budget_overhead_bytes()
+    ]
+  end
+
+  @doc """
+  Reads and checks the per-model Worker settings file, then caches it for
+  `worker_launch_options/1`. Raises on an invalid file, so the Node refuses to
+  start instead of failing each load later.
+  """
+  @spec load_worker_launch_policy!() :: :ok
+  def load_worker_launch_policy! do
+    with {:ok, overrides} <- read_worker_launch_overrides(),
+         :ok <- validate_worker_launch_overrides(overrides) do
+      :persistent_term.put(@worker_launch_overrides_key, overrides)
+    else
+      {:error, message} -> raise "invalid ORCHARD_WORKER_MODEL_OVERRIDES_FILE: #{message}"
+    end
+  end
+
+  # With no overrides there is nothing to check, and the global settings are
+  # evaluated at model load as before.
+  defp validate_worker_launch_overrides(overrides) when map_size(overrides) == 0, do: :ok
+
+  defp validate_worker_launch_overrides(overrides),
+    do: WorkerLaunchPolicy.validate_all(overrides, worker_launch_globals())
+
+  @doc """
+  Returns the fixed launch options for one model's Worker: global settings,
+  then that model's override from the per-model settings file.
+  """
+  @spec worker_launch_options(ModelRef.t()) :: {:ok, keyword()} | {:error, String.t()}
+  def worker_launch_options(%ModelRef{} = model_ref) do
+    overrides =
+      case :persistent_term.get(@worker_launch_overrides_key, :not_loaded) do
+        :not_loaded -> read_worker_launch_overrides()
+        overrides -> {:ok, overrides}
+      end
+
+    with {:ok, overrides} <- overrides do
+      WorkerLaunchPolicy.resolve(model_ref, overrides, worker_launch_globals())
+    end
+  end
+
+  defp read_worker_launch_overrides do
+    WorkerLaunchPolicy.load(runtime_value(:worker_model_overrides_file, nil))
   end
 
   def worker_log_dir, do: runtime_config()[:worker_log_dir]
