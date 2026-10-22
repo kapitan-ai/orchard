@@ -22,7 +22,7 @@
 
 - [x] 4.1 Select the lane for Git-quoted paths, root zizmor configuration, and manifests at any depth, including Swift, and verify with real `git diff --name-only` output for non-ASCII and tab paths
 - [x] 4.2 Request `--all-packages` and fail when OSV-Scanner reads no packages from a requested lockfile, and verify the stub scanner omits unreadable lockfiles as OSV-Scanner 2.7.0 does
-- [x] 4.3 Match introduced findings against every aliased advisory record, and add `Package.resolved` to the scanned lockfile names after verifying OSV-Scanner 2.7.0 reads it
+- [x] 4.3 Match introduced findings against every aliased advisory record, using both the group IDs and the group aliases, and add `Package.resolved` to the scanned lockfile names after verifying OSV-Scanner 2.7.0 reads it
 - [x] 4.4 Scan the Git repository that contains the working directory, and record the push-base, concurrency, and submission-binary trust decisions in this design
 
 ## 5. Documentation and validation

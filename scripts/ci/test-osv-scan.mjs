@@ -97,14 +97,14 @@ test('maps scanner output to one finding per advisory with its group severity', 
       packages: [{
         package: { ecosystem: 'PyPI', name: 'pytest', version: '9.0.2' },
         vulnerabilities: [{ id: 'PYSEC-1' }, { id: 'GHSA-1' }],
-        groups: [{ ids: ['PYSEC-1', 'GHSA-1'], max_severity: '6.8' }]
+        groups: [{ ids: ['PYSEC-1', 'GHSA-1'], aliases: ['CVE-1', 'GHSA-1', 'PYSEC-1'], max_severity: '6.8' }]
       }]
     }]
   };
   const pytest = { lockfile: 'native/worker/uv.lock', ecosystem: 'PyPI', name: 'pytest', version: '9.0.2', severity: '6.8' };
   assert.deepEqual(findings(report, '/work'), [
-    { ...pytest, id: 'PYSEC-1', aliases: ['PYSEC-1', 'GHSA-1'] },
-    { ...pytest, id: 'GHSA-1', aliases: ['GHSA-1', 'PYSEC-1'] }
+    { ...pytest, id: 'PYSEC-1', aliases: ['PYSEC-1', 'GHSA-1', 'CVE-1'] },
+    { ...pytest, id: 'GHSA-1', aliases: ['GHSA-1', 'PYSEC-1', 'CVE-1'] }
   ]);
   assert.deepEqual(findings({}, '/work'), []);
 });
@@ -116,6 +116,9 @@ test('reports only advisories the change introduces', () => {
   assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.1', 'EEF-1')]), []);
   // The same advisory reported under an aliased record is not new.
   assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.1', 'GHSA-1')]), []);
+  // Records with disjoint IDs that alias the same CVE are the same advisory.
+  const cve = [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-3', ['EEF-3', 'CVE-3'])];
+  assert.deepEqual(introduced(cve, [finding('mix.lock', 'cowlib', '2.20.1', 'GHSA-3', ['GHSA-3', 'CVE-3'])]), []);
   assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-2')]),
     [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-2')]);
   assert.deepEqual(introduced(baseline, [finding('other/mix.lock', 'cowlib', '2.20.0', 'EEF-1')]),
@@ -191,9 +194,9 @@ test('scanner failures and unknown bases are errors, not clean results', t => {
 test('a lockfile the scanner reads no packages from fails the scan instead of looking clean', t => {
   const { repo, bin } = repository(t);
   write(repo, 'mix.lock', 'unreadable\n');
-  assert.throws(() => run(['--base', 'main'], { root: repo, bin }), /osv-scanner read no packages from: mix\.lock$/);
+  assert.throws(() => run(['--base', 'main'], { root: repo, bin }), /osv-scanner read no packages from \(unreadable or empty\): mix\.lock$/);
   write(repo, 'native/new/uv.lock', 'unreadable\n');
-  assert.throws(() => run([], { root: repo, bin }), /read no packages from: mix\.lock, native\/new\/uv\.lock$/);
+  assert.throws(() => run([], { root: repo, bin }), /read no packages from \(unreadable or empty\): mix\.lock, native\/new\/uv\.lock$/);
 });
 
 test('command line exits 0 when clean, 1 on findings and 2 on errors', t => {

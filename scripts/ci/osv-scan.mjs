@@ -36,7 +36,8 @@ export function findings(report, root) {
         const group = groups.find(candidate => candidate.ids?.includes(id));
         rows.push({
           lockfile, ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, id,
-          severity: group?.max_severity ?? '', aliases: [...new Set([id, ...(group?.ids ?? [])])]
+          severity: group?.max_severity ?? '',
+          aliases: [...new Set([id, ...(group?.ids ?? []), ...(group?.aliases ?? [])])]
         });
       }
     }
@@ -71,7 +72,8 @@ function scan(root, files, { bin, config, scannerArgs }) {
   if (result.error) throw result.error;
   // OSV-Scanner exits 1 when it reports vulnerabilities; anything else is a failed scan.
   if (result.status !== 0 && result.status !== 1) {
-    throw new Error(`osv-scanner exited with status ${result.status}: ${result.stderr.trim()}`);
+    const detail = result.stderr.trim().split('\n').slice(-5).join('\n');
+    throw new Error(`osv-scanner exited with status ${result.status}: ${detail}`);
   }
   const report = JSON.parse(result.stdout);
   // OSV-Scanner leaves out a lockfile it cannot read, which would look clean.
@@ -79,7 +81,9 @@ function scan(root, files, { bin, config, scannerArgs }) {
     .filter(entry => entry.packages?.length)
     .map(entry => relative(root, entry.source.path)));
   const unread = files.filter(file => !read.has(file));
-  if (unread.length) throw new Error(`osv-scanner read no packages from: ${unread.join(', ')}`);
+  if (unread.length) {
+    throw new Error(`osv-scanner read no packages from (unreadable or empty): ${unread.join(', ')}`);
+  }
   return findings(report, root);
 }
 
