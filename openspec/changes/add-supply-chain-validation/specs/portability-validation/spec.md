@@ -4,13 +4,18 @@
 Required validation SHALL run a supply-chain lane when a pull request changes a third-party dependency manifest or lockfile, a CI workflow definition, the toolchain pins, or the supply-chain scanners or their configuration, and on every push to `main`.
 The lane SHALL statically audit the repository's GitHub Actions workflow definitions and SHALL fail on findings at the auditor's default severity and confidence.
 The lane SHALL fail when the change introduces a known vulnerability into a scanned lockfile, judged against the merge base with the target revision, and SHALL NOT fail on vulnerabilities already present at that merge base.
-Scanner, repository, or usage errors SHALL fail the lane rather than pass it.
+Scanner, repository, or usage errors, including a scanned lockfile from which the scanner reads no packages, SHALL fail the lane rather than pass it.
+A changed path whose name lane selection cannot read SHALL select the lane.
 The required repository gate SHALL require the lane to succeed when it applies and SHALL fail if the lane runs when it does not apply.
 
 #### Scenario: Change introduces a vulnerable dependency version
 - **WHEN** a pull request changes a lockfile so that it resolves a package version affected by a known advisory that does not affect that lockfile at the merge base
 - **THEN** the supply-chain lane fails and names the advisory, package, version, and lockfile
 - **AND** the required gate fails
+
+#### Scenario: Scanner cannot read a lockfile
+- **WHEN** the scanner reads no packages from a scanned lockfile on either side of the comparison
+- **THEN** the supply-chain lane fails instead of treating that lockfile as free of vulnerabilities
 
 #### Scenario: Existing vulnerability backlog
 - **WHEN** a pull request changes a lockfile and every reported advisory is already present at the merge base

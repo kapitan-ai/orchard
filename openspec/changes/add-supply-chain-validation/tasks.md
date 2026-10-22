@@ -18,8 +18,15 @@
 - [x] 3.2 Verify the v1.3.4 binary's build attestation and generate a submission locally without sending it, and confirm it resolves every Mix manifest and its transitive Hex dependencies
 - [ ] 3.3 After merge, confirm the workflow submits from `main` and that Hex packages appear in the repository dependency graph
 
-## 4. Documentation and validation
+## 4. Review repairs
 
-- [x] 4.1 Update `docs/tooling.md` and `AGENTS.md` with the commands, lane selection, exception policy, data sent to external services, and submission behavior
-- [x] 4.2 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate add-supply-chain-validation --type change --strict --no-interactive` and the all-specs strict validation
-- [ ] 4.3 After archive or sync, review the generated `portability-validation` spec for placeholder prose
+- [x] 4.1 Select the lane for Git-quoted paths, root zizmor configuration, and manifests at any depth, including Swift, and verify with real `git diff --name-only` output for non-ASCII and tab paths
+- [x] 4.2 Request `--all-packages` and fail when OSV-Scanner reads no packages from a requested lockfile, and verify the stub scanner omits unreadable lockfiles as OSV-Scanner 2.7.0 does
+- [x] 4.3 Match introduced findings against every aliased advisory record, and add `Package.resolved` to the scanned lockfile names after verifying OSV-Scanner 2.7.0 reads it
+- [x] 4.4 Scan the Git repository that contains the working directory, and record the push-base, concurrency, and submission-binary trust decisions in this design
+
+## 5. Documentation and validation
+
+- [x] 5.1 Update `docs/tooling.md` and `AGENTS.md` with the commands, lane selection, exception policy, data sent to external services, and submission behavior
+- [x] 5.2 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate add-supply-chain-validation --type change --strict --no-interactive` and the all-specs strict validation
+- [ ] 5.3 After archive or sync, review the generated `portability-validation` spec for placeholder prose

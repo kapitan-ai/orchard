@@ -41,16 +41,40 @@ assert_case native-uv-lock true native/orchard_worker_mlx/uv.lock
 assert_case nested-tooling-uv-lock true proto/orchard/worker/tooling/uv.lock
 assert_case native-pyproject true native/orchard_tokenizer/pyproject.toml
 assert_case root-npm-manifest true package.json
+assert_case nested-npm-manifest true native/new_tool/package.json
 assert_case root-npm-lock true package-lock.json
 assert_case future-ecosystem-lock true native/new_tool/Cargo.lock
+assert_case future-ecosystem-manifest true native/new_tool/Cargo.toml
+assert_case swift-manifest true packaging/app/Package.swift
+assert_case swift-lock true packaging/app/Package.resolved
 assert_case workflow true .github/workflows/required-validation.yml
 assert_case mise-pins true mise.toml
 assert_case osv-exceptions true osv-scanner.toml
+assert_case root-zizmor-config true zizmor.yml
+assert_case root-zizmor-config-yaml true zizmor.yaml
 assert_case makefile true Makefile
 assert_case ci-scripts true scripts/ci/osv-scan.mjs
 assert_case docs-plus-lockfile true README.md mix.lock
+assert_case quoted-path true '"caf\303\251/uv.lock"'
 
 assert_rejects empty-diff ''
 assert_rejects blank-line-only-diff $'\n\n'
+
+# Real `git diff --name-only` output, as the workflow feeds it: Git quotes a
+# lockfile path with non-ASCII or special characters.
+fixture="$(mktemp -d)"
+trap 'rm -rf "$fixture"' EXIT
+git -C "$fixture" init --quiet
+git -C "$fixture" -c user.name=t -c user.email=t@example.invalid commit --quiet --allow-empty -m base
+mkdir -p "$fixture/café" "$fixture/tab	dir"
+printf 'version = 1\n' > "$fixture/café/uv.lock"
+printf 'version = 1\n' > "$fixture/tab	dir/mix.lock"
+git -C "$fixture" add .
+git -C "$fixture" -c user.name=t -c user.email=t@example.invalid commit --quiet -m lockfiles
+actual="$(git -C "$fixture" diff --name-only --no-renames HEAD~1 HEAD | "$CLASSIFIER")"
+if [[ "$actual" != "supply_chain=true" ]]; then
+  printf 'supply-chain classification case failed: real-git-quoted-paths\nactual: %s\n' "$actual" >&2
+  exit 1
+fi
 
 printf 'supply-chain path-classification tests passed\n'

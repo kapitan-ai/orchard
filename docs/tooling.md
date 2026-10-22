@@ -330,11 +330,12 @@ Findings at zizmor's default severity and confidence fail the command.
 It runs offline unless `GH_TOKEN` is set; `GH_TOKEN=$(gh auth token) make zizmor` adds the online audits that CI runs with the workflow token.
 Suppress a false positive with a narrow `# zizmor: ignore[<audit>]` comment that says why.
 
-`scripts/ci/osv-scan.mjs` runs OSV-Scanner on every lockfile it can read: `mix.lock`, `package-lock.json`, each `uv.lock`, and any future lockfile whose name the script lists.
+`scripts/ci/osv-scan.mjs` runs OSV-Scanner on every lockfile in the enclosing Git repository whose name the script lists: today `mix.lock`, `package-lock.json`, and each `uv.lock`, plus names such as `Package.resolved` and `Cargo.lock` for future dependencies.
 It discovers tracked lockfiles and untracked lockfiles that are not ignored, so a local run sees a new lockfile before it is staged.
+A lockfile that OSV-Scanner reads no packages from is an error, not a clean result.
 `make osv` lists every known vulnerability and exits non-zero while any remain.
 `make osv-diff` compares the working tree with the merge base of `OSV_BASE` and fails only on vulnerabilities that the change introduces.
-A version change that stays inside the same advisory is not new; the same advisory in another lockfile is.
+A version change that stays inside the same advisory, under any of its aliased records, is not new; the same advisory in another lockfile is.
 Exit status `0` means no reported vulnerabilities, `1` means reported vulnerabilities, and `2` means a scanner, Git, or usage error.
 
 By default OSV-Scanner sends package names and versions, not source code, to `api.osv.dev`.
@@ -346,17 +347,21 @@ An exception is an accountable product-owner decision to accept a known vulnerab
 Do not add one to make the lane pass.
 
 The required `Supply-chain validation` lane installs the pinned toolchain and runs `make zizmor` and `make osv-diff`.
-`scripts/ci/classify-supply-chain-paths.sh` selects it when a pull request changes a dependency manifest or lockfile, `.github/**`, `mise.toml`, `osv-scanner.toml`, `Makefile`, `package.json`, or `scripts/ci/**`.
+`scripts/ci/classify-supply-chain-paths.sh` selects it when a pull request changes a dependency manifest or lockfile at any depth, `.github/**`, `mise.toml`, `osv-scanner.toml`, a root `zizmor.yml` or `zizmor.yaml`, `Makefile`, or `scripts/ci/**`.
+A path that Git quotes because of special characters also selects it.
 It also runs on every push to `main`, compared against the previous `main` commit.
+Concurrent `main` runs cancel earlier ones, so a run that a later push cancels is not compared on `main`; its pull request lane already ran.
 Because it fails only on introduced vulnerabilities, the existing backlog does not block unrelated pull requests; `make osv` and Dependabot alerts keep that backlog visible, and dependency update work owns remediation.
 
 GitHub's dependency graph cannot read `mix.lock`.
 `.github/workflows/dependency-submission.yml` runs `erlef/mix-dependency-submission` on every push to `main` and on manual dispatch, and submits the Mix dependency snapshot so Hex dependencies get Dependabot alerts.
 Its job alone holds `contents: write`, which the Dependency Submission API requires; pull requests never submit.
 The action downloads its release binary and verifies its build provenance with `gh attestation verify` before running it.
+That proves the upstream release workflow built the binary from the `v1.3.4` tag, not a fixed digest, so the job's write token trusts the upstream release pipeline.
 Dependabot does not open security-update pull requests for Hex.
 
-`packaging/app` declares no third-party Swift packages, so no Swift dependency scanner is configured.
+`packaging/app` declares no third-party Swift packages today.
+A `Package.swift` change selects the lane, and a committed `Package.resolved` is scanned.
 
 ## Generated Contracts
 

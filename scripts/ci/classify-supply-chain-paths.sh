@@ -16,7 +16,9 @@ while IFS= read -r path; do
   saw_path=true
 
   case "$path" in
-    .github/*|mise.toml|osv-scanner.toml|Makefile|package.json|scripts/ci/*)
+    # `git diff --name-only` quotes paths with special characters, so their
+    # real names cannot be matched below; select the lane rather than skip it.
+    \"*|.github/*|mise.toml|osv-scanner.toml|zizmor.yml|zizmor.yaml|Makefile|scripts/ci/*)
       supply_chain=true
       ;;
   esac
@@ -24,7 +26,10 @@ while IFS= read -r path; do
   # Dependency manifests and the lockfile names in scripts/ci/osv-scan.mjs,
   # at any depth.
   case "${path##*/}" in
-    mix.exs|pyproject.toml|Cargo.lock|Gemfile.lock|Pipfile.lock|bun.lock|composer.lock|go.mod|mix.lock|package-lock.json|pnpm-lock.yaml|poetry.lock|pylock.toml|uv.lock|yarn.lock)
+    Cargo.toml|Gemfile|Package.swift|Pipfile|composer.json|mix.exs|package.json|pyproject.toml)
+      supply_chain=true
+      ;;
+    Cargo.lock|Gemfile.lock|Package.resolved|Pipfile.lock|bun.lock|composer.lock|go.mod|mix.lock|package-lock.json|pnpm-lock.yaml|poetry.lock|pylock.toml|uv.lock|yarn.lock)
       supply_chain=true
       ;;
   esac

@@ -11,8 +11,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const script = join(root, 'scripts/ci/osv-scan.mjs');
 
 // Stub scanner: each lockfile line `OSV <ecosystem> <name> <version> <id>...`
-// becomes one package, so real lockfiles report nothing. It records its
-// arguments, can fail, and can add ORCHARD_OSV_STUB_LINE to every lockfile.
+// becomes one package. Like OSV-Scanner, it leaves out a lockfile it reads no
+// packages from. It records its arguments, can fail, and can add
+// ORCHARD_OSV_STUB_LINE to every lockfile.
 const stubSource = log => `#!${process.execPath}
 const { appendFileSync, readFileSync } = require('node:fs');
 const args = process.argv.slice(2);
@@ -31,10 +32,10 @@ args.forEach((arg, index) => {
     return {
       package: { ecosystem, name, version },
       vulnerabilities: ids.map(id => ({ id })),
-      groups: ids.map(id => ({ ids: [id], max_severity: '7.5' }))
+      groups: ids.length ? [{ ids, max_severity: '7.5' }] : []
     };
   });
-  results.push({ source: { path, type: 'lockfile' }, packages });
+  if (packages.length) results.push({ source: { path, type: 'lockfile' }, packages });
 });
 process.stdout.write(JSON.stringify({ results }));
 process.exit(results.some(result => result.packages.some(pkg => pkg.vulnerabilities.length)) ? 1 : 0);
@@ -100,17 +101,21 @@ test('maps scanner output to one finding per advisory with its group severity', 
       }]
     }]
   };
+  const pytest = { lockfile: 'native/worker/uv.lock', ecosystem: 'PyPI', name: 'pytest', version: '9.0.2', severity: '6.8' };
   assert.deepEqual(findings(report, '/work'), [
-    { lockfile: 'native/worker/uv.lock', ecosystem: 'PyPI', name: 'pytest', version: '9.0.2', id: 'PYSEC-1', severity: '6.8' },
-    { lockfile: 'native/worker/uv.lock', ecosystem: 'PyPI', name: 'pytest', version: '9.0.2', id: 'GHSA-1', severity: '6.8' }
+    { ...pytest, id: 'PYSEC-1', aliases: ['PYSEC-1', 'GHSA-1'] },
+    { ...pytest, id: 'GHSA-1', aliases: ['GHSA-1', 'PYSEC-1'] }
   ]);
   assert.deepEqual(findings({}, '/work'), []);
 });
 
 test('reports only advisories the change introduces', () => {
-  const finding = (lockfile, name, version, id) => ({ lockfile, ecosystem: 'Hex', name, version, id, severity: '' });
-  const baseline = [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-1')];
+  const finding = (lockfile, name, version, id, aliases = [id]) =>
+    ({ lockfile, ecosystem: 'Hex', name, version, id, severity: '', aliases });
+  const baseline = [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-1', ['EEF-1', 'GHSA-1'])];
   assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.1', 'EEF-1')]), []);
+  // The same advisory reported under an aliased record is not new.
+  assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.1', 'GHSA-1')]), []);
   assert.deepEqual(introduced(baseline, [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-2')]),
     [finding('mix.lock', 'cowlib', '2.20.0', 'EEF-2')]);
   assert.deepEqual(introduced(baseline, [finding('other/mix.lock', 'cowlib', '2.20.0', 'EEF-1')]),
@@ -124,7 +129,7 @@ test('full scan reports every advisory in tracked lockfiles only', t => {
     ['mix.lock cowlib EEF-CVE-1']);
   assert.equal(outcome.mergeBase, undefined);
   const [args] = scans();
-  assert.deepEqual(args.slice(0, 4), ['scan', 'source', '--format', 'json']);
+  assert.deepEqual(args.slice(0, 5), ['scan', 'source', '--format', 'json', '--all-packages']);
   assert.equal(args.filter(arg => arg === '-L').length, 2);
   assert.ok(!args.some(arg => arg.endsWith('README.md')));
   assert.ok(!args.includes('--config'));
@@ -183,12 +188,22 @@ test('scanner failures and unknown bases are errors, not clean results', t => {
   assert.throws(() => run(['--base', 'no-such-ref'], { root: repo, bin }), /git merge-base no-such-ref HEAD failed/);
 });
 
+test('a lockfile the scanner reads no packages from fails the scan instead of looking clean', t => {
+  const { repo, bin } = repository(t);
+  write(repo, 'mix.lock', 'unreadable\n');
+  assert.throws(() => run(['--base', 'main'], { root: repo, bin }), /osv-scanner read no packages from: mix\.lock$/);
+  write(repo, 'native/new/uv.lock', 'unreadable\n');
+  assert.throws(() => run([], { root: repo, bin }), /read no packages from: mix\.lock, native\/new\/uv\.lock$/);
+});
+
 test('command line exits 0 when clean, 1 on findings and 2 on errors', t => {
-  const { dir } = repository(t);
+  const { dir, repo } = repository(t);
+  // Run from a subdirectory: the script scans the enclosing repository.
   const cli = (argv, env = {}) => spawnSync(process.execPath, [script, ...argv], {
-    encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env }
+    cwd: join(repo, 'native'), encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env }
   });
 
+  write(repo, 'mix.lock', 'OSV Hex mint 1.11.0\n');
   const clean = cli([]);
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /^OSV full scan: 0 known vulnerabilities\.$/m);

@@ -264,7 +264,7 @@ See `docs/code-quality.md` for detailed tuning rationale, suppression patterns, 
 
 ### Supply-chain workflow
 
-When a change touches a dependency manifest or lockfile, `.github/**`, `mise.toml`, `osv-scanner.toml`, `Makefile`, `package.json`, or `scripts/ci/**`, run `make supply-chain` before handoff.
+When a change touches a dependency manifest or lockfile, `.github/**`, `mise.toml`, `osv-scanner.toml`, zizmor configuration, `Makefile`, or `scripts/ci/**`, run `make supply-chain` before handoff.
 It runs the same checks as the required `Supply-chain validation` lane; see `docs/tooling.md`, "Supply-Chain Checks".
 
 Rules:
