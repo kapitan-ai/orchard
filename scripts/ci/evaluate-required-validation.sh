@@ -44,6 +44,7 @@ validate_required "MLX validation" "${MLX_REQUIRED:?}"
 validate_required "Packaging validation" "${PACKAGING_REQUIRED:?}"
 validate_required "Orchard.app and DMG assembly validation" "${APP_DISTRIBUTION_REQUIRED:?}"
 validate_required "OpenSpec validation" "${OPENSPEC_REQUIRED:?}"
+validate_required "Supply-chain validation" "${SUPPLY_CHAIN_REQUIRED:?}"
 
 # The assembly lane is a packaging consumer; it is never applicable alone.
 if [[ "$APP_DISTRIBUTION_REQUIRED" == "true" && "$PACKAGING_REQUIRED" != "true" ]]; then
@@ -58,5 +59,6 @@ require_result "MLX validation" "${MLX_REQUIRED:?}" "${MLX_RESULT:?}"
 require_result "Packaging validation" "${PACKAGING_REQUIRED:?}" "${PACKAGING_RESULT:?}"
 require_result "Orchard.app and DMG assembly validation" "${APP_DISTRIBUTION_REQUIRED:?}" "${APP_DISTRIBUTION_RESULT:?}"
 require_result "OpenSpec validation" "${OPENSPEC_REQUIRED:?}" "${OPENSPEC_RESULT:?}"
+require_result "Supply-chain validation" "${SUPPLY_CHAIN_REQUIRED:?}" "${SUPPLY_CHAIN_RESULT:?}"
 
 printf 'All applicable Orchard validation lanes passed and all other lanes were skipped.\n'

@@ -1,0 +1,12 @@
+# OSV-Scanner exceptions for every lockfile `scripts/ci/osv-scan.mjs` scans.
+#
+# Fix first. An entry here is an accountable product-owner decision to accept
+# a known vulnerability, not a way to make the supply-chain lane pass. Each
+# entry needs the advisory ID, a dated `ignoreUntil`, and a reason that names
+# why no fix is applied (for example, no released fix upstream). See
+# docs/tooling.md, "Supply-Chain Checks".
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2026-12-31
+# reason = "No released fix upstream; reassess when a release ships."

@@ -12,7 +12,8 @@
     "openspec": "OPENSPEC_TELEMETRY=0 openspec",
     "test:assets": "node --test apps/orchard_controller/assets/test/*.test.mjs",
     "check:mise-action-pins": "node scripts/ci/check-mise-action-pins.mjs",
-    "test:mise-action-pins": "node --experimental-test-coverage --test scripts/ci/test-mise-action-pins.mjs"
+    "test:mise-action-pins": "node --experimental-test-coverage --test scripts/ci/test-mise-action-pins.mjs",
+    "test:osv-scan": "node --experimental-test-coverage --test scripts/ci/test-osv-scan.mjs"
   },
   "devDependencies": {
     "@fission-ai/openspec": "1.13.2",
