@@ -104,6 +104,7 @@ gate_accepts() {
   else
     envs+=(OPENSPEC_REQUIRED=false OPENSPEC_RESULT=skipped)
   fi
+  envs+=(SUPPLY_CHAIN_REQUIRED=false SUPPLY_CHAIN_RESULT=skipped)
   env "${envs[@]}" "$EVALUATOR" >/dev/null 2>&1
 }
 

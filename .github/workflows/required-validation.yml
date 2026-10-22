@@ -40,6 +40,7 @@ jobs:
       mlx: ${{ steps.classify.outputs.mlx }}
       packaging: ${{ steps.classify.outputs.packaging }}
       app_distribution: ${{ steps.classify.outputs.app_distribution }}
+      supply_chain: ${{ steps.classify.outputs.supply_chain }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,6 +64,7 @@ jobs:
             printf '%s=true\n' portable conformance macos mlx packaging \
               | scripts/ci/resolve-app-distribution-lane.sh \
               >> "$GITHUB_OUTPUT"
+            printf 'supply_chain=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -76,10 +78,14 @@ jobs:
             | scripts/ci/classify-required-validation-paths.sh \
             | scripts/ci/resolve-app-distribution-lane.sh \
             >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$changed_paths" \
+            | scripts/ci/classify-supply-chain-paths.sh \
+            >> "$GITHUB_OUTPUT"
 
       - name: Test validation fan-out and aggregate gate
         run: |
           scripts/ci/test-classify-required-validation-paths.sh
+          scripts/ci/test-classify-supply-chain-paths.sh
           scripts/ci/test-required-validation-gate.sh
           scripts/ci/test-platform-test-routing.sh
           scripts/ci/test-app-distribution-lane.sh
@@ -592,6 +598,52 @@ jobs:
           OPENSPEC_TELEMETRY: "0"
         run: mise exec -- npm run openspec -- validate --all --strict --no-interactive
 
+  # Runs `make supply-chain` (docs/tooling.md, "Supply-Chain Checks"). The OSV
+  # step fails only on vulnerabilities introduced relative to the merge base;
+  # the existing backlog is reported by `make osv` and Dependabot alerts.
+  supply-chain-validation:
+    name: Supply-chain validation
+    needs: changes
+    if: needs.changes.outputs.supply_chain == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned toolchain
+        id: mise-bootstrap
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.9.2
+          cache: false
+
+      - name: Diagnose toolchain bootstrap failure
+        if: ${{ !cancelled() && steps.mise-bootstrap.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.mise-bootstrap.outcome }}
+          BOOTSTRAP_VERSION: "2026.9.2"
+        run: scripts/ci/mise-bootstrap-diagnostics.sh "$BOOTSTRAP_OUTCOME" "$BOOTSTRAP_VERSION"
+
+      - name: Test OSV comparison
+        run: mise exec -- npm run test:osv-scan
+
+      # The token enables zizmor's online audits, such as impostor commits
+      # behind pinned action SHAs.
+      - name: Audit workflows with zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make zizmor
+
+      - name: Check for introduced dependency vulnerabilities
+        env:
+          OSV_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: make osv-diff
+
   # This job name is the required status check in branch protection. Renaming it
   # silently drops the gate, so keep the name and add new lanes to `needs`
   # plus the evaluator inputs instead.
@@ -606,6 +658,7 @@ jobs:
       - packaging-validation
       - app-distribution-validation
       - openspec-validation
+      - supply-chain-validation
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -632,4 +685,6 @@ jobs:
           PACKAGING_RESULT: ${{ needs.packaging-validation.result }}
           PORTABLE_REQUIRED: ${{ needs.changes.outputs.portable }}
           PORTABLE_RESULT: ${{ needs.linux-portable.result }}
+          SUPPLY_CHAIN_REQUIRED: ${{ needs.changes.outputs.supply_chain }}
+          SUPPLY_CHAIN_RESULT: ${{ needs.supply-chain-validation.result }}
         run: scripts/ci/evaluate-required-validation.sh

@@ -4,6 +4,8 @@ elixir = "1.20.4-otp-29"
 python = "3.11.16"
 uv = "0.11.23"
 node = "24.22.1"
+osv-scanner = "2.7.0"
+zizmor = "1.30.1"
 
 [env]
 UV_PYTHON = "3.11"

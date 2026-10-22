@@ -159,6 +159,8 @@ Recommended targets:
 - `make dev-controller` — run the source-dev controller host in the foreground.
 - `make dev-node-agent` — run the source-dev node-agent host in the foreground.
 - `make openspec` — run pinned OpenSpec validation.
+- `make supply-chain` — run the supply-chain lane locally: `make zizmor` (workflow audit) plus `make osv-diff` (dependency vulnerabilities introduced since `OSV_BASE`, default `origin/main`).
+- `make osv` — list every known vulnerability in the scanned lockfiles.
 - `make format` — run Elixir formatter.
 - `make test` — run the default test suite.
 - `make cover` — run the default test suite with coverage.
@@ -259,6 +261,17 @@ Rules:
 - When adding new modules, run `mise exec -- mix credo --strict` before committing — the plugins catch patterns that are invisible during normal development.
 
 See `docs/code-quality.md` for detailed tuning rationale, suppression patterns, and guidance on evolving the check configuration.
+
+### Supply-chain workflow
+
+When a change touches a dependency manifest or lockfile, `.github/**`, `mise.toml`, `osv-scanner.toml`, `Makefile`, `package.json`, or `scripts/ci/**`, run `make supply-chain` before handoff.
+It runs the same checks as the required `Supply-chain validation` lane; see `docs/tooling.md`, "Supply-Chain Checks".
+
+Rules:
+
+- Fix an introduced vulnerability by choosing a fixed version. Do not add an `osv-scanner.toml` exception to make the lane pass; exceptions are product-owner decisions.
+- Treat zizmor findings like Credo findings: fix first, and suppress a false positive only with a narrow `# zizmor: ignore[<audit>]` comment that says why.
+- Vulnerabilities already on `main` do not fail the lane. Report them, but leave their remediation to dependency update work unless the task owns it.
 
 ### Python/native workflow
 
