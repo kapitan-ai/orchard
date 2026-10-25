@@ -3,6 +3,26 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-10-25
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+_None this week._
+
+### Bug fixes
+
+_None this week._
+
+### Improvements
+
+- Python trust bundles now use certifi 2026.10.19 across the tokenizer, MLX Worker, and frozen TensorFold experiment, removing the compromised emSign G3 root. Repository tooling now pins Node.js 24.22.1 and npm 11.19.1, and test-only castore uses 1.0.22 with affected emSign roots removed. Run `mise install` and sync native environments from their committed locks; endpoints relying only on removed roots will fail TLS verification. Orchard's private cluster CA is unchanged, and these updates do not remediate every tool or host trust store. ([#530](https://github.com/kapitan-ai/orchard/pull/530), [#531](https://github.com/kapitan-ai/orchard/pull/531))
+- Asset tooling now resolves source-map-js 1.2.2, fixing the malformed indexed-source-map offset advisory without changing Tailwind or esbuild pins. This update does not clear the separate braces advisory. ([#528](https://github.com/kapitan-ai/orchard/pull/528))
+- Tokenizer development tools now resolve Ruff 0.16.10 and iniconfig 2.3.1, leaving product dependencies, tokenization behavior, and MLX runtime tuples unchanged. ([#527](https://github.com/kapitan-ai/orchard/pull/527))
+
 ## 2026-10-18
 
 ### Breaking changes
