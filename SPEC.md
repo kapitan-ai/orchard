@@ -568,10 +568,14 @@ The currently valid source, generation, and projection combinations are closed:
 * `omitted_public` requires `model_default + legacy_blended`
 * `console_default` requires `disabled + final_only`
 * `console_explicit` may select `model_default`, `disabled`, or `enabled` only with `final_only`
-* `explicit_public` may select `enabled + legacy_blended` with a non-`nil` tier and an exact rendered-input contract; its separately negotiated `final_only` controls remain subject to their public contract and activation gates
+* `explicit_public` may select `enabled + legacy_blended` with a non-`nil` tier and an exact rendered-input contract; this is the effort-only public control in §7.2.1
+* before the §7.2.1 final-only selector is implemented and activated, the dormant shared canonical constructor may still represent `explicit_public` with `model_default`, `disabled`, or `enabled` and `final_only`; no public decoder may produce any `explicit_public + final_only` combination
+* upon that activation, `explicit_public` may also select `disabled` or `enabled` with `final_only`, only through that selector; `explicit_public + model_default` SHALL then be rejected before the first Request write
 * `reasoning_structured` remains unavailable until its separate public contract expands this matrix
 
-For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` may select a tier only with negotiated `enabled + final_only`; `explicit_public` additionally permits rendered `enabled + legacy_blended`. Every other valid combination requires `nil`.
+For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` may select a tier only with negotiated `enabled + final_only`; `explicit_public` permits a tier with rendered `enabled + legacy_blended` and, once the §7.2.1 final-only selector is activated, with negotiated `enabled + final_only`. Every other valid combination requires `nil`.
+The §7.2.1 selector maps `enabled = false` to `disabled + final_only` and `enabled = true` to `enabled + final_only`; its absence keeps the omitted and effort-only mappings above. This prospective public rule does not claim that the currently shared canonical constructor already enforces the narrowed matrix.
+A negotiated `final_only` tier uses only the closed `low`, `medium`, and `high` vocabulary, and an omitted public effort maps to canonical `nil` without selecting a default tier.
 Every other combination SHALL fail before the first Request write and MUST NOT reach scheduling or dispatch.
 
 When both Chat Completions and Responses omit reasoning control, Orchard SHALL normalize the Request to `generation_policy = model_default`, `projection = legacy_blended`, and `source = omitted_public`.
@@ -2462,12 +2466,43 @@ The Public Inference API SHALL prioritize wire compatibility with OpenAI for:
 `/v1/models` SHALL return objects shaped like OpenAI model list entries with `id`, `object`, `created`, and `owned_by`. ([OpenAI Developers][5])
 
 Reasoning control is an Orchard extension whose canonical semantics are defined in §3.4.
-Chat Completions accepts optional top-level `reasoning_effort`; Responses accepts optional `reasoning` containing exactly `effort`. Both accept only values registered for the selected admitted model/template, reject explicit null/incorrect types, malformed identifiers and unsupported fields, and select the rendered-input `enabled + legacy_blended` contract only when the exact mapping and rendering route support it. These controls select native thinking at render and SHALL NOT select final-only output or a numeric reasoning-token budget.
+Chat Completions accepts optional top-level `reasoning_effort`; Responses accepts optional `reasoning` containing `effort`, with `enabled` as its only other member under the final-only selector below. Both accept only values registered for the selected admitted model/template, reject explicit null/incorrect types, malformed identifiers and unsupported fields, and select the rendered-input `enabled + legacy_blended` contract only when the exact mapping and rendering route support it. On their own, these effort controls select native thinking at render and SHALL NOT select final-only output or a numeric reasoning-token budget.
 The exact initial Qwen template mapping is low to native low, medium to native medium, xhigh to native xhigh, and high as an explicit compatibility alias to native xhigh. Its reviewed template-default effort is xhigh; omission SHALL preserve the existing template default without synthesizing a control. Unsupported levels/models/templates/routes SHALL return `400 invalid_request_error` with `unsupported_reasoning_control` and the applicable effort parameter; malformed values retain `invalid_value`. Only exact registered public identifiers are accepted, including reviewed identifiers that match a provider-native name. No arbitrary template keyword argument or nearest-tier fallback is accepted. Mappings and aliases SHALL be explicit in discovery and the registry; similar names imply no cross-model semantic equivalence or numeric budget.
-The separately negotiated final-only release remains dependent on its accepted public contract and compatible exact model/template/parser/Runtime Endpoint implementation. Its activation requirements SHALL NOT be inferred from successful rendered-input steering.
-When the control is omitted, both endpoints SHALL preserve `model_default + legacy_blended` behavior across sync and streaming responses.
-The first release SHALL reject Chat requests for raw structured reasoning output.
-Public Responses structured reasoning items and events SHALL remain disabled until a later accepted contract defines their wire names, raw-versus-summary semantics, sync representation, event ordering, terminal behavior, capture, and replay.
+
+The explicit final-only selector is the JSON boolean `enabled` member of a `reasoning` object.
+On Responses it is the only additional member of the `reasoning` object above, so that object contains `effort`, `enabled`, or both.
+On Chat Completions it is a top-level `reasoning` object containing exactly `enabled`; Chat effort remains the top-level `reasoning_effort`, and Chat `reasoning` has no effort member.
+Presence of the selector SHALL select `projection = final_only` and `source = explicit_public`; `enabled = false` SHALL select `generation_policy = disabled`, and `enabled = true` SHALL select `generation_policy = enabled`.
+The selector has no representation for `explicit_public + model_default`.
+Absence of the selector SHALL preserve the meaning each request has today, so the selector changes no request that is valid without it:
+
+| Final-only selector | Effort field | Canonical result |
+|---|---|---|
+| absent | absent | `omitted_public + model_default + legacy_blended`, no tier |
+| absent | present | `explicit_public + enabled + legacy_blended` with the rendered-input contract above |
+| `enabled = true` | absent | `explicit_public + enabled + final_only`, no tier |
+| `enabled = true` | present | `explicit_public + enabled + final_only` with the selected negotiated tier |
+| `enabled = false` | absent | `explicit_public + disabled + final_only`, no tier |
+| `enabled = false` | present | rejected with `unsupported_reasoning_control` under §7.2.7 |
+
+Under the selector, effort uses the same field, identifier syntax, and malformed-value rejection as rendered effort, and explicit `null` effort remains malformed; omission is the only way to select no tier.
+Its supported values come from the negotiated contract, not the rendered registration: that contract keeps the closed canonical vocabulary `low`, `medium`, and `high` from §3.4, and an exact negotiated renderer mapping for the selected tuple SHALL qualify the tier.
+A well-formed identifier outside that vocabulary, or one that the exact tuple does not qualify, SHALL fail with `unsupported_reasoning_control` rather than `invalid_value`.
+A rendered registration, alias, or native mapping, including `xhigh` and the `high`-to-native-`xhigh` alias above, SHALL NOT by itself authorize the same identifier under the selector; there, `high` names the negotiated canonical tier `high` and its exact negotiated mapping.
+The `orchard_reasoning_effort` discovery object in §7.2.3 describes rendered effort only and SHALL NOT be read as final-only support.
+The selector does not itself prove that an exact renderer or loaded Runtime Endpoint can honor the control; the remaining closed failures and the validation order are defined in §7.2.7.
+When the selector is present, the normalized public control, including `enabled`, SHALL participate in the existing public-body `body_hash`; omitted and effort-only requests keep their current request bytes, serialization, `body_hash`, and idempotency.
+
+Contract acceptance does not activate the selector.
+Until activation, both endpoints SHALL keep rejecting it as an unsupported field exactly as they do today.
+Public exposure SHALL remain disabled until canonical normalization and exact rendering, negotiated runtime encoding, parser and final-only projection, and reasoning-aware usage, retry, and capture have all been implemented and merged.
+Activation SHALL also require per-model final-only discovery metadata, defined by a later accepted change, so that a client can determine whether the selected model supports the selector before sending it.
+Before classified usage writers required by that activation are enabled, the compatible usage-status reader bridge SHALL be deployed to every Controller and background reader and that deployment SHALL be explicitly attested.
+Activation SHALL NOT change rendered-effort behavior, and the selector's activation requirements SHALL NOT be inferred from successful rendered-input steering.
+
+When every reasoning control is omitted, both endpoints SHALL preserve `model_default + legacy_blended` behavior across sync and streaming responses.
+The first release SHALL reject Chat requests for raw structured reasoning output and explicit structured prior-reasoning content.
+Public Responses structured reasoning input, items, and events SHALL remain disabled until a later accepted contract defines their wire names, raw-versus-summary semantics, sync representation, event ordering, terminal behavior, capture, and replay.
 
 #### 7.2.2 Authentication
 
@@ -2540,6 +2575,8 @@ Supported request fields:
 * `tool_choice`
 * `response_format` only `{"type":"json_object"}`
 * `seed` only if runtime supports deterministic seed
+* `reasoning_effort` with the semantics defined in §7.2.1
+* `reasoning` containing exactly `enabled`, only after the final-only selector defined in §7.2.1 is activated
 
 Tool-calling request rules:
 
@@ -2673,6 +2710,7 @@ Supported request fields:
 * `tools` (function only; conditional on model capability)
 * `tool_choice`
 * `store`
+* `reasoning` containing `effort`, and `enabled` only after the final-only selector is activated, with the semantics defined in §7.2.1
 * `prompt_cache_key` (string or null compatibility hint; accepted but ignored, never cache identity or authorization)
 
 Tool-calling request rules:
@@ -2807,31 +2845,52 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
 * `499` caller cancelled or disconnected when a response remains deliverable
+* `500` internal error
 * `503` cluster busy / model busy / no eligible node / Worker lost during the Request
 * `504` request timeout
 
 A non-streaming Request that fails because its Worker was lost SHALL return `503 server_error` with the stable Runtime Endpoint code `worker_down` or `worker_unavailable`, the same code that a streaming Request reports in its terminal error event.
 The status and code do not change retry behavior; §5.8 and §5.9 still decide whether the Controller retries.
 
-Reasoning-control failures use this closed mapping:
+Reasoning-control failures use this closed mapping.
+The endpoint's effort field is `reasoning_effort` on Chat Completions and `reasoning.effort` on Responses.
 
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
-| An explicit control supplies a reasoning-effort tier with `generation_policy = model_default` or `disabled` | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public effort field; `nil` for the Console | no attempt and no Request write | non-retryable |
-| The exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or a selected effort tier | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public field carrying the offending value; `nil` for the Console | no attempt and no Request write | non-retryable |
+| A present reasoning-control value is malformed: `reasoning` is `null`, is not an object, or is an object with no recognized member; `reasoning.enabled` is not a JSON boolean; or the endpoint's effort field is `null`, is not a string, or does not match the bounded public identifier syntax in §3.4 | `400 invalid_request_error`, `invalid_value` | `reasoning`, `reasoning.enabled`, or the endpoint's effort field for the respective malformed value | no attempt and no Request write | non-retryable |
+| An explicit control supplies a reasoning-effort tier with `generation_policy = model_default` or `disabled`, including a well-formed public effort supplied with `reasoning.enabled = false` | `400 invalid_request_error`, `unsupported_reasoning_control` | the endpoint's effort field; `nil` for the Console | no attempt and no Request write | non-retryable |
+| The exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or a selected effort tier | `400 invalid_request_error`, `unsupported_reasoning_control` | `reasoning.enabled` when the final-only selector is the offending value; the endpoint's effort field when the selected tier is the offending value; `nil` for the Console | no attempt and no Request write | non-retryable |
 | No loaded placement proves the exact negotiated tuple under §7.5.3a's exhaustion rule, returned render metadata cannot prove that the applied reasoning effort is exactly the selected tier, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
 
-The first row is a caller-input contradiction that is never valid on any model; the second row is an exact-tuple capability failure that another qualified model, artifact, or template MAY be able to honor.
-Both remain `400 invalid_request_error` with `unsupported_reasoning_control` and remain non-retryable; the distinction is remediation guidance, not a different status, code, or retry decision.
-A render-metadata mismatch on an accepted and qualified caller input is a renderer or metadata defect rather than a caller error, so it uses the third row's existing `503 server_error` and `runtime_incompatible` mapping and introduces no additional code.
+A `reasoning` member other than `effort` or `enabled` on Responses, or other than `enabled` on Chat Completions, is not part of either control.
+It keeps each endpoint's existing unsupported-field rejection: `400 invalid_request_error` with `unsupported_parameter` and `param` set to that member's `reasoning.<member>` path.
+It MUST NOT be ignored, become provider pass-through, or expand the canonical vocabulary.
+Until the §7.2.1 final-only selector is activated, Responses `reasoning.enabled` and the Chat Completions top-level `reasoning` object remain unsupported fields under that same existing rejection.
+
+Public input validation SHALL select the first applicable failure in this order:
+
+1. a present `reasoning` value that is `null` or is not an object: `invalid_value` with `reasoning`;
+2. an unrecognized `reasoning` member: `unsupported_parameter` with that member's path;
+3. a `reasoning` object with no recognized member: `invalid_value` with `reasoning`;
+4. a present `reasoning.enabled` that is not a JSON boolean: `invalid_value` with `reasoning.enabled`;
+5. a present malformed effort: `invalid_value` with the endpoint's effort field;
+6. a well-formed effort with `reasoning.enabled = false`: `unsupported_reasoning_control` with the endpoint's effort field;
+7. after model resolution and authorization, exact capability: the final-only selector with `reasoning.enabled`, then the selected tier with the endpoint's effort field, both as `unsupported_reasoning_control`.
+
+The selected failure and its `param` SHALL remain authoritative when later failures coexist.
+Steps 1, 2, 3, 5, and 7 keep the order the effort-only control uses today, so every request without a Chat Completions top-level `reasoning` or a Responses `reasoning.enabled` keeps its current outcome.
+The first row rejects malformed values without treating them as a capability decision.
+The second row is a caller-input contradiction that is never valid on any model; the third row is an exact-tuple capability failure that another qualified model, artifact, or template MAY be able to honor.
+The second and third rows remain `400 invalid_request_error` with `unsupported_reasoning_control` and remain non-retryable; the distinction is remediation guidance, not a different status, code, or retry decision.
+Under the final-only selector, a well-formed effort outside the closed negotiated vocabulary `low`, `medium`, and `high` is a third-row capability failure rather than a malformed value, because the same identifier MAY be registered rendered effort for that model.
+A render-metadata mismatch on an accepted and qualified caller input is a renderer or metadata defect rather than a caller error, so it uses the `runtime_incompatible` row's existing `503 server_error` mapping and introduces no additional code.
 That row therefore covers every pre-invocation failure to prove the exact negotiated tuple, whether the unproven evidence is endpoint advertisement, render metadata, or loaded-worker acceptance.
 
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
 Neither parser fragments nor model output may enter the public message, durable error detail outside `full`, or metric labels.
-The later public input-field contract MAY choose the concrete field name but MUST preserve these statuses, codes, and retry semantics.
-That contract SHALL set `param` to the concrete offending accepted public field: the accepted reasoning-control field when that control is the offending value, and the accepted effort field when the selected tier is the offending value.
-The Console SHALL keep `param = nil` for every row because it supplies no public request field.
+The Public Inference API SHALL use the concrete `param` paths above: `reasoning`, `reasoning.enabled`, Chat Completions `reasoning_effort`, and Responses `reasoning.effort`.
+The Console SHALL keep `param = nil` for every reasoning-control row because it supplies no public request field.
 
 #### 7.2.8 Console Playground reasoning contract
 
@@ -2861,7 +2920,7 @@ The profile has three ordered evidence boundaries:
 2. **Exact-tuple workload qualification** SHALL rerun the applicable corpus and semantic workloads on one immutable qualification identity: model checkpoint and revision, quantization and Artifact Bundle digest, tokenizer and chat-template digests, renderer and parser identities and versions, Worker Runtime provider and dependency versions, Runtime Endpoint contract and transport, Orchard revision, endpoint and stream mode, agent-client name/version/configuration, operating system and hardware, topology, and material generation, context, concurrency, residency, cache, cancellation, retry, and deadline settings. A changed field requires a new qualification identity and review under §6.4 governance.
 3. **Production activation** SHALL require an approved exact-tuple qualification record, an active scoped support claim, every applicable platform/distribution/runtime-provider/acceptance gate, and an explicit operator product decision. Conformance or qualification alone SHALL NOT publish, default, preload, advertise, or activate a model or client profile.
 
-Every executable corpus assertion SHALL record pass or fail against a predeclared expected event trace, terminal outcome, side-effect trace, and usage result. A negative case passes when the contractually expected rejection, failure, cancellation, or quarantine occurs; it SHALL NOT turn the rejected capability into a positive support result. A positive case whose public input contract does not yet exist SHALL remain `dependency_blocked`, SHALL NOT be simulated through an internal canonical field, and SHALL NOT count as a conformance pass.
+Every executable corpus assertion SHALL record pass or fail against a predeclared expected event trace, terminal outcome, side-effect trace, and usage result. A negative case passes when the contractually expected rejection, failure, cancellation, or quarantine occurs; it SHALL NOT turn the rejected capability into a positive support result. A positive case whose required public input contract does not exist or is not activated SHALL remain `dependency_blocked`, SHALL NOT be simulated through an internal canonical field, and SHALL NOT count as a conformance pass.
 
 The corpus SHALL declare the endpoint, streaming mode, and applicable output contract for every case. Its minimum applicability matrix is:
 
@@ -2870,7 +2929,7 @@ The corpus SHALL declare the endpoint, streaming mode, and applicable output con
 | typed text and tool-call continuation | Responses sync and stream; Chat sync and stream only when included in the claimed envelope | positive typed lifecycle under each endpoint's existing contract |
 | omitted reasoning control | every tested endpoint/mode | positive preservation of `model_default + legacy_blended`; delimiter-like legacy text is not reclassified |
 | explicit rendered reasoning effort | each claimed Chat or Responses mode with the accepted input contract and exact registered artifact/template | positive native argument application, exact render/count and preserved legacy blended projection; no final-only or quality claim |
-| explicit `final_only` reasoning | each endpoint/mode only after its concrete public input contract is accepted | positive negotiated separation; `dependency_blocked` before that contract |
+| explicit `final_only` reasoning | each endpoint/mode only after the §7.2.1 final-only selector is accepted and activated | positive negotiated separation; `dependency_blocked` before activation |
 | public structured reasoning | current Chat and Responses modes | negative rejection until the separately required public contract is accepted |
 | structured JSON object | Chat Completions sync and stream | positive `json_object` behavior under §7.2.4 |
 | structured output on Responses | current Responses modes | negative unsupported-field rejection; no Responses selector is implied |
