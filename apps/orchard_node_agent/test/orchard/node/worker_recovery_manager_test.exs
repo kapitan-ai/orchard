@@ -246,6 +246,24 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     %{request: request, key: {request.model_id, request.version}}
   end
 
+  # SPEC.md §12.2.3: the placement projection is bounded, so clean keys that
+  # were evicted or unloaded must not keep their slot in it.
+  test "SPEC §12.2 evicted and unloaded clean keys leave the recovery projection", ctx do
+    for model_id <- ["recovery/a", "recovery/b", "recovery/c"] do
+      request = %{ctx.request | model_id: model_id}
+      assert ModelManager.ensure_model_loaded(request).placement_state == :PLACEMENT_STATE_LOADED
+    end
+
+    eventually(fn ->
+      Map.keys(:sys.get_state(ModelManager).recovery) == [{"recovery/c", "v1"}]
+    end)
+
+    assert %{ok: true} =
+             ModelManager.unload_model(%UnloadModelRequest{model_id: "recovery/c", version: "v1"})
+
+    eventually(fn -> :sys.get_state(ModelManager).recovery == %{} end)
+  end
+
   test "SPEC §12.2.2 the loaded checkpoint records runtime custody for the admitted worker",
        ctx do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
@@ -820,21 +838,27 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
                version: ctx.request.version
              })
 
-    :sys.replace_state(ModelManager, fn state ->
-      update_in(state.recovery[ctx.key], fn entry ->
-        assert entry.owner_epoch == entry.epoch and is_nil(entry.desired)
+    assert {:ok, checkpoint} = Checkpoints.read(checkpoint_key(ctx))
 
-        %{
-          entry
-          | command: %{
-              "id" => "operator-clear",
-              "fingerprint" => "fingerprint",
-              "action" => "clear",
-              "phase" => "claimed",
-              "outcome" => nil
-            }
-        }
-      end)
+    # The unload pruned the clean entry; restore it from its durable checkpoint
+    # as hydration would, with an acknowledged operator command in flight.
+    :sys.replace_state(ModelManager, fn state ->
+      entry =
+        state.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(checkpoint)
+
+      assert entry.owner_epoch == entry.epoch and is_nil(entry.desired)
+
+      command = %{
+        "id" => "operator-clear",
+        "fingerprint" => "fingerprint",
+        "action" => "clear",
+        "phase" => "claimed",
+        "outcome" => nil
+      }
+
+      put_in(state.recovery[ctx.key], %{entry | command: command})
     end)
 
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
@@ -924,11 +948,10 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     {:ok, worker} = worker_pid(ctx)
     assert :ok = ModelManager.reset()
     refute Process.alive?(worker)
-    entry = :sys.get_state(ModelManager).recovery[ctx.key]
-    assert entry.ownership["phase"] == "resolved"
-    assert entry.pending == nil
-    assert entry.desired == nil
-    assert entry.policy.history == []
+    refute Map.has_key?(:sys.get_state(ModelManager).recovery, ctx.key)
+    assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+    assert record["ownership"]["phase"] == "resolved"
+    assert record["crashes"] == []
 
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED
@@ -1434,8 +1457,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     other = %{ctx.request | model_id: "replacement/model"}
     assert ModelManager.ensure_model_loaded(other).placement_state == :PLACEMENT_STATE_LOADED
     assert :error = worker_pid(ctx)
-    assert :sys.get_state(ModelManager).recovery[ctx.key].ownership["phase"] == "resolved"
-    assert :sys.get_state(ModelManager).recovery[ctx.key].policy.history == []
+    assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+    assert record["ownership"]["phase"] == "resolved"
+    assert record["crashes"] == []
   end
 
   defp worker_pid(ctx), do: GenServer.call(ModelManager, {:loaded_worker_pid, ctx.key})

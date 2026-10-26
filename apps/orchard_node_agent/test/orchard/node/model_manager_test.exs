@@ -367,6 +367,30 @@ defmodule Orchard.Node.ModelManagerTest do
       assert next.recovery[key].desired == nil
     end
 
+    # SPEC §12.2.3: a clean entry whose cleanup probe was still pending when
+    # another stop resolved it is pruned when that probe fires.
+    test "SPEC §12.2 a late cleanup probe prunes an entry another stop resolved" do
+      key = {"model/late-probe", "v1"}
+      base = :sys.get_state(ModelManager)
+      token = make_ref()
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> Map.put(:cleanup_timer, token)
+
+      state = %{base | recovery: Map.put(base.recovery, key, entry)}
+
+      assert {:noreply, next} =
+               ModelManager.handle_info(
+                 {:recovery_cleanup, state.recovery_epoch, key, token},
+                 state
+               )
+
+      refute Map.has_key?(next.recovery, key)
+    end
+
     test "a finished eviction whose runtime is still under custody refuses instead of evicting again" do
       previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 

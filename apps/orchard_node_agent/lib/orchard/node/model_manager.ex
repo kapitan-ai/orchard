@@ -1085,8 +1085,15 @@ defmodule Orchard.Node.ModelManager do
 
     if is_nil(entry.pending) do
       state = put_recovery(state, key, entry)
-      state = Enum.reduce(effects, state, &apply_recovery_effect(&2, key, &1))
-      {:noreply, pump_recovery(state, key)}
+
+      state =
+        Enum.reduce(effects, state, &apply_recovery_effect(&2, key, &1)) |> pump_recovery(key)
+
+      # A completed unload or eviction leaves nothing to report for a clean key;
+      # retaining it would fill the bounded placement projection (SPEC §12.2.3).
+      if :reply_stopped in effects,
+        do: {:noreply, discard_cold_recovery_entry(state, key)},
+        else: {:noreply, state}
     else
       handle_recovery_checkpoint_result(
         {:error, :unavailable},
@@ -1575,9 +1582,21 @@ defmodule Orchard.Node.ModelManager do
   defp discard_cold_recovery_entry(state, key) when is_map_key(state.inflight_loads, key),
     do: state
 
+  defp discard_cold_recovery_entry(state, key) when is_map_key(state.workers, key), do: state
+
   defp discard_cold_recovery_entry(state, key) do
     case state.recovery[key] do
-      %{hydrated?: true, prior?: false, desired: nil, pending: nil, command: nil} = entry ->
+      %{
+        hydrated?: true,
+        prior?: false,
+        desired: nil,
+        pending: nil,
+        command: nil,
+        effects: [],
+        stop_waiters: [],
+        operator_waiters: [],
+        cleanup_timer: nil
+      } = entry ->
         if entry.policy.state == :armed and entry.policy.history == [] and
              entry.policy.delay_index == 0 and is_nil(entry.policy.incarnation) and
              entry.ownership["phase"] == "resolved" do
@@ -1866,8 +1885,10 @@ defmodule Orchard.Node.ModelManager do
           {:noreply, apply_recovery_effect(state, key, :await_cleanup)}
         end
 
-      _stale ->
-        {:noreply, state}
+      # Another stop resolved cleanup while this probe was pending, so the
+      # prune it skipped for the pending timer happens now.
+      _resolved_or_gone ->
+        {:noreply, discard_cold_recovery_entry(state, key)}
     end
   end
 
