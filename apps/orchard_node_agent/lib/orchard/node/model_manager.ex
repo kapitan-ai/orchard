@@ -517,14 +517,22 @@ defmodule Orchard.Node.ModelManager do
   defp handle_recovery_claim(state, key, inflight, request, task_pid, from) do
     case Map.fetch(state.recovery, key) do
       {:ok, entry} -> claim_admission(state, key, entry, inflight, request, task_pid, from)
-      :error -> {:reply, {:error, :worker_unavailable}, state}
+      :error -> {:reply, claim_refusal(nil), state}
     end
   end
+
+  # A refused claim starts no worker, so it answers as a SPEC §12.2 recovery
+  # refusal. worker_unavailable would become a model-load failure that the
+  # Controller attributes to its separate §5.10 placement breaker.
+  defp claim_refusal(entry),
+    do:
+      {:error,
+       {:worker_recovery_refused, Recovery.refusal(entry) || :placement_recovery_required}}
 
   defp claim_admission(state, key, entry, inflight, request, task_pid, from) do
     cond do
       state.stopping? or state.resetting? ->
-        {:reply, {:error, :worker_unavailable}, state}
+        {:reply, claim_refusal(nil), state}
 
       recovery_claim_retry?(entry, inflight) ->
         Process.send_after(
@@ -536,7 +544,7 @@ defmodule Orchard.Node.ModelManager do
         {:noreply, state}
 
       not recovery_claim_allowed?(entry, inflight) ->
-        {:reply, {:error, :worker_unavailable}, state}
+        {:reply, claim_refusal(entry), state}
 
       true ->
         admit_recovery_claim(state, key, entry, inflight, request, task_pid, from)

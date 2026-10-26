@@ -834,6 +834,12 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     refute response.placement_state == :PLACEMENT_STATE_LOADED
     assert div(elapsed_us, 1000) < 3_000
+
+    # No worker started, so this is a recovery refusal rather than a model-load
+    # failure the Controller would attribute to its §5.10 placement breaker.
+    assert response.recovery_refusal == "placement_recovery_required"
+    assert response.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_UNSPECIFIED
+    assert :error = worker_pid(ctx)
   end
 
   test "SPEC §12.2 the application stop hook checkpoints the intentional stop", ctx do
@@ -1475,7 +1481,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       resetting?: false
     }
 
-    assert {:reply, {:error, :worker_unavailable}, ^state} =
+    assert {:reply, {:error, {:worker_recovery_refused, :placement_recovery_required}}, ^state} =
              ModelManager.handle_call({:recovery_claim_worker, key}, {self(), make_ref()}, state)
   end
 end
