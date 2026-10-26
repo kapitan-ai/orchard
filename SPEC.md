@@ -2002,6 +2002,7 @@ Breaker eligibility over the closed §3.7.1 `failure_class` vocabulary is:
 * an unsuccessful attempt SHALL contribute to at most one breaker
 
 The failure SHALL be attributed to the Node or `(node, model)` placement that produced it.
+An attempt whose producing Node has no Node inventory row runs on the unmanaged compatibility path, which the scheduler does not suppress, and SHALL NOT contribute to either breaker; it is recorded as not eligible rather than failing the Request.
 Attempt 1 breaker effects SHALL be durable before attempt 2's fresh scheduler decision, and that decision SHALL respect any resulting suppression.
 The retry decision and a declined retry SHALL NOT add a breaker event.
 This attempt accounting SHALL NOT change breaker thresholds, windows, suppression durations, or the Operator clear path.
@@ -2282,9 +2283,11 @@ The worker-side `memory_budget_mode` (`ORCHARD_WORKER_MEMORY_BUDGET_MODE`) is
   other failures. Enforcement applies cooldown hysteresis between abort sweeps,
   and every enforcement gate is fail-open: an unavailable, missing, or failed
   memory sample SHALL NOT fail a generation on its own. Pressure is sampled at
-  admission before backend prefill starts and per backend decode event. Prefill
-  is not interruptible, so a request already in prefill is not aborted
-  mid-prefill.
+  admission before backend prefill starts and per backend decode event. An
+  enforcement abort cancels every active generation. In stream mode no sample
+  is taken while the single active generation prefills, so enforcement does
+  not interrupt a stream-mode prefill; in the shared batch runtime, a
+  generation still in prefill stops according to that runtime's cancellation.
 
 ### 6.5 Model import
 
@@ -3692,6 +3695,8 @@ message RuntimePrefixCacheStatus {
   string status_message = 14;
   uint64 session_started_unix_ms = 15;
   repeated string prefix_cache_fingerprints = 16;
+  uint32 checkpoint_uncertain_count = 17;
+  uint64 checkpoint_retained_bytes = 18;
 }
 
 message RuntimeModelPlacement {
@@ -4050,9 +4055,10 @@ Runtime prefix-cache observation semantics:
 * omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure
 * `RuntimePrefixCacheStatus.status_code` values in this slice are: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * `RuntimePrefixCacheStatus.enabled` SHALL represent worker configuration capability, not active cache availability; `enabled=false` is reserved for explicitly disabled cache configuration
+* `RuntimePrefixCacheStatus.checkpoint_uncertain_count` and `checkpoint_retained_bytes` apply only when `implementation = "strict_prefix"`: the count of failed checkpoint copies that stay charged until unload, and the measured bytes of retained checkpoints, which are distinct from the fixed slot charges in `total_bytes` and are not process memory. Other implementations report zero, and the node agent and controller SHALL ignore the fields for them, including malformed values. The controller SHALL keep the fields only from an `ok` status
 * public prefix-cache telemetry SHALL NOT expose prompt text, prompt tokens, tenant identifiers, raw prompt fingerprints, raw token sequences, or raw prefix-cache fingerprint sets
 * `ExecuteInferenceRequest.cache_affinity_fingerprint` is an optional controller-derived opaque HMAC fingerprint. The controller SHALL populate it only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`; otherwise it SHALL be omitted or empty.
-* worker `WorkerPrefixCacheStatus.prefix_cache_fingerprints` and node-agent `RuntimePrefixCacheStatus.prefix_cache_fingerprints` SHALL carry only controller-derived `hmac-sha256:<64 lowercase hex>` values. Workers SHALL retain a bounded recent FIFO buffer of these values with default capacity 8 and implementation cap 64. The set is an approximation of recent request locality, not proof of current prefix-cache residency.
+* worker `WorkerPrefixCacheStatus.prefix_cache_fingerprints` and node-agent `RuntimePrefixCacheStatus.prefix_cache_fingerprints` SHALL carry only controller-derived `hmac-sha256:<64 lowercase hex>` values. Workers SHALL retain a bounded recent FIFO buffer of these values with default capacity 8 and implementation cap 64. The set is an approximation of recent request locality, not proof of current prefix-cache residency. A Worker whose prefix-cache implementation is `strict_prefix` SHALL record and publish no fingerprints, SHALL NOT advertise the prefix-cache capability, and SHALL answer `ScorePrefixCache` with `disabled`, because the bounded-prefix fingerprint cannot identify an exact-prefix checkpoint
 * the controller SHALL validate, deduplicate, and cap `RuntimePrefixCacheStatus.prefix_cache_fingerprints` to at most 64 entries before scheduler use. Invalid entries SHALL be dropped fail-open.
 * raw prefix-cache fingerprint sets SHALL be scheduler-internal only. Persistence and tenant/operator telemetry surfaces SHALL expose only derived non-linkable fields such as fingerprint count, warmth indicator, and selected-candidate match boolean; they SHALL NOT persist or render the raw set.
 * `ScorePrefixCacheRequest` in v1 SHALL carry only `cache_affinity_fingerprint` (`hmac-sha256:<64 lowercase hex>`). Prompt bytes and token IDs SHALL NOT be sent on this path.
@@ -6131,6 +6137,8 @@ On timeout:
 * if node fails to cancel within grace period, force kill worker
 * if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
 * usage charges the selected terminal attempt's exact generated output tokens when proven, including hidden reasoning, and otherwise uses the latest validated cumulative usage with `output_usage_status = lower_bound`
+
+For any cancel, including a timeout cancel or a caller disconnect, when the MLX-LM Worker runs in stream mode: a cancel that arrives during prefill SHALL stop the prefill at the next intermediate prefill chunk boundary and end the execution with the Worker's `cancelled` terminal, so the cancel takes effect within about one chunk instead of after the whole prompt. The Request and attempt outcome still follow their existing rules, for example `timed_out` for a deadline. A cancel that arrives during the last prefill chunk or after prefill is checked on the decode cancel stride, so a reply that ends before the next stride check can still complete. The shared batch runtime keeps its own cancellation behavior.
 
 Default timeout:
 

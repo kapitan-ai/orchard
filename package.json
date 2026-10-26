@@ -3,19 +3,20 @@
   "private": true,
   "version": "0.0.0",
   "description": "Repository-local tooling pins for Orchard collaborator workflows.",
-  "packageManager": "npm@11.13.0",
+  "packageManager": "npm@11.19.1",
   "engines": {
-    "node": "24.17.0",
-    "npm": "11.13.0"
+    "node": "24.22.1",
+    "npm": "11.19.1"
   },
   "scripts": {
     "openspec": "OPENSPEC_TELEMETRY=0 openspec",
     "test:assets": "node --test apps/orchard_controller/assets/test/*.test.mjs",
     "check:mise-action-pins": "node scripts/ci/check-mise-action-pins.mjs",
-    "test:mise-action-pins": "node --experimental-test-coverage --test scripts/ci/test-mise-action-pins.mjs"
+    "test:mise-action-pins": "node --experimental-test-coverage --test scripts/ci/test-mise-action-pins.mjs",
+    "test:osv-scan": "node --experimental-test-coverage --test scripts/ci/test-osv-scan.mjs"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "1.13.1",
+    "@fission-ai/openspec": "1.13.2",
     "@tailwindcss/cli": "4.3.3",
     "esbuild": "0.28.2",
     "tailwindcss": "4.3.3",

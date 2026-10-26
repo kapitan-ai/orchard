@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "source_parent": "31ed46b5c0a896c41d8e37fdf41c59e703ee5d63",
+    "opencode": {
+      "path": "${ORCHARD_KAP112_SNAPSHOT_ROOT}/opencode/bin/opencode",
+      "version": "1.18.31",
+      "size_bytes": 185030784,
+      "sha256": "f9dab32248695e9ebd56b16a1921798fd85112cf5a69c7dfd0cabc1e17be4a11"
+    },
+    "opencode_dependencies": {
+      "path": "${ORCHARD_KAP112_SNAPSHOT_ROOT}/opencode",
+      "plugin_version": "1.18.30",
+      "size_bytes": 54894473,
+      "file_count": 3650,
+      "sha256": "c657fd182fbca23b25e461483b17519d45ebface6f616a5ff9e0fb006f7296d7"
+    },
+    "model": "Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "served_model": "orchard-qwen3.8-27b-poc",
+    "provider_parser": "qwen3.8-poc-raw-v1",
+    "model_snapshot": {
+      "manifest_path": "scripts/fixtures/kap112/qwen-snapshot-manifest.json",
+      "manifest_sha256": "ce50d95bbcc7750c5dd23e5bb1efdb0072e269caaa4c75f6d1ca4a184adf517d",
+      "file_count": 32,
+      "total_bytes": 55586114863,
+      "interpreter_path": "/usr/bin/python3.12",
+      "interpreter_version": "3.12.13",
+      "interpreter_sha256": "185be5c01624944b5c422a8d1e4995a7df010036a99c9f9d84a80a09ae1bd72d",
+      "huggingface_hub_version": "1.27.0"
+    },
+    "input_tokens": 131072,
+    "output_tokens": 8192,
+    "total_tokens": 139264,
+    "reasoning": {
+      "generation_policy": "enabled",
+      "projection": "final_only",
+      "reasoning_effort": "medium",
+      "render_contract": "kap112-qwen3.8-medium",
+      "render_contract_version": "1",
+      "parser_family": "prompt_opened",
+      "parser_version": "v1"
+    },
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0
+    }
+  },
+  "direct_api": {
+    "request": {
+      "model": "Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "input": "Reply with exactly: ORCHARD_KAP112_DIRECT_OK",
+      "max_output_tokens": 128,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "reasoning": {"effort": "medium"},
+      "store": true
+    },
+    "expected_text": "ORCHARD_KAP112_DIRECT_OK"
+  },
+  "short_opencode": {
+    "files": {
+      "README.md": "# KAP-112 frozen repair fixture\n\nREADME.md and test_calculator.py are protected. Only calculator.py may change.\n",
+      "calculator.py": "def add(left: int, right: int) -> int:\n    return left - right\n",
+      "test_calculator.py": "from calculator import add\n\n\ndef test_add_uses_both_asymmetric_operands() -> None:\n    assert add(7, 4) == 11\n"
+    },
+    "initial_sha256": {
+      "README.md": "417fc2ef322fdebd32588407d959bc67e77dc51fe5936c266a7e88e3dfa2b3d0",
+      "calculator.py": "8f85450200db13108dc37d54ada5376d715d7c7aff3bceb5ffa1f6a75b0c8a03",
+      "test_calculator.py": "167b8a7dd481fa28fd69a54e634cfeb0a03bead16dd9864cb1b8d8d583bbf1f8"
+    },
+    "expected_final_sha256": {
+      "calculator.py": "0049214146c09e015865e54237ecc4d15c9e043886cb20d1d9c68659bf744bc9"
+    },
+    "editable": ["calculator.py"],
+    "protected": ["README.md", "test_calculator.py"],
+    "baseline_command": ["python", "-m", "pytest", "-q"],
+    "prompt": "Use your installed OpenCode tools as you judge appropriate to inspect this disposable fixture, repair the failing calculator behavior by changing only calculator.py, run the relevant tests, and summarize the completed repair. README.md and test_calculator.py must remain unchanged.",
+    "expected_patch_sha256": "cc6721b6229776bd0f0cf540adb87eb35a2f883611fb23a4b98bce436823dda9",
+    "max_model_turns": 20,
+    "max_tool_calls": 20,
+    "tool_timeout_seconds": 60,
+    "wall_timeout_seconds": 1800
+  },
+  "long_context": {
+    "generator": "kap112-long-context-stdin-v2",
+    "padding_atom": " x",
+    "anchors": {
+      "start": "KAP112_START=alder",
+      "quarter": "KAP112_QUARTER=birch",
+      "three_quarter": "KAP112_THREE_QUARTER=cedar",
+      "end": "KAP112_END=dogwood",
+      "earlier_instruction": "EARLIER_INSTRUCTION=answer-old",
+      "later_instruction": "LATER_INSTRUCTION=ignore-answer-old-and-answer-new",
+      "dependency_a": "DEPENDENCY_A=left-calls-middle",
+      "dependency_b": "DEPENDENCY_B=middle-calls-right",
+      "dependency_c": "DEPENDENCY_C=right-returns-43",
+      "tool_nonce": "KAP112_TOOL_NONCE=9f4a312671b7489c"
+    },
+    "expected_answer": {
+      "anchors": ["alder", "birch", "cedar", "dogwood"],
+      "instruction": "answer-new",
+      "dependency_result": 43,
+      "tool_nonce": "9f4a312671b7489c"
+    },
+    "prompt": "Read the preceding frozen context and return only one compact JSON object with keys anchors, instruction, dependency_result, and tool_nonce in that order. Set anchors to a JSON array containing only the four right-hand anchor values in start, quarter, three-quarter, end order. Set instruction to only the final action target after the and- segment in the later directive, not the full directive text. Resolve the distant dependency chain. Set tool_nonce to only the right-hand nonce value.",
+    "max_model_turns": 8,
+    "max_tool_calls": 8,
+    "tool_timeout_seconds": 60,
+    "wall_timeout_seconds": 3600,
+    "compaction": false
+  },
+  "overflow": {
+    "generator": "kap112-long-context-stdin-v2-plus-one-provider-token",
+    "input_tokens": 131073,
+    "expected_http_status": 400,
+    "expected_error_type": "invalid_request_error",
+    "expected_error_code": "context_length_exceeded",
+    "max_output_tokens": 8192,
+    "wall_timeout_seconds": 600,
+    "maximum_api_requests": 1,
+    "maximum_durable_request_delta": 0
+  }
+}
