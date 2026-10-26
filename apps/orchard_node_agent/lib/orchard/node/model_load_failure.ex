@@ -431,6 +431,13 @@ defmodule Orchard.Node.ModelLoadFailure do
   Convenience wrapper that calls `from_reason/1` and builds the proto response.
   """
   @spec to_response(term()) :: EnsureModelLoadedResponse.t()
+  def to_response({:worker_recovery_refused, reason}) when is_atom(reason) do
+    %EnsureModelLoadedResponse{
+      placement_state: :PLACEMENT_STATE_FAILED,
+      recovery_refusal: Atom.to_string(reason)
+    }
+  end
+
   def to_response(reason) do
     %__MODULE__{category: category, code: code, message: message} = from_reason(reason)
 

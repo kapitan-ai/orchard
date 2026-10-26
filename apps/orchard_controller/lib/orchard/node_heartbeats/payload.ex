@@ -4,14 +4,24 @@ defmodule Orchard.NodeHeartbeats.Payload do
   """
 
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
-  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    Observation,
+    ObservationBounds,
+    Placement,
+    PlacementCapacity,
+    Target,
+    WorkerRecoveryEvidence
+  }
 
   @schema_version 1
   @default_max_bytes 262_144
   @minimum_max_bytes 128
-  @entry_limit 40
   @string_limit_bytes 512
   @model_ref_limit 160
+  # Matches the exact-key field bound of SPEC §12.2 recovery evidence.
+  @recovery_key_field_limit 256
   @status_limit 80
   @uint32_max 4_294_967_295
   @uint64_max 18_446_744_073_709_551_615
@@ -26,6 +36,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
           | :malformed_required_envelope
           | :payload_too_large
           | :placement_entry_overflow
+          | :invalid_worker_recovery_placement
           | :unsupported_schema_version
   @type t :: map()
 
@@ -77,6 +88,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
              :malformed_required_envelope,
              :payload_too_large,
              :placement_entry_overflow,
+             :invalid_worker_recovery_placement,
              :unsupported_schema_version
            ] do
     %{
@@ -101,6 +113,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
         "aggregate_max_concurrency" => aggregate_max_concurrency(observation),
         "aggregate_capacity_evidence" => aggregate_capacity_evidence(observation),
         "placements" => placements,
+        "worker_recovery_epoch" =>
+          bounded_recovery_epoch(value(observation, :worker_recovery_epoch)),
         "runtime_memory_budgets" =>
           normalize_entries(
             value(observation, :runtime_memory_budgets),
@@ -117,7 +131,11 @@ defmodule Orchard.NodeHeartbeats.Payload do
       }
     else
       {:error, reason}
-      when reason in [:duplicate_placement_model_ref, :placement_entry_overflow] ->
+      when reason in [
+             :duplicate_placement_model_ref,
+             :placement_entry_overflow,
+             :invalid_worker_recovery_placement
+           ] ->
         invalid(reason)
 
       _error ->
@@ -288,9 +306,15 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp capacity_validity(_active, nil), do: "missing"
   defp capacity_validity(_active, _limit), do: "valid"
 
+  defp bounded_recovery_epoch(epoch) when is_binary(epoch) and byte_size(epoch) in 1..128,
+    do: epoch
+
+  defp bounded_recovery_epoch(_epoch), do: nil
+
   defp normalize_placements(placements) when is_list(placements) do
     with :ok <- ensure_unique_placement_model_refs(placements),
-         :ok <- ensure_placement_limit(placements) do
+         :ok <- ensure_placement_limit(placements),
+         :ok <- ensure_recovery_model_refs(placements) do
       {:ok, Enum.flat_map(placements, &normalize_placement/1)}
     end
   end
@@ -318,7 +342,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
     do: placement |> Map.from_struct() |> placement_model_ref_key()
 
   defp placement_model_ref_key(placement) when is_map(placement) do
-    case normalize_model_ref(value(placement, :model_ref)) do
+    case placement_model_ref(placement) do
       {:ok, %{"model_id" => model_id, "version" => version}} -> {:ok, {model_id, version}}
       :error -> :error
     end
@@ -326,8 +350,54 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp placement_model_ref_key(_placement), do: :error
 
+  # SPEC §12.2.3: a recovery record is evidence for one exact key, so it keeps
+  # its exact model reference within the recovery key bound instead of the
+  # truncated observation bound. Truncating it would leave the exact key looking
+  # cold, and invalidating it would drop every key on the Node.
+  defp placement_model_ref(placement) do
+    if is_nil(value(placement, :worker_recovery)),
+      do: normalize_model_ref(value(placement, :model_ref)),
+      else: exact_recovery_model_ref(value(placement, :model_ref))
+  end
+
+  defp exact_recovery_model_ref(%ModelRef{} = model_ref),
+    do: model_ref |> Map.from_struct() |> exact_recovery_model_ref()
+
+  defp exact_recovery_model_ref(model_ref) when is_map(model_ref) do
+    model_id = value(model_ref, :model_id)
+    version = value(model_ref, :version)
+
+    if recovery_key_field?(model_id) and recovery_key_field?(version),
+      do: {:ok, %{"model_id" => model_id, "version" => version}},
+      else: :error
+  end
+
+  defp exact_recovery_model_ref(_model_ref), do: :error
+
+  defp recovery_key_field?(value),
+    do: present_string?(value) and byte_size(value) <= @recovery_key_field_limit
+
+  # A recovery record whose model reference cannot be read at all is still
+  # incomplete evidence; dropping it would leave its key looking cold, so the
+  # observation is invalid instead.
+  defp ensure_recovery_model_refs(placements) do
+    if Enum.any?(placements, &unreadable_recovery_placement?/1),
+      do: {:error, :invalid_worker_recovery_placement},
+      else: :ok
+  end
+
+  defp unreadable_recovery_placement?(%Placement{} = placement),
+    do: placement |> Map.from_struct() |> unreadable_recovery_placement?()
+
+  defp unreadable_recovery_placement?(placement) when is_map(placement) do
+    not is_nil(value(placement, :worker_recovery)) and
+      placement_model_ref_key(placement) == :error
+  end
+
+  defp unreadable_recovery_placement?(_placement), do: false
+
   defp ensure_placement_limit(placements) do
-    if length(placements) <= @entry_limit do
+    if length(placements) <= ObservationBounds.placement_limit() do
       :ok
     else
       {:error, :placement_entry_overflow}
@@ -338,14 +408,16 @@ defmodule Orchard.NodeHeartbeats.Payload do
     do: placement |> Map.from_struct() |> normalize_placement()
 
   defp normalize_placement(placement) when is_map(placement) do
-    case normalize_model_ref(value(placement, :model_ref)) do
+    case placement_model_ref(placement) do
       {:ok, model_ref} ->
         [
           %{
             "model_ref" => model_ref,
             "state" => normalize_placement_state(value(placement, :state)),
             "capacity" => normalize_placement_capacity(value(placement, :capacity)),
-            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at))
+            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at)),
+            "worker_recovery" =>
+              WorkerRecoveryEvidence.normalize(value(placement, :worker_recovery))
           }
         ]
 
@@ -459,7 +531,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp normalize_entries(entries, normalizer) when is_list(entries) do
     entries
-    |> Enum.take(@entry_limit)
+    |> Enum.take(ObservationBounds.placement_limit())
     |> Enum.map(normalizer)
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&stringify_keys/1)

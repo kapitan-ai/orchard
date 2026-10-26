@@ -1,11 +1,9 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest, UnloadModelRequest}
   alias Orchard.Node.CustodyTestHelpers
-  alias Orchard.Node.ModelManager
-  alias Orchard.Node.RuntimeProcessReaper
-  alias Orchard.Node.WorkerSupervisor
+  alias Orchard.Node.{ModelManager, RuntimeProcessReaper, WorkerRecoveryState, WorkerSupervisor}
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
     reply_ref = make_ref()
@@ -27,9 +25,10 @@ defmodule Orchard.Node.ModelManagerTest do
 
     assert_receive {^reply_ref, %{failure_code: "deadline_exceeded"}}, 1_000
 
-    assert_receive {:DOWN, worker_monitor, :process, worker_pid, _reason}, 1_000
-    assert worker_monitor == fixture.worker_test_monitor
-    assert worker_pid == fixture.worker_pid
+    worker_monitor = fixture.worker_test_monitor
+    worker_pid = fixture.worker_pid
+
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker_pid, _reason}, 1_000
   end
 
   test "issue #222 explicit preload remains a valid residency owner" do
@@ -93,7 +92,7 @@ defmodule Orchard.Node.ModelManagerTest do
       started = System.monotonic_time(:millisecond)
 
       try do
-        assert :ok = ModelManager.reset()
+        assert {:error, :unavailable} = ModelManager.reset()
         assert System.monotonic_time(:millisecond) - started < 4_000
       after
         Task.await(suspender)
@@ -101,6 +100,79 @@ defmodule Orchard.Node.ModelManagerTest do
       end
 
       release.()
+    end
+
+    # SPEC.md §4.9 and §12.2: settling recovery entries during a reset spends
+    # the custody wait budget rather than starting a fresh one afterwards.
+    test "reset keeps its wait budget when recovery entries settle late and the reaper stops answering" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-late", "v1")
+      Process.exit(owner_pid, :kill)
+      key = {"model/reset-settling", "v1"}
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+
+        %{
+          state
+          | recovery: Map.put(state.recovery, key, %{entry | prior?: true, pending: :settling})
+        }
+      end)
+
+      settler =
+        Task.async(fn ->
+          Process.sleep(1_000)
+          :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+          Process.sleep(1_500)
+          :sys.suspend(RuntimeProcessReaper)
+        end)
+
+      started = System.monotonic_time(:millisecond)
+
+      try do
+        assert {:error, :unavailable} = ModelManager.reset()
+        assert System.monotonic_time(:millisecond) - started < 4_000
+      after
+        Task.await(settler)
+        :sys.resume(RuntimeProcessReaper)
+      end
+
+      release.()
+    end
+
+    # SPEC.md §4.9: when settling recovery entries spends the whole custody
+    # budget, reset still asks the reaper before it reports success.
+    test "reset fails when settling spends the custody budget and a runtime is still held" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-spent", "v1")
+      Process.exit(owner_pid, :kill)
+      key = {"model/reset-spent-settling", "v1"}
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+
+        %{
+          state
+          | recovery: Map.put(state.recovery, key, %{entry | prior?: true, pending: :settling})
+        }
+      end)
+
+      settler =
+        Task.async(fn ->
+          Process.sleep(3_200)
+          :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+        end)
+
+      try do
+        assert {:error, :unavailable} = ModelManager.reset()
+      after
+        Task.await(settler)
+        release.()
+      end
     end
 
     test "an unanswered custody query refuses the load instead of assuming nothing runs" do
@@ -181,6 +253,181 @@ defmodule Orchard.Node.ModelManagerTest do
       Process.exit(task_pid, :kill)
       release.()
     end
+
+    # SPEC.md §4.9 custody and SPEC §12.2 recovery share one slot model: a
+    # recovery record cannot resolve cleanup while the reaper still holds a
+    # runtime for the same model, even without a recorded last Worker.
+    test "SPEC §12.2 recovery cleanup stays unresolved while the reaper holds the model's runtime" do
+      key = {"model/recovery-custody", "v1"}
+      %{release: release} = hold_custody("model/recovery-custody", "v1")
+      base = :sys.get_state(ModelManager)
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> put_in([:ownership, "phase"], "cleanup")
+
+      token = make_ref()
+      state = %{base | recovery: Map.put(base.recovery, key, %{entry | cleanup_timer: token})}
+      cleanup = {:recovery_cleanup, state.recovery_epoch, key, token}
+
+      assert {:noreply, held} = ModelManager.handle_info(cleanup, state)
+      assert held.recovery[key].ownership["phase"] == "cleanup"
+
+      release.()
+
+      assert {:noreply, cleared} = ModelManager.handle_info(cleanup, state)
+      assert cleared.recovery[key].ownership["phase"] == "resolved"
+    end
+
+    # SPEC §12.2: repeated unloads while cleanup cannot prove the runtime gone
+    # share one re-probe loop instead of adding a loop per unload.
+    test "SPEC §12.2 repeated unloads during unresolved cleanup keep one re-probe loop" do
+      key = {"model/cleanup-loop", "v1"}
+      %{release: release} = hold_custody("model/cleanup-loop", "v1")
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+          |> put_in([:ownership, "incarnation"], "cleanup-loop-worker")
+
+        %{state | recovery: Map.put(state.recovery, key, entry)}
+      end)
+
+      manager = Process.whereis(ModelManager)
+      :erlang.trace(manager, true, [:receive])
+
+      unloads =
+        for _ <- 1..3 do
+          pid =
+            spawn(fn ->
+              ModelManager.unload_model(%UnloadModelRequest{
+                model_id: "model/cleanup-loop",
+                version: "v1"
+              })
+            end)
+
+          Process.sleep(150)
+          pid
+        end
+
+      Process.sleep(2_300)
+      :erlang.trace(manager, false, [:receive])
+
+      probes = count_cleanup_probes(manager)
+
+      try do
+        assert probes in 1..3
+      after
+        Enum.each(unloads, &Process.exit(&1, :kill))
+        release.()
+        :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+      end
+    end
+
+    # SPEC §12.2.2: while an acknowledged operator command is in progress, only
+    # its own recovery load may claim the worker slot.
+    test "SPEC §12.2 an ordinary load cannot claim the worker slot during an operator command" do
+      key = {"model/operator-claim", "v1"}
+      base = :sys.get_state(ModelManager)
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> Map.merge(%{
+          owner_epoch: base.recovery_epoch,
+          command: %{"id" => "operator-clear", "phase" => "claimed"}
+        })
+
+      inflight = %{
+        task_pid: self(),
+        worker_pid: nil,
+        request: ensure_request("model/operator-claim", "v1"),
+        recovery_owner: false
+      }
+
+      state = %{
+        base
+        | recovery: Map.put(base.recovery, key, entry),
+          inflight_loads: Map.put(base.inflight_loads, key, inflight)
+      }
+
+      assert {:reply, {:error, {:worker_recovery_refused, :worker_restart_in_progress}}, next} =
+               ModelManager.handle_call(
+                 {:recovery_claim_worker, key},
+                 {self(), make_ref()},
+                 state
+               )
+
+      assert next.recovery[key].policy.incarnation == nil
+      assert next.recovery[key].desired == nil
+    end
+
+    # SPEC §12.2.3: a clean entry whose cleanup probe was still pending when
+    # another stop resolved it is pruned when that probe fires.
+    test "SPEC §12.2 a late cleanup probe prunes an entry another stop resolved" do
+      key = {"model/late-probe", "v1"}
+      base = :sys.get_state(ModelManager)
+      token = make_ref()
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> Map.put(:cleanup_timer, token)
+
+      state = %{base | recovery: Map.put(base.recovery, key, entry)}
+
+      assert {:noreply, next} =
+               ModelManager.handle_info(
+                 {:recovery_cleanup, state.recovery_epoch, key, token},
+                 state
+               )
+
+      refute Map.has_key?(next.recovery, key)
+    end
+
+    test "a finished eviction whose runtime is still under custody refuses instead of evicting again" do
+      previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(previous_runtime, :max_loaded_models, 1)
+      )
+
+      %{release: release} = hold_custody("model/evicted", "v1")
+      eviction_ref = make_ref()
+      reply_ref = make_ref()
+
+      continuation = %{
+        request: ensure_request("model/incoming", "v1"),
+        from: {self(), reply_ref},
+        meta: %{max_loaded_models: 1, incoming_model_id: "model/incoming"},
+        started: System.monotonic_time(:millisecond)
+      }
+
+      state = %{
+        :sys.get_state(ModelManager)
+        | eviction_continuations: %{eviction_ref => continuation}
+      }
+
+      try do
+        assert {:noreply, next_state} =
+                 ModelManager.handle_info({eviction_ref, %Ack{ok: true}}, state)
+
+        assert_receive {^reply_ref, %{failure_code: "model_capacity_exhausted"}}, 1_000
+        assert next_state.inflight_loads == %{}
+        assert next_state.eviction_continuations == %{}
+      after
+        Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+        release.()
+      end
+    end
   end
 
   # Holds reaper custody of a live OS process for the model, as a launched
@@ -211,8 +458,24 @@ defmodule Orchard.Node.ModelManagerTest do
     %{owner_pid: owner_pid, release: release, stop_runtime: stop_runtime}
   end
 
-  defp ensure(model_id, version) do
-    ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+  defp count_cleanup_probes(manager) do
+    receive do
+      {:trace, ^manager, :receive, message}
+      when is_tuple(message) and elem(message, 0) == :recovery_cleanup ->
+        1 + count_cleanup_probes(manager)
+
+      {:trace, ^manager, :receive, _other} ->
+        count_cleanup_probes(manager)
+    after
+      0 -> 0
+    end
+  end
+
+  defp ensure(model_id, version),
+    do: ModelManager.ensure_model_loaded(ensure_request(model_id, version))
+
+  defp ensure_request(model_id, version) do
+    %EnsureModelLoadedRequest{
       node_id: "node-local",
       model_id: model_id,
       version: version,
@@ -220,7 +483,7 @@ defmodule Orchard.Node.ModelManagerTest do
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       artifact_source_uri: "file:///nonexistent"
-    })
+    }
   end
 
   defp waiter(deadline_unix_ms) do
@@ -256,6 +519,23 @@ defmodule Orchard.Node.ModelManagerTest do
       end
     end)
 
+    recovery_epoch = "model-manager-test-epoch"
+    recovery_incarnation = "model-manager-test-worker"
+
+    recovery =
+      recovery_epoch
+      |> WorkerRecoveryState.new()
+      |> WorkerRecoveryState.hydrate(:absent)
+      |> Map.put(:owner_epoch, recovery_epoch)
+      |> Map.put(:revision, 1)
+      |> Map.put(:last_worker_pid, worker_pid)
+      |> put_in([:policy, :incarnation], recovery_incarnation)
+      |> put_in([:ownership], %{
+        "phase" => "loading",
+        "incarnation" => recovery_incarnation,
+        "custody" => "test-custody"
+      })
+
     inflight = %{
       request: %{},
       request_fingerprint: {"fingerprint", nil},
@@ -269,13 +549,18 @@ defmodule Orchard.Node.ModelManagerTest do
       leader_waiter_id: waiters |> List.first() |> waiter_id(),
       started_monotonic_ms: System.monotonic_time(:millisecond),
       source_scheme: nil,
-      backend: "test"
+      backend: "test",
+      recovery_owner: false,
+      recovery_incarnation: recovery_incarnation
     }
 
     state = %{
       active_requests: %{},
       inflight_loads: %{key => inflight},
       load_refs: %{task_ref => key},
+      recovery: %{key => recovery},
+      recovery_epoch: recovery_epoch,
+      recovery_io_refs: %{},
       subscriber_refs: %{},
       worker_crash_counter_version: "",
       worker_crashes: %{},
@@ -303,10 +588,26 @@ defmodule Orchard.Node.ModelManagerTest do
   end
 
   defp complete_load(fixture) do
-    assert {:noreply, next_state} =
+    assert {:noreply, pending_state} =
              ModelManager.handle_info(
                {:model_load_finished, fixture.key, fixture.task_pid, {:ok, fixture.worker_pid}},
                fixture.state
+             )
+
+    pending = pending_state.recovery[fixture.key].pending
+
+    checkpoint = %{
+      epoch: pending.record["epoch"],
+      revision: pending.revision + 1,
+      transition_id: pending.id,
+      record: pending.record
+    }
+
+    assert {:noreply, next_state} =
+             ModelManager.handle_info(
+               {:recovery_checkpoint_result, fixture.state.recovery_epoch, fixture.key,
+                pending.id, {:ok, checkpoint}},
+               pending_state
              )
 
     next_state

@@ -13,12 +13,26 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.MultiNode
   alias Orchard.Scheduler.SingleNode
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   defmodule StatusClient do
     @moduledoc false
 
     def connect(target), do: {:ok, target}
-    def status(_target, _opts), do: {:ok, Process.get(:capacity_status)}
+
+    def status(_target, _opts),
+      do: {:ok, WorkerRecoveryFixtures.status(Process.get(:capacity_status))}
+
+    def inspect_worker_recovery(_channel, model_ref, _opts) do
+      case Process.get(:capacity_status) do
+        %{node_metadata: %{node_id: node_id}} ->
+          {:ok, WorkerRecoveryFixtures.evidence(node_id, model_ref)}
+
+        _missing ->
+          {:error, :unavailable}
+      end
+    end
+
     def disconnect(_channel), do: :ok
   end
 
@@ -62,6 +76,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   test "SPEC 4.2 admitted SingleNode scheduling uses shared capacity values" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node = insert_node!()
+    put_status(node)
     input = enforcing_input(2)
 
     assert {:ok, schedule} =

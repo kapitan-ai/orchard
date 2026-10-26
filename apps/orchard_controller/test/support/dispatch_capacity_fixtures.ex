@@ -4,6 +4,7 @@ defmodule Orchard.TestSupport.DispatchCapacityFixtures do
   alias Orchard.Cluster.V1.{RuntimeNodeMetadata, StatusResponse}
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.DispatchCapacity.Evaluator.Input
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   @probe_node_id_key {__MODULE__, :probe_node_id}
 
@@ -32,7 +33,8 @@ defmodule Orchard.TestSupport.DispatchCapacityFixtures do
             listen_host: "127.0.0.1",
             listen_port: 50_071,
             worker_backend: "mlx"
-          }
+          },
+          worker_recovery_epoch: WorkerRecoveryFixtures.epoch()
         }
     end
   end

@@ -10,7 +10,8 @@ defmodule Orchard.RuntimeEndpoint.Placement do
             state: :unknown,
             capacity: nil,
             last_used_at: nil,
-            diagnostics: %{}
+            diagnostics: %{},
+            worker_recovery: nil
 
   @type state ::
           :unknown
@@ -26,7 +27,8 @@ defmodule Orchard.RuntimeEndpoint.Placement do
           state: state(),
           capacity: PlacementCapacity.t(),
           last_used_at: term(),
-          diagnostics: map()
+          diagnostics: map(),
+          worker_recovery: map() | nil
         }
 
   @spec new(map() | keyword()) :: t()
@@ -41,7 +43,8 @@ defmodule Orchard.RuntimeEndpoint.Placement do
       state: value(attrs, :state) || :unknown,
       capacity: capacity,
       last_used_at: value(attrs, :last_used_at),
-      diagnostics: diagnostics(attrs)
+      diagnostics: diagnostics(attrs),
+      worker_recovery: value(attrs, :worker_recovery)
     }
   end
 

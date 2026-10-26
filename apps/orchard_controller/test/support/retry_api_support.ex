@@ -69,6 +69,7 @@ defmodule Orchard.TestSupport.RetryAPI.RuntimeClient do
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
   alias Orchard.TestSupport.RetryAPI
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   def connect(target), do: {:ok, target}
 
@@ -78,8 +79,19 @@ defmodule Orchard.TestSupport.RetryAPI.RuntimeClient do
         {:error, :unavailable}
 
       response ->
+        response = WorkerRecoveryFixtures.status(response)
         DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
         {:ok, response}
+    end
+  end
+
+  def inspect_worker_recovery(target, model_ref, _opts) do
+    case RetryAPI.runtime_status(target) do
+      %{node_metadata: %{node_id: node_id}} ->
+        {:ok, WorkerRecoveryFixtures.evidence(node_id, model_ref)}
+
+      _missing ->
+        {:error, :unavailable}
     end
   end
 

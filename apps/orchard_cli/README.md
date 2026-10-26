@@ -17,8 +17,6 @@ This README is orientation only. Normative CLI requirements live in
 - First cluster-admin provisioning through `cluster init`, minting the bootstrap
   admin API Client credential with required One-time Secret Output (`--output`),
   `--json`, `--client-name`, and `--force-new-admin`/`--yes` recovery minting.
-- SPEC-required future command paths that return explicit deferred status until
-  their milestones land: `node join`.
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes` execution gating. `nodes reject` requires a nonblank

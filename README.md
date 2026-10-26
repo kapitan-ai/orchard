@@ -116,7 +116,7 @@ Set up https://github.com/kapitan-ai/orchard on this Mac.
 Clone the repository if needed, read AGENTS.md, docs/tooling.md, and docs/local-dev.md, and inspect the machine and any existing Orchard installation.
 Install and configure prerequisites using the pinned toolchain and repository setup, including the optional MLX dependencies.
 Start source development in an interactive session using the default single-node runtime.
-Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, and verify a real API response.
+Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, then run the inference check.
 If testing the Playground, grant Playground access explicitly.
 Keep credentials private, preserve existing data, and report the Console URL plus the commands to stop and restart.
 ```
@@ -142,6 +142,8 @@ The Console is available at `http://localhost:4000` and the source-development N
 The extra `uv sync` installs the optional MLX worker dependencies needed for real inference on the Mac.
 
 Starting the service does not make it inference-ready.
+The Node Agent reads a placement's SPEC §12.2 recovery checkpoint from Postgres before it loads a model; in this all-in-one quick start it does so in-process, so no Node enrollment is needed.
+See [Worker recovery control](docs/local-dev.md#worker-recovery-control) for split-role and multi-host setups.
 This all-in-one quick start uses Orchard's explicitly unmanaged source-development compatibility target while trusted admitted or active Node inventory is empty.
 That local-only fallback does not create production Node inventory or grant production scheduling authority.
 In the running IEx session, import and activate a Model Bundle, create a Workspace and direct API Token, then grant the Workspace access to the model.

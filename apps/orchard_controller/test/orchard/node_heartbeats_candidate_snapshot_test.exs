@@ -9,7 +9,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   alias Orchard.NodeHeartbeats.Payload
   alias Orchard.Nodes
   alias Orchard.Nodes.{Node, NodeHeartbeat}
-  alias Orchard.RuntimeEndpoint.{Placement, Target}
+  alias Orchard.RuntimeEndpoint.{Placement, Target, WorkerRecoveryEvidence}
 
   @now ~U[2026-08-03 12:00:00.000000Z]
   @freshness_ms 30_000
@@ -81,6 +81,134 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
     end)
 
     :ok
+  end
+
+  test "SPEC §12.2 retained empty-worker recovery evidence survives Postgres observation and snapshot" do
+    node = insert_node!()
+    target = target_for(node)
+
+    evidence = %{
+      key: %{node_id: node.id, model_id: "orchard/model", version: "v1"},
+      epoch: "epoch",
+      owner_epoch: "prior",
+      revision: 5,
+      state: "open",
+      hydrated: true,
+      eligible: false,
+      reason: "placement_crash_breaker_open",
+      prompt: "must-not-persist"
+    }
+
+    heartbeat =
+      append_heartbeat!(node, target, @now, %{
+        worker_recovery_epoch: "epoch",
+        placements: [
+          %{
+            model_ref: %{model_id: "orchard/model", version: "v1"},
+            state: :unknown,
+            worker_recovery: evidence
+          }
+        ]
+      })
+
+    refute inspect(heartbeat.payload) =~ "must-not-persist"
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [Target.normalize(target)],
+               [target],
+               observed_at: @now
+             )
+
+    assert [%Candidate{worker_recovery_epoch: "epoch", placements: [placement]}] =
+             snapshot.candidates
+
+    assert placement.state == :unknown
+    assert placement.worker_recovery["state"] == "open"
+    assert placement.worker_recovery["key"]["node_id"] == node.id
+    assert placement.worker_recovery["revision"] == 5
+
+    assert %{"invalid" => "worker_recovery_evidence"} ==
+             WorkerRecoveryEvidence.normalize(%{
+               evidence
+               | reason: %{prompt: "secret"}
+             })
+  end
+
+  # SPEC.md §12.2.3: a recovery record whose model reference cannot be read is
+  # incomplete evidence. Storage must not drop it and leave the Node looking
+  # cold for that key.
+  test "SPEC §12.2 a recovery record with an unreadable model reference is not stored as cold evidence" do
+    node = insert_node!()
+    target = target_for(node)
+
+    placements =
+      WorkerRecoveryEvidence.attach([], [
+        %{model_ref: %{model_id: "", version: "v1"}, worker_recovery_json: "{}"}
+      ])
+
+    heartbeat =
+      append_heartbeat!(node, target, @now, %{
+        worker_recovery_epoch: "epoch",
+        placements: placements
+      })
+
+    assert heartbeat.payload["validity"] == "invalid"
+    assert heartbeat.payload["invalid_reason"] == "invalid_worker_recovery_placement"
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [Target.normalize(target)],
+               [target],
+               observed_at: @now
+             )
+
+    assert snapshot.candidates == []
+  end
+
+  # SPEC.md §12.2.3: a recovery record stored under a truncated reference would
+  # leave its exact key cold, and rejecting the whole observation would drop
+  # every key on the Node. The record keeps its exact reference instead.
+  test "SPEC §12.2 a recovery record with a long model reference keeps its exact key" do
+    node = insert_node!()
+    target = target_for(node)
+    version = String.duplicate("v", 81)
+
+    heartbeat =
+      append_heartbeat!(node, target, @now, %{
+        worker_recovery_epoch: "epoch",
+        placements: [
+          %{model_ref: %{model_id: "model-a", version: "v1"}, state: :loaded},
+          %{model_ref: %{model_id: "model-b", version: version}, worker_recovery: %{}}
+        ]
+      })
+
+    assert heartbeat.payload["validity"] == "valid"
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [Target.normalize(target)],
+               [target],
+               observed_at: @now
+             )
+
+    assert [%Candidate{placements: placements}] = snapshot.candidates
+
+    assert Enum.sort(Enum.map(placements, &{&1.model_ref.model_id, &1.model_ref.version})) ==
+             [{"model-a", "v1"}, {"model-b", version}]
+
+    over_bound =
+      append_heartbeat!(node, target, DateTime.add(@now, 1, :second), %{
+        worker_recovery_epoch: "epoch",
+        placements: [
+          %{
+            model_ref: %{model_id: "model-b", version: String.duplicate("v", 257)},
+            worker_recovery: %{}
+          }
+        ]
+      })
+
+    assert over_bound.payload["invalid_reason"] == "invalid_worker_recovery_placement"
   end
 
   test "ADR 0017 returns typed normalized evidence for the exact production intersection" do

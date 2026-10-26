@@ -123,6 +123,7 @@ defmodule Orchard.Repo.Migrations.NodeInventoryFoundationTest do
   end
 
   defp run_down_sql do
+    Repo.query!("DROP TABLE IF EXISTS worker_recovery_checkpoints")
     Repo.query!("DROP TABLE IF EXISTS circuit_breaker_failures")
     Repo.query!("DROP TABLE IF EXISTS circuit_breakers")
     Repo.query!("DROP TABLE IF EXISTS node_heartbeats")
