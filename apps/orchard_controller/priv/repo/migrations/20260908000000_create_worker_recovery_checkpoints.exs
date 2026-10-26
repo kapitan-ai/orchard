@@ -3,13 +3,13 @@ defmodule Orchard.Repo.Migrations.CreateWorkerRecoveryCheckpoints do
 
   def change do
     create table(:worker_recovery_checkpoints, primary_key: false) do
-      # No foreign key: all-in-one source development keeps checkpoints for its
-      # in-process Node Agent, which has no Node inventory row.
+      # No foreign keys. All-in-one source development keeps checkpoints for its
+      # in-process Node Agent, which has no Node inventory row, and deleting a
+      # catalog model must not erase an open or unresolved placement's state.
       add(:node_id, :binary_id, primary_key: true)
 
       add(:runtime_model_id, :text, primary_key: true)
       add(:version, :text, primary_key: true)
-      add(:model_id, references(:models, type: :binary_id, on_delete: :delete_all), null: false)
       add(:epoch, :text, null: false)
       add(:revision, :bigint, null: false)
       add(:transition_id, :text, null: false)

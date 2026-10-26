@@ -176,7 +176,6 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
   defp persist(nil, node_id, model, nil, 0, id, fingerprint, record) do
     %Checkpoint{
       node_id: node_id,
-      model_id: model.id,
       runtime_model_id: model.model_id,
       version: model.version
     }

@@ -11,7 +11,7 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
   alias Orchard.NodeTrust.PKI, as: NodeTrustPKI
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint
   alias Orchard.TransportTLS.CertificateIdentity
-  alias Orchard.WorkerRecovery.{Checkpoint, Checkpoints, LocalCheckpointClient}
+  alias Orchard.WorkerRecovery.{Checkpoints, LocalCheckpointClient}
 
   setup do
     now = DateTime.utc_now()
@@ -134,12 +134,22 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
     assert {:error, :unauthorized_checkpoint} = commit(ctx, nil, 0, "late", record("loading"))
   end
 
-  test "SPEC §12.2 deletes checkpoints when the referenced model is deleted", ctx do
-    assert {:ok, _checkpoint} = commit(ctx, nil, 0, "transition-1", record("loading"))
+  # SPEC.md §12.2.2: only operator recovery may clear state, so deleting and
+  # re-importing a catalog model keeps an open placement open.
+  test "SPEC §12.2 deleting and re-importing a model keeps its open checkpoint", ctx do
+    open = %{record("loaded") | "state" => "open", "crashes" => [-1, -2], "delay_index" => 2}
+    assert {:ok, saved} = commit(ctx, nil, 0, "open", open)
 
     Repo.delete!(ctx.model)
+    assert {:error, :unauthorized_checkpoint} = Checkpoints.read(ctx.key, ctx.certificate)
 
-    assert [] = Repo.all(Checkpoint)
+    Repo.insert!(%{
+      ctx.model
+      | id: nil,
+        __meta__: %Ecto.Schema.Metadata{state: :built, source: "models"}
+    })
+
+    assert {:ok, ^saved} = Checkpoints.read(ctx.key, ctx.certificate)
   end
 
   # All-in-one source dev: the Node Agent in this BEAM has no inventory row.
