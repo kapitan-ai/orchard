@@ -3,9 +3,9 @@ defmodule Orchard.Repo.Migrations.CreateWorkerRecoveryCheckpoints do
 
   def change do
     create table(:worker_recovery_checkpoints, primary_key: false) do
-      add(:node_id, references(:nodes, type: :binary_id, on_delete: :delete_all),
-        primary_key: true
-      )
+      # No foreign key: all-in-one source development keeps checkpoints for its
+      # in-process Node Agent, which has no Node inventory row.
+      add(:node_id, :binary_id, primary_key: true)
 
       add(:runtime_model_id, :text, primary_key: true)
       add(:version, :text, primary_key: true)

@@ -159,7 +159,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     refute runtime[:runtime_grpc_listener_enabled]
   end
 
-  test "SPEC §12.2 runtime.exs owns the all-in-one source-dev recovery defaults" do
+  test "SPEC §12.2 all-in-one source dev keeps checkpoints in-process" do
     config = read_runtime_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"}, :dev)
 
     runtime =
@@ -167,12 +167,12 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:orchard_node_agent)
       |> Keyword.fetch!(:runtime)
 
-    assert runtime[:worker_recovery_control_enabled]
-    assert runtime[:worker_recovery_control_endpoint] == "127.0.0.1:50073"
+    assert runtime[:worker_recovery_checkpoint_client] ==
+             Orchard.WorkerRecovery.LocalCheckpointClient
 
-    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
-             control_listener: [host: "127.0.0.1", port: 50_073]
-           ]
+    refute runtime[:worker_recovery_control_enabled]
+    assert is_nil(runtime[:worker_recovery_control_endpoint])
+    assert is_nil(Keyword.fetch!(config, :orchard_controller)[:worker_recovery])
   end
 
   test "dev.exs does not parse recovery control runtime settings" do

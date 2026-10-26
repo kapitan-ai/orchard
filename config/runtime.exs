@@ -1779,24 +1779,25 @@ if config_env() == :dev do
       source_dev_address_policy: source_dev_address_policy
   end
 
-  # SPEC §12.2 uses registered identities, never Node database credentials.
-  # All-in-one source dev defaults to a loopback-only recovery listener. Split
-  # roles remain explicit because a loopback Controller is not their authority.
-  default_recovery_profile? = source_dev_role == :all_in_one
+  # SPEC §12.2 checkpoints never use Node database credentials. All-in-one
+  # source dev runs its Node Agent inside the Controller's BEAM, so it reads and
+  # writes checkpoints in-process. Split roles use the identity-bound control
+  # path and must name it explicitly, because a loopback Controller is not their
+  # authority.
+  if source_dev_role == :all_in_one do
+    config :orchard_node_agent, :runtime,
+      worker_recovery_checkpoint_client: Orchard.WorkerRecovery.LocalCheckpointClient
+  end
 
   recovery_control_enabled? =
-    source_dev_role in [:all_in_one, :node_agent] and
-      env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", default_recovery_profile?)
+    source_dev_role == :node_agent and
+      env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false)
 
   if recovery_control_enabled? do
     endpoint =
       env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
-        if(default_recovery_profile?,
-          do: "127.0.0.1:50073",
-          else:
-            raise(
-              "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for split-role worker recovery control"
-            )
+        raise(
+          "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for split-role worker recovery control"
         )
 
     config :orchard_node_agent, :runtime,
@@ -1805,16 +1806,11 @@ if config_env() == :dev do
       runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
   end
 
-  recovery_listener_host =
-    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") ||
-      if(default_recovery_profile?, do: "127.0.0.1")
+  recovery_listener_host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST")
 
   if recovery_listener_host do
     recovery_listener_port =
       case env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") do
-        nil when default_recovery_profile? ->
-          50_073
-
         nil ->
           raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
 

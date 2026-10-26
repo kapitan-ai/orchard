@@ -1,15 +1,17 @@
 defmodule Orchard.WorkerRecovery.CheckpointsTest do
   use Orchard.DataCase, async: false
 
+  alias Orchard.ArtifactBundle
+  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Models.Model
-  alias Orchard.Node.{ModelManager, WorkerRecoveryCheckpointClient}
+  alias Orchard.Node.{ModelManager, WorkerRecoveryCheckpointClient, WorkerSupervisor}
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.Nodes.{Enrollment, Node}
   alias Orchard.NodeTrust.PKI, as: NodeTrustPKI
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint
   alias Orchard.TransportTLS.CertificateIdentity
-  alias Orchard.WorkerRecovery.{Checkpoint, Checkpoints}
+  alias Orchard.WorkerRecovery.{Checkpoint, Checkpoints, LocalCheckpointClient}
 
   setup do
     now = DateTime.utc_now()
@@ -140,13 +142,77 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
     assert [] = Repo.all(Checkpoint)
   end
 
-  test "SPEC §12.2 deletes checkpoints when the referenced node is deleted", ctx do
-    assert {:ok, _checkpoint} = commit(ctx, nil, 0, "transition-1", record("loading"))
+  # All-in-one source dev: the Node Agent in this BEAM has no inventory row.
+  test "SPEC §12.2 in-process checkpoints need no Node inventory row", ctx do
+    key = %{ctx.key | node_id: Ecto.UUID.generate()}
+    record = record("loading")
 
-    Repo.delete!(ctx.enrollment)
-    Repo.delete!(ctx.node)
+    assert {:ok, :absent} = Checkpoints.read_local(key)
+    assert {:ok, %{revision: 1} = first} = Checkpoints.commit_local(key, nil, 0, "t-1", record)
+    assert {:ok, ^first} = Checkpoints.commit_local(key, nil, 0, "t-1", record)
+    assert {:error, :stale_checkpoint} = Checkpoints.commit_local(key, nil, 0, "t-2", record)
+    assert {:ok, ^first} = Checkpoints.read_local(key)
 
-    assert [] = Repo.all(Checkpoint)
+    assert {:error, :unauthorized_checkpoint} = Checkpoints.read(key, ctx.certificate)
+
+    assert {:error, :unauthorized_checkpoint} =
+             Checkpoints.read_local(%{key | version: "unknown"})
+
+    assert {:error, :unauthorized_checkpoint} =
+             Checkpoints.read_local(%{key | node_id: "node-local"})
+  end
+
+  test "SPEC §12.2 an in-process Node manager loads through Controller Postgres checkpoints",
+       ctx do
+    runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+    root = Path.join(System.tmp_dir!(), "orchard-local-checkpoint-#{Ecto.UUID.generate()}")
+    source = Path.join(root, "source")
+    File.mkdir_p!(source)
+    File.write!(Path.join(source, "config.json"), ~s({"model_type":"test"}))
+    File.write!(Path.join(source, "tokenizer.json"), ~s({"version":"1.0"}))
+    File.write!(Path.join(source, "model.safetensors"), "test-weights")
+    {:ok, artifact_sha256} = ArtifactBundle.tree_sha256(source)
+    :ok = Supervisor.terminate_child(NodeSupervisor, ModelManager)
+    node_id = Ecto.UUID.generate()
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(runtime,
+        node_id: node_id,
+        models_root: root,
+        worker_backend: "stub",
+        worker_recovery_checkpoint_client: LocalCheckpointClient
+      )
+    )
+
+    start_supervised!(ModelManager)
+
+    on_exit(fn ->
+      for {_, pid, _, _} <- DynamicSupervisor.which_children(WorkerSupervisor),
+          is_pid(pid),
+          do: DynamicSupervisor.terminate_child(WorkerSupervisor, pid)
+
+      Application.put_env(:orchard_node_agent, :runtime, runtime)
+      Supervisor.restart_child(NodeSupervisor, ModelManager)
+      File.rm_rf!(root)
+    end)
+
+    response =
+      ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+        node_id: node_id,
+        model_id: ctx.key.model_id,
+        version: ctx.key.version,
+        artifact_sha256: artifact_sha256,
+        artifact_source_uri: "file://" <> source,
+        deadline_unix_ms: System.system_time(:millisecond) + 10_000
+      })
+
+    assert response.placement_state == :PLACEMENT_STATE_LOADED
+    assert response.recovery_refusal == ""
+
+    assert {:ok, %{record: %{"ownership" => %{"phase" => "loaded"}}}} =
+             Checkpoints.read_local(%{ctx.key | node_id: node_id})
   end
 
   test "SPEC §12.2 checkpoint rejects unbounded or content-bearing fields", ctx do

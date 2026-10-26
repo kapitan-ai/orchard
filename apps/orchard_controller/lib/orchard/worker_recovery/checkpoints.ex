@@ -17,14 +17,16 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
   @type result :: {:ok, map() | :absent} | {:error, term()}
 
   @spec read(Record.key(), binary()) :: result()
-  def read(key, certificate) do
-    transact(key, certificate, fn node, model ->
-      case locked_checkpoint(node.id, model) do
-        nil -> :absent
-        checkpoint -> projection(checkpoint)
-      end
-    end)
-  end
+  def read(key, certificate), do: read_with(key, &authorize_peer(&1, certificate))
+
+  @doc """
+  Reads a checkpoint for the Node Agent running in this BEAM.
+
+  All-in-one source development has no enrolled Node identity to present, and
+  its Node Agent is part of this release, so the exact key is trusted as given.
+  """
+  @spec read_local(Record.key()) :: result()
+  def read_local(key), do: read_with(key, &authorize_local/1)
 
   @spec commit(
           Record.key(),
@@ -35,17 +37,45 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
           binary()
         ) :: result()
   def commit(key, expected_epoch, expected_revision, transition_id, record, certificate) do
+    commit_with(
+      key,
+      {expected_epoch, expected_revision, transition_id, record},
+      &authorize_peer(&1, certificate)
+    )
+  end
+
+  @doc "Commits a checkpoint for the Node Agent running in this BEAM; see `read_local/1`."
+  @spec commit_local(Record.key(), String.t() | nil, non_neg_integer(), String.t(), Record.t()) ::
+          result()
+  def commit_local(key, expected_epoch, expected_revision, transition_id, record) do
+    commit_with(
+      key,
+      {expected_epoch, expected_revision, transition_id, record},
+      &authorize_local/1
+    )
+  end
+
+  defp read_with(key, authorize) do
+    transact(key, authorize, fn node_id, model ->
+      case locked_checkpoint(node_id, model) do
+        nil -> :absent
+        checkpoint -> projection(checkpoint)
+      end
+    end)
+  end
+
+  defp commit_with(key, {expected_epoch, expected_revision, transition_id, record}, authorize) do
     with :ok <- Record.validate(record),
          true <- Record.token?(transition_id),
          true <- is_integer(expected_revision) and expected_revision >= 0 do
       fingerprint = Record.fingerprint({expected_epoch, expected_revision, transition_id, record})
 
-      transact(key, certificate, fn node, model ->
-        checkpoint = locked_checkpoint(node.id, model)
+      transact(key, authorize, fn node_id, model ->
+        checkpoint = locked_checkpoint(node_id, model)
 
         persist(
           checkpoint,
-          node.id,
+          node_id,
           model,
           expected_epoch,
           expected_revision,
@@ -59,9 +89,9 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
     end
   end
 
-  defp transact(key, certificate, fun) do
+  defp transact(key, authorize, fun) do
     with :ok <- ControlPlane.authorize_write_path(:node_lifecycle) do
-      Repo.transaction(fn -> authorize_checkpoint(key, certificate, fun) end)
+      Repo.transaction(fn -> authorized(authorize.(key), fun) end)
     end
   rescue
     _error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, :unavailable}
@@ -69,7 +99,10 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
     :exit, _reason -> {:error, :unavailable}
   end
 
-  defp authorize_checkpoint(key, certificate, fun) do
+  defp authorized({:ok, node_id, model}, fun), do: fun.(node_id, model)
+  defp authorized(:error, _fun), do: Repo.rollback(:unauthorized_checkpoint)
+
+  defp authorize_peer(key, certificate) do
     with {:ok, peer} <- BeamPeerGrants.authenticated_peer_from_certificate(certificate),
          true <- peer.node_id == key.node_id,
          %Enrollment{state: :consumed, certificate_issuance_outcome: :issued} <-
@@ -77,9 +110,21 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
          %Node{} = node <- lock_node(peer.node_id),
          true <- node.state in [:admitted, :active, :cordoned, :draining, :maintenance],
          %Model{} = model <- exact_model(key) do
-      fun.(node, model)
+      {:ok, node.id, model}
     else
-      _invalid -> Repo.rollback(:unauthorized_checkpoint)
+      _invalid -> :error
+    end
+  end
+
+  # No Node row need exist here, so a transaction-scoped advisory lock takes the
+  # Node row lock's place in serializing insert-if-absent for this Node.
+  defp authorize_local(key) do
+    with {:ok, node_id} <- Ecto.UUID.cast(key.node_id),
+         %Model{} = model <- exact_model(key) do
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", ["worker_recovery:" <> node_id])
+      {:ok, node_id, model}
+    else
+      _invalid -> :error
     end
   end
 
