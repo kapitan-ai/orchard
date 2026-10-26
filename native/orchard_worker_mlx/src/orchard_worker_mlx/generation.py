@@ -41,9 +41,16 @@ Prefill progress bridging (Task 5):
     during prefill with ``(processed_tokens, total_tokens)``.  This module
     bridges the synchronous callback into yielded ``progress`` events by
     queuing updates in a request-local deque and draining them before each
-    token delta.  Prefill cancel is NOT cleanly interruptible; upstream
-    ``generate_step()`` has no cancel hook.  Cancellation applies only after
-    control returns from prefill (i.e., during decode).
+    token delta.
+
+Prefill cancellation (stream mode):
+    Upstream ``generate_step()`` has no cancel hook, but it calls the
+    progress callback after evaluating each prefill chunk.  In stream mode
+    the callback raises an internal exception at an intermediate chunk
+    boundary once the request is cancelled, so prefill stops within about
+    one chunk.  The exception ends the stream loop, and the normal
+    end-of-stream path emits the ``cancelled`` terminal.  The shared batch
+    runtime keeps its own cancellation and is not interrupted this way.
 
 MLX cache hygiene policy:
     Stream mode calls ``mx.synchronize()`` then ``session.clear_cache()`` once
@@ -73,6 +80,12 @@ from orchard_worker_mlx.backends import (
     valid_cache_affinity_fingerprint,
 )
 from orchard_worker_mlx.prefix_cache import PrefixCacheStats
+from orchard_worker_mlx.strict_prefix_checkpoints import (
+    LOOKUP_HIT,
+    CaptureHook,
+    StrictPrefixCheckpointStore,
+    capture_boundary,
+)
 from orchard_worker_mlx.tool_calling import (
     build_context as build_tool_calling_context,
 )
@@ -119,6 +132,26 @@ class _CacheLookupResult:
     remaining_tokens: int = 0
     lookup_ms: float = 0.0
     stats: PrefixCacheStats | None = None
+
+
+_STRICT_LOOKUP_UNAVAILABLE = "unavailable"
+_STRICT_LOOKUP_IDENTITY_MISMATCH = "identity_mismatch"
+_STRICT_CAPTURE_NOT_TARGETED = "not_targeted"
+# The request ended before the strict-prefix lookup ran: no output tokens were
+# requested, its parameters were refused, it was cancelled, or encoding failed.
+_STRICT_LOOKUP_NOT_STARTED = "not_started"
+
+
+@dataclass(slots=True)
+class _StrictPrefixPlan:
+    """Request-local strict-prefix restore and capture plan."""
+
+    lookup_status: str
+    stream_prompt_ids: list[int]
+    prompt_cache: Any = None
+    matched_tokens: int = 0
+    lookup_ms: float = 0.0
+    hook: CaptureHook | None = None
 
 
 @dataclass(slots=True)
@@ -1907,6 +1940,42 @@ def _drain_prefill_progress(
         }
 
 
+class _PrefillCancelled(Exception):
+    """Raised from the progress callback to stop a cancelled prefill."""
+
+
+class _PrefillCancelGuard:
+    """Progress callback wrapper that stops prefill for a cancelled request.
+
+    ``inner`` runs first, so a strict-prefix capture at this boundary
+    completes before the stop.  Only intermediate callbacks stop prefill:
+    the final ``(total, total)`` callback follows the first sampled token,
+    and the decode stride handles cancellation from there.
+    """
+
+    def __init__(self, cancel_event: threading.Event, inner: Callable[[int, int], None]) -> None:
+        self._cancel_event = cancel_event
+        self.inner = inner
+
+    def __call__(self, processed: int, total: int) -> None:
+        self.inner(processed, total)
+        if (
+            self._cancel_event.is_set()
+            and isinstance(processed, int)
+            and isinstance(total, int)
+            and processed < total
+        ):
+            raise _PrefillCancelled
+
+
+def _until_prefill_cancelled(stream: Any) -> Iterator[Any]:
+    """Yield from *stream*, ending quietly when prefill was cancelled."""
+    try:
+        yield from stream
+    except _PrefillCancelled:
+        return
+
+
 def _sample_current_memory_bytes_fail_open(deps: GenerationDeps) -> int | None:
     """Best-effort process-memory sample from the optional runtime seam."""
     probe = deps.current_memory_bytes
@@ -2257,6 +2326,104 @@ def _maybe_store_prompt_cache(
 
 
 # ---------------------------------------------------------------------------
+# Strict-prefix checkpoint helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_strict_prefix_checkpoint(
+    session: Any,
+    store: StrictPrefixCheckpointStore,
+    prompt_ids: list[int],
+    *,
+    deps: GenerationDeps,
+    forward: Callable[[int, int], None],
+) -> _StrictPrefixPlan:
+    """Restore a strictly shorter checkpoint and arm one capture.
+
+    The request always gets a prompt cache it owns, either restored or fresh,
+    so the capture hook can copy that cache at the chosen chunk boundary.
+    """
+    step = _prefill_step_size(session)
+    if deps.make_prompt_cache is None:
+        return _StrictPrefixPlan(_STRICT_LOOKUP_UNAVAILABLE, stream_prompt_ids=prompt_ids)
+    if store.identity.prefill_step_size != step:
+        return _StrictPrefixPlan(_STRICT_LOOKUP_IDENTITY_MISMATCH, stream_prompt_ids=prompt_ids)
+
+    t0 = time.monotonic()
+    lookup = store.lookup(prompt_ids)
+    if lookup.status == LOOKUP_HIT:
+        prompt_cache = lookup.prompt_cache
+        matched = lookup.matched_length
+        stream_prompt_ids = cast(list[int], lookup.remaining_ids)
+    else:
+        try:
+            prompt_cache = deps.make_prompt_cache(session.model)
+        except Exception:
+            logger.warning("strict_prefix_checkpoint fresh cache failed", exc_info=True)
+            return _StrictPrefixPlan(_STRICT_LOOKUP_UNAVAILABLE, stream_prompt_ids=prompt_ids)
+        matched = 0
+        stream_prompt_ids = prompt_ids
+    lookup_ms = (time.monotonic() - t0) * 1000.0
+
+    boundary = capture_boundary(
+        prompt_ids,
+        matched_length=matched,
+        prefill_step_size=step,
+        reply_marker_ids=store.reply_marker_ids,
+    )
+    hook = None
+    if boundary is not None:
+        hook = CaptureHook(
+            store=store,
+            prompt_cache=prompt_cache,
+            prompt_ids=prompt_ids,
+            matched_length=matched,
+            boundary=boundary,
+            forward=forward,
+        )
+    return _StrictPrefixPlan(
+        lookup_status=lookup.status,
+        stream_prompt_ids=stream_prompt_ids,
+        prompt_cache=prompt_cache,
+        matched_tokens=matched,
+        lookup_ms=lookup_ms,
+        hook=hook,
+    )
+
+
+def _emit_strict_prefix_log(
+    *,
+    prompt_tokens: int,
+    plan: _StrictPrefixPlan,
+    store: StrictPrefixCheckpointStore,
+) -> None:
+    """Emit one structured strict-prefix line per request.  Never raises."""
+    try:
+        hook = plan.hook
+        capture_status = hook.outcome.status if hook is not None else _STRICT_CAPTURE_NOT_TARGETED
+        stats = store.stats()
+        logger.info(
+            "strict_prefix_checkpoint_request "
+            "lookup_status=%s prompt_tokens=%d matched_tokens=%d remaining_tokens=%d "
+            "lookup_ms=%.3f capture_status=%s capture_boundary=%d snapshot_bytes=%d "
+            "retained=%d uncertain=%d reserved_bytes=%d",
+            plan.lookup_status,
+            prompt_tokens,
+            plan.matched_tokens,
+            len(plan.stream_prompt_ids),
+            plan.lookup_ms,
+            capture_status,
+            hook.boundary if hook is not None else 0,
+            hook.outcome.snapshot_bytes if hook is not None else 0,
+            stats.retained,
+            stats.uncertain,
+            stats.reserved_bytes,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -2297,10 +2464,9 @@ def generate_events(
     terminal still leaves the latest lower bound on the stream. Counters never
     decrease, and the terminal ``completed`` usage remains the exact total.
 
-    NOTE(task-5): Prefill cancel is NOT cleanly interruptible. Upstream
-    ``generate_step()`` has no cancel hook. Cancellation applies only after
-    control returns from prefill (i.e., during decode). This is a known
-    limitation documented rather than worked around.
+    In stream mode a cancel during prefill stops at the next intermediate
+    prefill chunk boundary (see "Prefill cancellation" in the module notes).
+    A cancel after the last prompt token is checked on the decode stride.
 
     Raises ``BackendError`` for setup-time failures (invalid prompt, etc.).
     """
@@ -2323,6 +2489,10 @@ def generate_events(
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
     store_result = _CacheStoreResult()
     stream: Any | None = None
+    strict_store = getattr(session, "strict_prefix_checkpoints", None)
+    if deps.uses_shared_batch_runtime or not isinstance(strict_store, StrictPrefixCheckpointStore):
+        strict_store = None
+    strict_plan: _StrictPrefixPlan | None = None
 
     try:
         if max_output_tokens <= 0:
@@ -2360,16 +2530,34 @@ def generate_events(
 
         request_prompt_cache = None
         stream_prompt_ids = prompt_ids
-        if not deps.uses_shared_batch_runtime:
+        stream_progress_callback: Callable[[int, int], None] = progress_callback
+        if strict_store is not None:
+            strict_plan = _prepare_strict_prefix_checkpoint(
+                session,
+                strict_store,
+                prompt_ids,
+                deps=deps,
+                forward=progress_callback,
+            )
+            request_prompt_cache = strict_plan.prompt_cache
+            stream_prompt_ids = strict_plan.stream_prompt_ids
+            if strict_plan.hook is not None:
+                stream_progress_callback = strict_plan.hook
+        elif not deps.uses_shared_batch_runtime:
             lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
             request_prompt_cache = lookup_result.prompt_cache
             stream_prompt_ids = lookup_result.stream_prompt_ids
+        # The guard and the loop wrapper below go together: the wrapper turns the
+        # guard's exception into the end of the stream.
+        stops_prefill_on_cancel = not deps.uses_shared_batch_runtime
+        if stops_prefill_on_cancel:
+            stream_progress_callback = _PrefillCancelGuard(cancel_event, stream_progress_callback)
 
         stream_kwargs: dict[str, Any] = {
             "max_tokens": max_output_tokens,
             "sampler": sampler,
             "prefill_step_size": _prefill_step_size(session),
-            "prompt_progress_callback": progress_callback,
+            "prompt_progress_callback": stream_progress_callback,
         }
         if request_prompt_cache is not None:
             stream_kwargs["prompt_cache"] = request_prompt_cache
@@ -2386,15 +2574,18 @@ def generate_events(
                 **stream_kwargs,
             )
 
+            # A checkpoint captured during prefill pins memory that is not
+            # prefill workspace, so the strict path skips the workspace probe.
+            probe_prefill_workspace = not deps.uses_shared_batch_runtime and strict_store is None
             prefill_probe_baseline: int | None = None
             prefill_probe_finalized = False
-            if not deps.uses_shared_batch_runtime:
+            if probe_prefill_workspace:
                 prefill_probe_baseline = _sample_current_memory_bytes_fail_open(deps)
 
             def finalize_prefill_probe_if_needed(drained_prefill: bool) -> None:
                 nonlocal prefill_probe_finalized
 
-                if not drained_prefill or prefill_probe_finalized or deps.uses_shared_batch_runtime:
+                if not drained_prefill or prefill_probe_finalized or not probe_prefill_workspace:
                     return
 
                 processed_tokens = (
@@ -2424,7 +2615,10 @@ def generate_events(
                 reported_output_tokens = output_tokens
                 yield _usage_event(input_tokens, output_tokens)
 
-            for response in stream:
+            # A cancelled prefill ends the loop early; the end-of-stream path
+            # below then sees the cancel and emits the cancelled terminal.
+            responses = _until_prefill_cancelled(stream) if stops_prefill_on_cancel else stream
+            for response in responses:
                 drained_prefill = bool(progress_queue)
                 yield from _drain_prefill_progress(
                     progress_queue,
@@ -2589,7 +2783,9 @@ def generate_events(
                 progress_queue,
                 last_processed_tokens_out=last_prefill_processed_tokens,
             )
-            finalize_prefill_probe_if_needed(drained_prefill)
+            # A cancelled prefill is partial, so its memory sample is not a
+            # prefill-workspace measurement.
+            finalize_prefill_probe_if_needed(drained_prefill and not cancel_event.is_set())
             if tool_context is None or not tool_context.stop_buffer_disabled:
                 flush_text = buf.flush()
                 if flush_text:
@@ -2638,12 +2834,22 @@ def generate_events(
         if stream is not None:
             _close_stream(stream, cancelled=True)
 
-        _emit_prefix_cache_log(
-            prompt_tokens=prompt_tokens,
-            lookup=lookup_result,
-            store=store_result,
-            final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
-        )
+        if strict_store is None:
+            _emit_prefix_cache_log(
+                prompt_tokens=prompt_tokens,
+                lookup=lookup_result,
+                store=store_result,
+                final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
+            )
+        else:
+            _emit_strict_prefix_log(
+                prompt_tokens=prompt_tokens,
+                plan=strict_plan
+                or _StrictPrefixPlan(
+                    lookup_status=_STRICT_LOOKUP_NOT_STARTED, stream_prompt_ids=[]
+                ),
+                store=strict_store,
+            )
         if not deps.uses_shared_batch_runtime:
             _synchronize_then_clear_session_cache(session, deps.synchronize)
 

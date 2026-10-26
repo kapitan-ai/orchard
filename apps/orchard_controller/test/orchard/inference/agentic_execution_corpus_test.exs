@@ -360,10 +360,19 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
     end
   end
 
-  for mode <- ["chat_stream", "responses_stream", "chat_sync", "responses_sync"] do
+  # The unmanaged rows run without a Node inventory row, as source dev does.
+  for {mode, inventory} <-
+        Enum.map(~w(chat_stream responses_stream chat_sync responses_sync), &{&1, :managed}) ++
+          [{"chat_stream", :unmanaged}, {"responses_sync", :unmanaged}] do
     @mode mode
-    test "SPEC.md §12.2 a Worker killed during prefill fails the Request with worker_down #{@mode}",
+    @inventory inventory
+    test "SPEC.md §12.2 a Worker killed during prefill fails the Request with worker_down #{@mode} #{@inventory}",
          %{token: token} do
+      if @inventory == :unmanaged do
+        node_id = Application.fetch_env!(:orchard_node_agent, :runtime)[:node_id]
+        Repo.delete!(Repo.get!(Orchard.Nodes.Node, node_id))
+      end
+
       script = System.fetch_env!("ORCHARD_AGENTIC_SCRIPT")
       root = Path.rootname(script)
       Enum.each([".request", ".cancelled", ".release", ".drained"], &File.rm(root <> &1))
@@ -411,6 +420,7 @@ defmodule Orchard.Inference.AgenticExecutionCorpusTest do
       assert terminal.result["failure_code"] == "worker_down"
       assert terminal.result["retry_decision"] == "not_retryable"
       assert conn.status == if(stream?, do: 200, else: 503)
+      assert Repo.exists?(Orchard.CircuitBreakers.Breaker) == (@inventory == :managed)
       assert conn.resp_body =~ ~s("code":"worker_down")
       refute conn.resp_body =~ ~s("code":"internal_error")
     end

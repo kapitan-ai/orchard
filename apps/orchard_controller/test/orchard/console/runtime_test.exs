@@ -786,6 +786,114 @@ defmodule OrchardConsole.RuntimeTest do
              }
     end
 
+    test "SPEC 7.5.3 keeps checkpoint counters only for strict-prefix status" do
+      strict =
+        PrefixCacheStatus.normalize(%{
+          implementation: "strict_prefix",
+          status_code: "ok",
+          entry_count: 1,
+          checkpoint_uncertain_count: 1,
+          checkpoint_retained_bytes: 3_000
+        })
+
+      assert strict.checkpoint_uncertain_count == 1
+      assert strict.checkpoint_retained_bytes == 3_000
+
+      kv =
+        PrefixCacheStatus.normalize(%{
+          implementation: "kv",
+          status_code: "ok",
+          checkpoint_uncertain_count: 0,
+          checkpoint_retained_bytes: 0
+        })
+
+      assert kv.checkpoint_uncertain_count == nil
+      assert kv.checkpoint_retained_bytes == nil
+
+      legacy = PrefixCacheStatus.normalize(%{implementation: "strict_prefix", status_code: "ok"})
+      assert legacy.status_code == "ok"
+      assert legacy.checkpoint_uncertain_count == nil
+      assert legacy.checkpoint_retained_bytes == nil
+    end
+
+    test "SPEC 7.5.3 rejects malformed checkpoint counters" do
+      for {field, value} <- [
+            {:checkpoint_uncertain_count, 4_294_967_296},
+            {:checkpoint_uncertain_count, -1},
+            {:checkpoint_retained_bytes, "3000"}
+          ] do
+        status =
+          PrefixCacheStatus.normalize(%{
+            :implementation => "strict_prefix",
+            :status_code => "ok",
+            field => value
+          })
+
+        assert status.status_code == "invalid_status"
+        assert Map.fetch!(status, field) == nil
+      end
+    end
+
+    test "SPEC 7.5.3 keeps checkpoint counters only from an ok status" do
+      for status_code <- ~w(invalid_status error unavailable disabled),
+          {uncertain, retained} <- [{0, 0}, {3, 3_000}] do
+        status =
+          PrefixCacheStatus.normalize(%{
+            implementation: "strict_prefix",
+            status_code: status_code,
+            checkpoint_uncertain_count: uncertain,
+            checkpoint_retained_bytes: retained
+          })
+
+        assert status.status_code == status_code
+        assert status.checkpoint_uncertain_count == nil
+        assert status.checkpoint_retained_bytes == nil
+      end
+    end
+
+    test "SPEC 7.5.3 ignores malformed checkpoint counters for other implementations" do
+      status =
+        PrefixCacheStatus.normalize(%{
+          implementation: "kv",
+          status_code: "ok",
+          entry_count: 2,
+          checkpoint_uncertain_count: -1,
+          checkpoint_retained_bytes: "0"
+        })
+
+      assert status.status_code == "ok"
+      assert status.entry_count == 2
+      assert status.checkpoint_uncertain_count == nil
+      assert status.checkpoint_retained_bytes == nil
+    end
+
+    test "SPEC 7.5.3 selected fields carry checkpoint counters for strict-prefix only" do
+      strict_fields =
+        PrefixCacheStatus.selected_fields(%{
+          implementation: "strict_prefix",
+          status_code: "ok",
+          enabled: true,
+          checkpoint_uncertain_count: 0,
+          checkpoint_retained_bytes: 3_000
+        })
+
+      assert strict_fields.selected_prefix_cache_implementation == "strict_prefix"
+      assert strict_fields.selected_prefix_cache_checkpoint_uncertain_count == 0
+      assert strict_fields.selected_prefix_cache_checkpoint_retained_bytes == 3_000
+
+      kv_fields =
+        PrefixCacheStatus.selected_fields(%{
+          implementation: "kv",
+          status_code: "ok",
+          enabled: true,
+          checkpoint_uncertain_count: 0,
+          checkpoint_retained_bytes: 0
+        })
+
+      refute Map.has_key?(kv_fields, :selected_prefix_cache_checkpoint_uncertain_count)
+      refute Map.has_key?(kv_fields, :selected_prefix_cache_checkpoint_retained_bytes)
+    end
+
     test "SPEC 7.5.3 preserves empty memory budgets on unreachable snapshots" do
       stub_client(
         connect: {:error, {:connect_failed, :econnrefused}},

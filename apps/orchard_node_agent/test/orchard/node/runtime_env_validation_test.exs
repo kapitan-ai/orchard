@@ -35,6 +35,29 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
+  # ADR 0037: the source-development experiment cannot enable a release backend.
+  test "runtime.exs rejects vllm_poc in every production release role" do
+    for release <- ["orchard_node_agent", "orchard_controller", "orchard_cli", nil],
+        backend <- ["vllm_poc", " vllm_poc "] do
+      assert_raise RuntimeError, ~r/vllm_poc is source-development only/, fn ->
+        read_runtime_config!(%{
+          "ORCHARD_WORKER_BACKEND" => backend,
+          "RELEASE_NAME" => release
+        })
+      end
+    end
+  end
+
+  test "dev.exs selects vllm_poc explicitly with stream generation" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_BACKEND" => "vllm_poc"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "vllm_poc"
+    assert runtime[:worker_generation_mode] == "stream"
+  end
+
   test "runtime.exs accepts ORCHARD_WORKER_MEMORY_BUDGET_MODE=enforce in prod" do
     runtime =
       read_runtime_config!(%{"ORCHARD_WORKER_MEMORY_BUDGET_MODE" => "enforce"})

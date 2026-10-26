@@ -107,6 +107,13 @@ message RuntimePrefixCacheStatus {
   string status_message = 14;
   uint64 session_started_unix_ms = 15;
   repeated string prefix_cache_fingerprints = 16;
+  // Strict-prefix checkpoints only (implementation == "strict_prefix"); zero
+  // otherwise. Uncertain checkpoints are failed copies that stay charged
+  // against the budget until unload and are never restored.
+  uint32 checkpoint_uncertain_count = 17;
+  // Measured bytes of retained checkpoint snapshots, as distinct from the
+  // fixed per-slot charges reported in total_bytes. Not process RSS.
+  uint64 checkpoint_retained_bytes = 18;
 }
 
 // Static hosted-tool capability advertised by the node. The controller derives

@@ -633,10 +633,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
            Map.get(model, :id),
            outcome
          ) do
-      {:ok, _decision} -> :ok
-      {:error, reason} -> {:error, {:breaker_attribution_failed, reason}}
+      {:ok, _decision} ->
+        :ok
+
+      {:error, reason} ->
+        log_warn("breaker attribution failed: #{breaker_failure_reason(reason)}")
+        {:error, {:breaker_attribution_failed, reason}}
     end
   end
+
+  defp breaker_failure_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp breaker_failure_reason(%Ecto.Changeset{errors: errors}),
+    do: "invalid_changeset fields=#{errors |> Keyword.keys() |> Enum.join(",")}"
+
+  defp breaker_failure_reason(_reason), do: "unexpected_reason"
 
   defp continue_after_breaker(
          db_request,

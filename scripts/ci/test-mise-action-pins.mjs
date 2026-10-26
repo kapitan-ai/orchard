@@ -20,7 +20,7 @@ function formatInvocations(format) {
     replacements++;
     return format(approved);
   });
-  assert.equal(replacements, 7, 'format fixture must change all seven invocations');
+  assert.equal(replacements, 8, 'format fixture must change all eight invocations');
   return text;
 }
 
@@ -38,7 +38,7 @@ function replaceInvocation(text, index, replacement) {
   return text.replaceAll(approved, value => ++seen === index ? replacement : value);
 }
 
-test('current repository has seven approved invocations', () => assert.equal(checkPins(root), 7));
+test('current repository has eight approved invocations', () => assert.equal(checkPins(root), 8));
 
 test('stale seventh invocation fails while the first six remain approved', t => {
   assert.throws(() => checkPins(fixture(t, replaceInvocation(workflow, 7, stale))), {
@@ -59,31 +59,38 @@ test('dormant assembly invocation is still checked', t => {
   assert.throws(() => checkPins(fixture(t, text)), /app-distribution-validation: mise-action/);
 });
 
+test('supply-chain lane invocation is a retained bootstrap', t => {
+  const stalePin = workflow.replace(/(supply-chain-validation:[\s\S]*?)jdx\/mise-action@[a-f0-9]{40}/, `$1${stale}`);
+  assert.throws(() => checkPins(fixture(t, stalePin)), /supply-chain-validation: mise-action/);
+  assert.throws(() => checkPins(fixture(t, replaceInvocation(workflow, 8, 'actions/checkout@v7'))),
+    /supply-chain-validation: expected one/);
+});
+
 test('uniform stale pins cannot become their own authority', t => {
   assert.throws(() => checkPins(fixture(t, workflow.replaceAll(approved, stale))), /approved immutable SHA/);
 });
 
 test('quoted uses keys/values and comments are parsed', t => {
   const text = formatInvocations(value => `'uses': "${value}" # ${stale}`);
-  assert.equal(checkPins(fixture(t, text)), 7);
+  assert.equal(checkPins(fixture(t, text)), 8);
 });
 
 test('folded YAML scalar is parsed as an invocation', t => {
   const text = formatInvocations(value => `uses: >- # folded invocation\n          ${value}`);
-  assert.equal(checkPins(fixture(t, text)), 7);
+  assert.equal(checkPins(fixture(t, text)), 8);
 });
 
 test('run strings, env values and comments are not invocations', t => {
   const text = workflow + `\n# uses: ${stale}\n`;
   const dir = fixture(t, text);
   writeFileSync(join(dir, '.github/workflows/notes.yaml'), `jobs:\n  notes:\n    steps:\n      - run: |\n          uses: ${stale}\n        env:\n          uses: ${stale}\n`);
-  assert.equal(checkPins(dir), 7);
+  assert.equal(checkPins(dir), 8);
 });
 
 test('flow mappings, aliases and different indentation retain actual uses', t => {
   const dir = fixture(t);
   writeFileSync(join(dir, '.github/workflows/extra.yaml'), `jobs:\n extra:\n  steps:\n   - &setup {uses: '${approved}'}\n   - *setup\n`);
-  assert.equal(checkPins(dir), 9);
+  assert.equal(checkPins(dir), 10);
 });
 
 test('additional workflow invocation must use the approved SHA', t => {
@@ -149,7 +156,7 @@ test('action name capitalization cannot bypass checking', t => {
 test('CLI returns success after checking the repository', () => {
   const result = spawnSync(process.execPath, [join(root, 'scripts/ci/check-mise-action-pins.mjs')], { encoding: 'utf8' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /passed \(7 invocations\)/);
+  assert.match(result.stdout, /passed \(8 invocations\)/);
 });
 
 test('CLI returns nonzero for a controlled stale-pin repository', t => {
