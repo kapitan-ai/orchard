@@ -903,23 +903,12 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  def handle_info({:recovery_cleanup, epoch, key}, state) when epoch == state.recovery_epoch do
+  def handle_info({:recovery_cleanup, epoch, key, token}, state)
+      when epoch == state.recovery_epoch do
     case Map.get(state.recovery, key) do
-      %{ownership: %{"phase" => "cleanup"}} = entry ->
-        if recovery_cleanup_resolved?(state, key) do
-          entry = %{entry | ownership: Map.put(entry.ownership, "phase", "resolved")}
-
-          effects =
-            case entry.policy do
-              %{state: :backoff, fence: fence, due_ms: due} -> [{:schedule, fence, due}]
-              _other -> [:reply_stopped, :reply_operator]
-            end
-
-          entry = Recovery.checkpoint(entry, effects)
-          {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
-        else
-          {:noreply, apply_recovery_effect(state, key, :await_cleanup)}
-        end
+      %{cleanup_timer: ^token} = entry ->
+        state = put_in(state, [:recovery, key], %{entry | cleanup_timer: nil})
+        handle_recovery_cleanup(state, key)
 
       _stale ->
         {:noreply, state}
@@ -1852,13 +1841,49 @@ defmodule Orchard.Node.ModelManager do
       |> apply_recovery_effect(key, :reply_stopped)
       |> apply_recovery_effect(key, :reply_operator)
     else
-      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 1_000)
-      state
+      schedule_recovery_cleanup(state, key)
     end
   end
 
   defp apply_recovery_effect(state, _key, :checkpoint), do: state
   defp apply_recovery_effect(state, _key, {:cancel, _fence}), do: state
+
+  defp handle_recovery_cleanup(state, key) do
+    case Map.get(state.recovery, key) do
+      %{ownership: %{"phase" => "cleanup"}} = entry ->
+        if recovery_cleanup_resolved?(state, key) do
+          entry = %{entry | ownership: Map.put(entry.ownership, "phase", "resolved")}
+
+          effects =
+            case entry.policy do
+              %{state: :backoff, fence: fence, due_ms: due} -> [{:schedule, fence, due}]
+              _other -> [:reply_stopped, :reply_operator]
+            end
+
+          entry = Recovery.checkpoint(entry, effects)
+          {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+        else
+          {:noreply, apply_recovery_effect(state, key, :await_cleanup)}
+        end
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  # One cleanup re-probe per key: further unloads, resets or crashes while
+  # cleanup is unresolved reuse the pending timer instead of adding a loop.
+  defp schedule_recovery_cleanup(state, key) do
+    case state.recovery[key] do
+      %{cleanup_timer: nil} = entry ->
+        token = make_ref()
+        Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key, token}, 1_000)
+        put_in(state, [:recovery, key], %{entry | cleanup_timer: token})
+
+      _pending ->
+        state
+    end
+  end
 
   defp accept_recovery_crash(state, key, pid) do
     case Map.get(state.recovery, key) do

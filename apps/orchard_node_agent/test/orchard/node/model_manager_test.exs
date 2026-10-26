@@ -1,7 +1,7 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest}
+  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest, UnloadModelRequest}
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.{ModelManager, RuntimeProcessReaper, WorkerRecoveryState, WorkerSupervisor}
 
@@ -268,8 +268,9 @@ defmodule Orchard.Node.ModelManagerTest do
         |> WorkerRecoveryState.hydrate(:absent)
         |> put_in([:ownership, "phase"], "cleanup")
 
-      state = %{base | recovery: Map.put(base.recovery, key, entry)}
-      cleanup = {:recovery_cleanup, state.recovery_epoch, key}
+      token = make_ref()
+      state = %{base | recovery: Map.put(base.recovery, key, %{entry | cleanup_timer: token})}
+      cleanup = {:recovery_cleanup, state.recovery_epoch, key, token}
 
       assert {:noreply, held} = ModelManager.handle_info(cleanup, state)
       assert held.recovery[key].ownership["phase"] == "cleanup"
@@ -278,6 +279,53 @@ defmodule Orchard.Node.ModelManagerTest do
 
       assert {:noreply, cleared} = ModelManager.handle_info(cleanup, state)
       assert cleared.recovery[key].ownership["phase"] == "resolved"
+    end
+
+    # SPEC §12.2: repeated unloads while cleanup cannot prove the runtime gone
+    # share one re-probe loop instead of adding a loop per unload.
+    test "SPEC §12.2 repeated unloads during unresolved cleanup keep one re-probe loop" do
+      key = {"model/cleanup-loop", "v1"}
+      %{release: release} = hold_custody("model/cleanup-loop", "v1")
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+          |> put_in([:ownership, "incarnation"], "cleanup-loop-worker")
+
+        %{state | recovery: Map.put(state.recovery, key, entry)}
+      end)
+
+      manager = Process.whereis(ModelManager)
+      :erlang.trace(manager, true, [:receive])
+
+      unloads =
+        for _ <- 1..3 do
+          pid =
+            spawn(fn ->
+              ModelManager.unload_model(%UnloadModelRequest{
+                model_id: "model/cleanup-loop",
+                version: "v1"
+              })
+            end)
+
+          Process.sleep(150)
+          pid
+        end
+
+      Process.sleep(2_300)
+      :erlang.trace(manager, false, [:receive])
+
+      probes = count_cleanup_probes(manager)
+
+      try do
+        assert probes in 1..3
+      after
+        Enum.each(unloads, &Process.exit(&1, :kill))
+        release.()
+        :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+      end
     end
 
     # SPEC §12.2.2: while an acknowledged operator command is in progress, only
@@ -384,6 +432,19 @@ defmodule Orchard.Node.ModelManagerTest do
 
     on_exit(stop_runtime)
     %{owner_pid: owner_pid, release: release, stop_runtime: stop_runtime}
+  end
+
+  defp count_cleanup_probes(manager) do
+    receive do
+      {:trace, ^manager, :receive, message}
+      when is_tuple(message) and elem(message, 0) == :recovery_cleanup ->
+        1 + count_cleanup_probes(manager)
+
+      {:trace, ^manager, :receive, _other} ->
+        count_cleanup_probes(manager)
+    after
+      0 -> 0
+    end
   end
 
   defp ensure(model_id, version),

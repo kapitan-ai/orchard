@@ -36,7 +36,8 @@ defmodule Orchard.Node.WorkerRecoveryState do
       last_worker_pid: nil,
       operator_waiters: [],
       operator_deadline: nil,
-      stop_waiters: []
+      stop_waiters: [],
+      cleanup_timer: nil
     }
   end
 
