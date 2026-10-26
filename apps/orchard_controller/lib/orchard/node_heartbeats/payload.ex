@@ -34,6 +34,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
           | :malformed_required_envelope
           | :payload_too_large
           | :placement_entry_overflow
+          | :invalid_worker_recovery_placement
           | :unsupported_schema_version
   @type t :: map()
 
@@ -85,6 +86,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
              :malformed_required_envelope,
              :payload_too_large,
              :placement_entry_overflow,
+             :invalid_worker_recovery_placement,
              :unsupported_schema_version
            ] do
     %{
@@ -127,7 +129,11 @@ defmodule Orchard.NodeHeartbeats.Payload do
       }
     else
       {:error, reason}
-      when reason in [:duplicate_placement_model_ref, :placement_entry_overflow] ->
+      when reason in [
+             :duplicate_placement_model_ref,
+             :placement_entry_overflow,
+             :invalid_worker_recovery_placement
+           ] ->
         invalid(reason)
 
       _error ->
@@ -305,7 +311,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp normalize_placements(placements) when is_list(placements) do
     with :ok <- ensure_unique_placement_model_refs(placements),
-         :ok <- ensure_placement_limit(placements) do
+         :ok <- ensure_placement_limit(placements),
+         :ok <- ensure_recovery_model_refs(placements) do
       {:ok, Enum.flat_map(placements, &normalize_placement/1)}
     end
   end
@@ -340,6 +347,24 @@ defmodule Orchard.NodeHeartbeats.Payload do
   end
 
   defp placement_model_ref_key(_placement), do: :error
+
+  # SPEC §12.2.3: dropping a recovery record whose model reference is unreadable
+  # would leave its key looking cold, so the observation is invalid instead.
+  defp ensure_recovery_model_refs(placements) do
+    if Enum.any?(placements, &unreadable_recovery_placement?/1),
+      do: {:error, :invalid_worker_recovery_placement},
+      else: :ok
+  end
+
+  defp unreadable_recovery_placement?(%Placement{} = placement),
+    do: placement |> Map.from_struct() |> unreadable_recovery_placement?()
+
+  defp unreadable_recovery_placement?(placement) when is_map(placement) do
+    not is_nil(value(placement, :worker_recovery)) and
+      placement_model_ref_key(placement) == :error
+  end
+
+  defp unreadable_recovery_placement?(_placement), do: false
 
   defp ensure_placement_limit(placements) do
     if length(placements) <= ObservationBounds.placement_limit() do

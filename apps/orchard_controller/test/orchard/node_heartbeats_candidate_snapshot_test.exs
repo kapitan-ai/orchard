@@ -135,6 +135,37 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
              })
   end
 
+  # SPEC.md §12.2.3: a recovery record whose model reference cannot be read is
+  # incomplete evidence. Storage must not drop it and leave the Node looking
+  # cold for that key.
+  test "SPEC §12.2 a recovery record with an unreadable model reference is not stored as cold evidence" do
+    node = insert_node!()
+    target = target_for(node)
+
+    placements =
+      WorkerRecoveryEvidence.attach([], [
+        %{model_ref: %{model_id: "", version: "v1"}, worker_recovery_json: "{}"}
+      ])
+
+    heartbeat =
+      append_heartbeat!(node, target, @now, %{
+        worker_recovery_epoch: "epoch",
+        placements: placements
+      })
+
+    assert heartbeat.payload["validity"] == "invalid"
+    assert heartbeat.payload["invalid_reason"] == "invalid_worker_recovery_placement"
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [Target.normalize(target)],
+               [target],
+               observed_at: @now
+             )
+
+    assert snapshot.candidates == []
+  end
+
   test "ADR 0017 returns typed normalized evidence for the exact production intersection" do
     node = insert_node!()
     target = target_for(node)

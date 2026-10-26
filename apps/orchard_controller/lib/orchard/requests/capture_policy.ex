@@ -51,6 +51,7 @@ defmodule Orchard.Requests.CapturePolicy do
   )
   @heartbeat_invalid_reasons ~w(
     duplicate_placement_model_ref
+    invalid_worker_recovery_placement
     malformed_required_envelope
     payload_too_large
     placement_entry_overflow
