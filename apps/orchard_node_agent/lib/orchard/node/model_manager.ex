@@ -116,7 +116,7 @@ defmodule Orchard.Node.ModelManager do
   @reset_recovery_wait_ms 10_000
   @reset_custody_wait_ms 3_000
   @reset_custody_poll_ms 25
-  @reset_call_timeout_ms @reset_recovery_wait_ms + @reset_custody_wait_ms + 2_000
+  @reset_call_timeout_ms max(@reset_recovery_wait_ms, @reset_custody_wait_ms) + 2_000
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -320,11 +320,12 @@ defmodule Orchard.Node.ModelManager do
     end)
 
     state = %{state | recovery_hydrations: %{}}
+    started = System.monotonic_time(:millisecond)
 
     send(
       self(),
       {:recovery_reset_complete, state.recovery_epoch, from,
-       System.monotonic_time(:millisecond) + @reset_recovery_wait_ms}
+       %{recovery: started + @reset_recovery_wait_ms, custody: started + @reset_custody_wait_ms}}
     )
 
     {:noreply, state}
@@ -828,8 +829,12 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  def handle_info({:recovery_reset_complete, epoch, from, deadline}, state)
+  # Both waits run against deadlines fixed when the reset began, so time spent
+  # settling recovery entries comes out of the custody wait instead of adding to it.
+  def handle_info({:recovery_reset_complete, epoch, from, deadlines}, state)
       when epoch == state.recovery_epoch do
+    deadline = deadlines.recovery
+
     resolved? =
       Enum.all?(state.recovery, fn {_key, entry} ->
         is_nil(entry.pending) and is_nil(entry.desired) and
@@ -838,14 +843,14 @@ defmodule Orchard.Node.ModelManager do
 
     cond do
       resolved? ->
-        await_custody_clear(System.monotonic_time(:millisecond) + @reset_custody_wait_ms)
+        await_custody_clear(deadlines.custody)
         GenServer.reply(from, :ok)
 
       System.monotonic_time(:millisecond) >= deadline ->
         GenServer.reply(from, {:error, :unavailable})
 
       true ->
-        Process.send_after(self(), {:recovery_reset_complete, epoch, from, deadline}, 50)
+        Process.send_after(self(), {:recovery_reset_complete, epoch, from, deadlines}, 50)
     end
 
     done? = resolved? or System.monotonic_time(:millisecond) >= deadline

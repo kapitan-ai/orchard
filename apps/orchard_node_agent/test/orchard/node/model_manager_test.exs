@@ -102,6 +102,46 @@ defmodule Orchard.Node.ModelManagerTest do
       release.()
     end
 
+    # SPEC.md §4.9 and §12.2: settling recovery entries during a reset spends
+    # the custody wait budget rather than starting a fresh one afterwards.
+    test "reset keeps its wait budget when recovery entries settle late and the reaper stops answering" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-late", "v1")
+      Process.exit(owner_pid, :kill)
+      key = {"model/reset-settling", "v1"}
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+
+        %{
+          state
+          | recovery: Map.put(state.recovery, key, %{entry | prior?: true, pending: :settling})
+        }
+      end)
+
+      settler =
+        Task.async(fn ->
+          Process.sleep(1_000)
+          :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+          Process.sleep(1_500)
+          :sys.suspend(RuntimeProcessReaper)
+        end)
+
+      started = System.monotonic_time(:millisecond)
+
+      try do
+        assert :ok = ModelManager.reset()
+        assert System.monotonic_time(:millisecond) - started < 4_000
+      after
+        Task.await(settler)
+        :sys.resume(RuntimeProcessReaper)
+      end
+
+      release.()
+    end
+
     test "an unanswered custody query refuses the load instead of assuming nothing runs" do
       :sys.suspend(RuntimeProcessReaper)
 
