@@ -61,9 +61,25 @@ defmodule Orchard.Node.WorkerRecoveryState do
         policy: %{policy | state: state},
         ownership: record["ownership"],
         command: record["command"],
-        prior?: not Record.resolved?(record)
+        prior?: not Record.resolved?(record),
+        sequence: max(entry.sequence, epoch_sequence(entry.epoch, checkpoint[:transition_id]))
     }
   end
+
+  # A checkpoint this epoch already wrote carries one of its transition IDs;
+  # continuing past it keeps a rehydrated entry from reusing that ID.
+  defp epoch_sequence(epoch, "" <> transition_id) do
+    prefix = epoch <> ":"
+
+    with true <- String.starts_with?(transition_id, prefix),
+         {sequence, ""} <- Integer.parse(String.replace_prefix(transition_id, prefix, "")) do
+      sequence
+    else
+      _other_epoch -> 0
+    end
+  end
+
+  defp epoch_sequence(_epoch, _transition_id), do: 0
 
   @spec transition(t(), Policy.event(), integer(), [term()]) :: t()
   def transition(entry, event, now, effects \\ []) do

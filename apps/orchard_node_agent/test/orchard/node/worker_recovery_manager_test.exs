@@ -84,6 +84,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
         replay?(current, id, record) ->
           {:ok, current}
 
+        reused_transition?(current, id) ->
+          {:error, :stale_checkpoint}
+
         current_revision?(current, epoch, revision) ->
           {:ok,
            %{
@@ -120,6 +123,11 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     defp replay?(current, id, record),
       do: current.transition_id == id and current.record == record
+
+    # Like Orchard.WorkerRecovery.Checkpoints, a transition ID already stored
+    # with a different record is stale rather than a new write.
+    defp reused_transition?(nil, _id), do: false
+    defp reused_transition?(current, id), do: current.transition_id == id
 
     defp current_revision?(nil, nil, 0), do: true
     defp current_revision?(nil, _epoch, _revision), do: false
@@ -709,6 +717,30 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
              })
 
     eventually(fn -> match?({:ok, %{state: "armed", eligible: true}}, inspect_key(ctx)) end)
+  end
+
+  # SPEC.md §12.2.1: a cold inspection may claim the placement for this epoch
+  # and then drop its local entry. The next hydration must continue the
+  # epoch's transition sequence, not reuse an ID the Controller already holds.
+  test "SPEC §12.2 a load after a cold inspection claim does not reuse its transition ID", ctx do
+    exact = %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    Checkpoints.seed(exact, %{
+      epoch: "old-epoch",
+      revision: 4,
+      record: WorkerRecoveryState.record(WorkerRecoveryState.new("old-epoch")),
+      transition_id: "old-clean"
+    })
+
+    assert {:ok, %{eligible: true}} = inspect_key(ctx)
+    eventually(fn -> not Map.has_key?(:sys.get_state(ModelManager).recovery, ctx.key) end)
+
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
   end
 
   test "SPEC §12.2 an unavailable epoch-claim checkpoint answers its parked unload waiter", ctx do
