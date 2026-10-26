@@ -8,6 +8,7 @@
     "mlx-validation",
     "packaging-validation",
     "app-distribution-validation",
-    "openspec-validation"
+    "openspec-validation",
+    "supply-chain-validation"
   ]
 }

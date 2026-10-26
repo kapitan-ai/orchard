@@ -254,6 +254,160 @@ def test_main_accepts_enforce_memory_budget_mode(monkeypatch) -> None:
     assert memory_budget_config.mode == "enforce"
 
 
+_LEGACY_STRICT_PREFIX_ENV = "ORCHARD_WORKER_STRICT_PREFIX_CHECKPOINTS"
+_STRICT_PREFIX_ARGS = (
+    "--prefix-cache-mode",
+    "strict_prefix",
+    "--generation-mode",
+    "stream",
+    "--strict-prefix-slot-bytes",
+    "100",
+    "--strict-prefix-budget-bytes",
+    "100",
+)
+
+
+def _run_main_capturing_prefix_config(
+    monkeypatch, *extra: str, env: dict[str, str] | None = None, backend: str = "mlx"
+) -> object:
+    from orchard_worker_mlx import cli
+
+    monkeypatch.delenv(_LEGACY_STRICT_PREFIX_ENV, raising=False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "serve", lambda *_args, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cli, "_configure_logging", lambda *_args: None)
+
+    assert (
+        cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", backend, *extra]) == 0
+    )
+    return captured["prefix_cache_config"]
+
+
+def test_main_leaves_strict_prefix_checkpoints_off_by_default(monkeypatch) -> None:
+    config = _run_main_capturing_prefix_config(monkeypatch)
+
+    assert config.strict_prefix is None
+    assert config.mode == "kv"
+
+
+def test_main_reads_strict_prefix_checkpoints_from_flags(monkeypatch) -> None:
+    config = _run_main_capturing_prefix_config(
+        monkeypatch,
+        "--prefix-cache-mode",
+        "strict_prefix",
+        "--generation-mode",
+        "stream",
+        "--strict-prefix-slots",
+        "2",
+        "--strict-prefix-slot-bytes",
+        "9663676416",
+        "--strict-prefix-budget-bytes",
+        "19327352832",
+        "--strict-prefix-reply-marker",
+        "<|im_start|>assistant\n",
+    )
+
+    assert config.mode == "strict_prefix"
+    strict = config.strict_prefix
+    assert (strict.slots, strict.slot_bytes, strict.budget_bytes) == (2, 9663676416, 19327352832)
+    assert strict.reply_marker == "<|im_start|>assistant\n"
+
+
+def test_main_defaults_strict_prefix_slots_and_reply_marker(monkeypatch) -> None:
+    from orchard_worker_mlx.strict_prefix_checkpoints import DEFAULT_REPLY_MARKER
+
+    config = _run_main_capturing_prefix_config(monkeypatch, *_STRICT_PREFIX_ARGS)
+
+    assert config.strict_prefix.slots == 1
+    assert config.strict_prefix.reply_marker == DEFAULT_REPLY_MARKER
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (
+            (
+                "--prefix-cache-mode",
+                "strict_prefix",
+                "--generation-mode",
+                "batch",
+                "--strict-prefix-slot-bytes",
+                "100",
+                "--strict-prefix-budget-bytes",
+                "100",
+            ),
+            "requires --generation-mode=stream",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--memory-budget-mode", "enforce"),
+            "requires --memory-budget-mode observe",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--memory-budget-mode", "disabled"),
+            "requires --memory-budget-mode observe",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--strict-prefix-slots", "2"),
+            "cannot hold 2 slots",
+        ),
+        (
+            (
+                "--prefix-cache-mode",
+                "strict_prefix",
+                "--generation-mode",
+                "stream",
+                "--strict-prefix-budget-bytes",
+                "100",
+            ),
+            "requires --strict-prefix-slot-bytes",
+        ),
+        (
+            ("--prefix-cache-mode", "kv", "--strict-prefix-slot-bytes", "100"),
+            "--strict-prefix-slot-bytes require --prefix-cache-mode strict_prefix",
+        ),
+        (
+            (*_STRICT_PREFIX_ARGS, "--strict-prefix-reply-marker", ""),
+            "reply_marker must be a non-empty string",
+        ),
+    ],
+)
+def test_main_refuses_unusable_strict_prefix_settings(
+    monkeypatch, capsys, args: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(SystemExit):
+        _run_main_capturing_prefix_config(monkeypatch, *args)
+
+    assert message in capsys.readouterr().err
+
+
+def test_main_refuses_strict_prefix_with_the_stub_backend(monkeypatch, capsys) -> None:
+    with pytest.raises(SystemExit):
+        _run_main_capturing_prefix_config(monkeypatch, *_STRICT_PREFIX_ARGS, backend="stub")
+
+    assert "requires --backend=mlx" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["enabled", "on"])
+def test_main_refuses_the_legacy_strict_prefix_variable(monkeypatch, capsys, value: str) -> None:
+    # An older Node Agent passes its environment to the Worker.  The Worker
+    # refuses rather than turn reuse on for every model on that Node.
+    with pytest.raises(SystemExit):
+        _run_main_capturing_prefix_config(monkeypatch, env={_LEGACY_STRICT_PREFIX_ENV: value})
+
+    err = capsys.readouterr().err
+    assert f"{_LEGACY_STRICT_PREFIX_ENV}={value} is no longer supported" in err
+
+
+@pytest.mark.parametrize("value", ["", "disabled"])
+def test_main_ignores_an_unset_or_disabled_legacy_variable(monkeypatch, value: str) -> None:
+    config = _run_main_capturing_prefix_config(monkeypatch, env={_LEGACY_STRICT_PREFIX_ENV: value})
+
+    assert config.mode == "kv"
+    assert config.strict_prefix is None
+
+
 def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
     from orchard_worker_mlx import cli
 
@@ -270,6 +424,22 @@ def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
                 "batch",
             ]
         )
+
+
+def test_main_defaults_vllm_poc_backend_to_stream(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    captured: dict[str, object] = {}
+
+    def fake_serve(_socket_path: str, backend: str, **kwargs: object) -> None:
+        captured["backend"] = backend
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "vllm_poc"]) == 0
+    assert captured["backend"] == "vllm_poc"
+    assert captured["generation_config"].mode == "stream"
 
 
 def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:

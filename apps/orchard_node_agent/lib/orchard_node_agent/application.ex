@@ -32,6 +32,9 @@ defmodule Orchard.NodeAgent.Application do
     # This ensures GetStatus can report stable metadata from first request.
     Identity.ensure_identity!()
     SourceStartup.after_identity!(startup_guard)
+    # Refuse to start with an invalid per-model Worker settings file instead of
+    # failing each model load later.
+    Orchard.Node.load_worker_launch_policy!()
 
     start_result =
       Supervisor.start_link(child_specs(),
