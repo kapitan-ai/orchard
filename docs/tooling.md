@@ -21,6 +21,7 @@ Required validation runs broad portable Orchard control-plane core compilation, 
 Separate macOS lanes prove host lifecycle, packaging contracts, Orchard.app and DMG assembly, and MLX runtime behavior.
 Native Orchard.app and DMG distribution is paused under `SPEC.md` §11.0, so `scripts/ci/resolve-app-distribution-lane.sh` reads the committed `packaging/distribution-control` and reports `app_distribution=false`; CI then skips the assembly lane, and the gate expects that skip.
 `scripts/ci/classify-required-validation-paths.sh` selects which lanes a pull request runs from its changed paths, unknown paths select every lane, and `scripts/ci/evaluate-required-validation.sh` backs the single required `Required Orchard validation gate` check by demanding success from every selected lane and `skipped` from every unselected one.
+`scripts/ci/classify-supply-chain-paths.sh` separately selects the supply-chain lane described in [Supply-Chain Checks](#supply-chain-checks).
 Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain credentialed release-only operations.
 
 ## Required Toolchain
@@ -64,6 +65,8 @@ The pinned toolchain currently covers:
 | OpenSpec | `@fission-ai/openspec@1.13.2` | OpenSpec change/spec validation |
 | esbuild | `0.28.2` | Phoenix JavaScript asset bundling CLI |
 | Tailwind CSS | `4.3.3` | Phoenix CSS asset build CLI |
+| OSV-Scanner | `2.7.0` | Dependency vulnerability checks (`make osv`, `make osv-diff`) |
+| zizmor | `1.30.1` | GitHub Actions workflow static analysis (`make zizmor`) |
 
 The mise environment also sets:
 
@@ -158,6 +161,7 @@ make dev-controller
 make dev-node-agent
 make openspec
 make validate-product-version
+make supply-chain
 make check-elixir
 ```
 
@@ -305,6 +309,59 @@ Shared distribution-neutral payload builds should run through the same toolchain
 ```bash
 mise exec -- ./scripts/build-payload.sh
 ```
+
+## Supply-Chain Checks
+
+Two pinned open-source scanners check CI workflow definitions and third-party dependencies.
+Run them before pushing with the same commands the required lane runs:
+
+```bash
+make supply-chain   # make zizmor plus make osv-diff, as the CI lane runs them
+make zizmor         # mise exec -- zizmor .
+make osv            # mise exec -- node scripts/ci/osv-scan.mjs
+make osv-diff       # mise exec -- node scripts/ci/osv-scan.mjs --base "$OSV_BASE"
+```
+
+`OSV_BASE` defaults to `origin/main`.
+Fetch first so the comparison uses the current base.
+
+zizmor audits `.github/**` for template injection, excessive permissions, persisted credentials, unpinned or impostor action references, and related workflow risks.
+Findings at zizmor's default severity and confidence fail the command.
+It runs offline unless `GH_TOKEN` is set; `GH_TOKEN=$(gh auth token) make zizmor` adds the online audits that CI runs with the workflow token.
+Suppress a false positive with a narrow `# zizmor: ignore[<audit>]` comment that says why.
+
+`scripts/ci/osv-scan.mjs` runs OSV-Scanner on every lockfile in the enclosing Git repository whose name the script lists: today `mix.lock`, `package-lock.json`, and each `uv.lock`, plus names such as `Package.resolved` and `Cargo.lock` for future dependencies.
+It discovers tracked lockfiles and untracked lockfiles that are not ignored, so a local run sees a new lockfile before it is staged.
+A lockfile that OSV-Scanner reads no packages from is an error, not a clean result.
+`make osv` lists every known vulnerability and exits non-zero while any remain.
+`make osv-diff` compares the working tree with the merge base of `OSV_BASE` and fails only on vulnerabilities that the change introduces.
+A version change that stays inside the same advisory, under any of its aliased records, is not new; the same advisory in another lockfile is.
+Exit status `0` means no reported vulnerabilities, `1` means reported vulnerabilities, and `2` means a scanner, Git, or usage error.
+
+By default OSV-Scanner sends package names and versions, not source code, to `api.osv.dev`.
+For a run without that query, pass scanner arguments after `--`: `-- --offline-vulnerabilities --download-offline-databases` fetches the OSV databases, and later runs with `-- --offline-vulnerabilities` use the local copy.
+
+Fix first.
+`osv-scanner.toml` holds exceptions for every scanned lockfile, and both sides of a comparison use the working tree's copy.
+An exception is an accountable product-owner decision to accept a known vulnerability, with the advisory ID, a dated `ignoreUntil`, and a reason such as "no released fix upstream".
+Do not add one to make the lane pass.
+
+The required `Supply-chain validation` lane installs the pinned toolchain and runs `make zizmor` and `make osv-diff`.
+`scripts/ci/classify-supply-chain-paths.sh` selects it when a pull request changes a dependency manifest or lockfile at any depth, `.github/**`, `mise.toml`, `osv-scanner.toml`, a root `zizmor.yml` or `zizmor.yaml`, `Makefile`, or `scripts/ci/**`.
+A path that Git quotes because of special characters also selects it.
+It also runs on every push to `main`, compared against the previous `main` commit.
+Concurrent `main` runs cancel earlier ones, so a run that a later push cancels is not compared on `main`; its pull request lane already ran.
+Because it fails only on introduced vulnerabilities, the existing backlog does not block unrelated pull requests; `make osv` and Dependabot alerts keep that backlog visible, and dependency update work owns remediation.
+
+GitHub's dependency graph cannot read `mix.lock`.
+`.github/workflows/dependency-submission.yml` runs `erlef/mix-dependency-submission` on every push to `main` and on manual dispatch, and submits the Mix dependency snapshot so Hex dependencies get Dependabot alerts.
+Its job alone holds `contents: write`, which the Dependency Submission API requires; pull requests never submit.
+The action downloads its release binary and verifies its build provenance with `gh attestation verify` before running it.
+That proves the upstream release workflow built the binary from the `v1.3.4` tag, not a fixed digest, so the job's write token trusts the upstream release pipeline.
+Dependabot does not open security-update pull requests for Hex.
+
+`packaging/app` declares no third-party Swift packages today.
+A `Package.swift` change selects the lane, and a committed `Package.resolved` is scanned.
 
 ## Generated Contracts
 

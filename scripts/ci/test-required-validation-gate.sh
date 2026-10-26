@@ -32,6 +32,7 @@ COMMON=(
   PACKAGING_REQUIRED=false PACKAGING_RESULT=skipped
   APP_DISTRIBUTION_REQUIRED=false APP_DISTRIBUTION_RESULT=skipped
   OPENSPEC_REQUIRED=true OPENSPEC_RESULT=success
+  SUPPLY_CHAIN_REQUIRED=false SUPPLY_CHAIN_RESULT=skipped
 )
 
 # Packaging change while the Distribution Pause Control is paused.
@@ -50,6 +51,15 @@ run_case fail openspec-pin-check-fails "${COMMON[@]}" OPENSPEC_RESULT=failure
 run_case fail required-openspec-pin-check-skips "${COMMON[@]}" OPENSPEC_RESULT=skipped
 run_case fail empty-requirement "${COMMON[@]}" PORTABLE_REQUIRED=
 run_case fail malformed-requirement "${COMMON[@]}" CONFORMANCE_REQUIRED=maybe
+
+run_case pass supply-chain-lane-passes "${COMMON[@]}" \
+  SUPPLY_CHAIN_REQUIRED=true SUPPLY_CHAIN_RESULT=success
+run_case fail supply-chain-lane-fails "${COMMON[@]}" \
+  SUPPLY_CHAIN_REQUIRED=true SUPPLY_CHAIN_RESULT=failure
+run_case fail required-supply-chain-lane-skips "${COMMON[@]}" \
+  SUPPLY_CHAIN_REQUIRED=true SUPPLY_CHAIN_RESULT=skipped
+run_case fail inapplicable-supply-chain-lane-runs "${COMMON[@]}" SUPPLY_CHAIN_RESULT=success
+run_case fail empty-supply-chain-requirement "${COMMON[@]}" SUPPLY_CHAIN_REQUIRED=
 
 run_case pass paused-assembly-lane-skipped "${PAUSED_PACKAGING[@]}"
 run_case fail paused-assembly-lane-runs "${PAUSED_PACKAGING[@]}" APP_DISTRIBUTION_RESULT=success
@@ -74,6 +84,7 @@ run_case pass all-lanes-skipped \
   MLX_REQUIRED=false MLX_RESULT=skipped \
   PACKAGING_REQUIRED=false PACKAGING_RESULT=skipped \
   APP_DISTRIBUTION_REQUIRED=false APP_DISTRIBUTION_RESULT=skipped \
-  OPENSPEC_REQUIRED=false OPENSPEC_RESULT=skipped
+  OPENSPEC_REQUIRED=false OPENSPEC_RESULT=skipped \
+  SUPPLY_CHAIN_REQUIRED=false SUPPLY_CHAIN_RESULT=skipped
 
 printf 'required validation aggregate-gate tests passed\n'
