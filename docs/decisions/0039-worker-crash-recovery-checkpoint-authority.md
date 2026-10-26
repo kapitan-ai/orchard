@@ -22,7 +22,8 @@ Two OpenSpec change packages proposed how to persist that state for issue #379:
 - `worker-crash-recovery` governs #379. `define-worker-crash-recovery` is removed rather than amended.
 - The scheduler reason for an open crash-loop breaker is `placement_crash_breaker_open`.
 - After Node Agent state loss, interrupted or history-bearing placements require explicit operator recovery; clean and new placements load normally.
-- Any non-forced unload resets the breaker, alongside operator clear and forced reload.
+- A successful non-forced `unload` recovery command resets the breaker, alongside operator clear and forced reload.
+  An ordinary unload, including one an operator issues outside the recovery command, does not (`SPEC.md` §12.2.2).
 - A reused PID is not proof that a prior runtime exited.
   Automatic recovery stays blocked until custody proves the recorded runtime incarnation ended, or its host boot ended (`SPEC.md` §12.2.2).
 - All-in-one source development runs the Node Agent inside the Controller's BEAM without an enrolled identity, so it calls the same compare-and-set storage in-process.
