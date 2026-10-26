@@ -153,7 +153,7 @@ For a remote worker, the operator must pre-stage the same model at a usable path
 Console and docs must not claim that one local import distributes the model across the cluster today.
 
 `SPEC.md` §12.2 recovery control also gates model residency, so the first request needs more than a granted model.
-The Node Agent that loads the model must hold its registered Node identity and reach the Controller recovery-control listener, or every load is refused with `placement_recovery_required`.
+A split-role or packaged Node Agent must hold its registered Node identity and reach the Controller recovery-control listener, or every load is refused with `placement_recovery_required`; all-in-one source dev reads its checkpoints in-process.
 See [`packaging/README.md`](../packaging/README.md#operator-bootstrap) for packaged hosts and [`local-dev.md`](local-dev.md#worker-recovery-control) for source development.
 
 ### Current Friction Baseline

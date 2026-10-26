@@ -63,7 +63,12 @@ Automatic recovery SHALL restore residency only under explicit recovery ownershi
 
 ### Requirement: Bounded durable checkpoint and scoped epoch recovery
 
-The Node SHALL preserve recovery safety through the bounded Postgres checkpoint accessed via the authenticated Active Controller in `SPEC.md` §12.2.2. It SHALL checkpoint in-progress ownership before worker admission and checkpoint reset/clear before acknowledging it. Local files, direct Node database access, and lagging status observations MUST NOT substitute for this authority. Ordinary reset SHALL preserve known open state/history and fence affected work. State loss SHALL block only interrupted/history-bearing/uncertain placements, not clean or new keys; unavailable hydration SHALL defer admission rather than imply clean state.
+The Node SHALL preserve recovery safety through the bounded Postgres checkpoint accessed via the authenticated Active Controller in `SPEC.md` §12.2.2. It SHALL checkpoint in-progress ownership before worker admission and checkpoint reset/clear before acknowledging it. A Node Agent running inside the Controller's own BEAM in all-in-one source development SHALL invoke the same compare-and-set storage in-process, without a Node inventory row or enrollment. Local files, direct Node database access from a separate Node process, and lagging status observations MUST NOT substitute for this authority. Ordinary reset SHALL preserve known open state/history and fence affected work. State loss SHALL block only interrupted/history-bearing/uncertain placements, not clean or new keys; unavailable hydration SHALL defer admission rather than imply clean state.
+
+#### Scenario: All-in-one source development uses in-process checkpoints
+- **WHEN** the Node Agent runs inside the Controller's BEAM in all-in-one source development and has no enrolled identity
+- **THEN** it hydrates and commits the exact key's checkpoint in-process and loads a clean key normally
+- **AND** it refuses the load as recovery-required whenever Postgres cannot answer
 
 #### Scenario: Fresh installation loads normally
 - **WHEN** authoritative hydration finds no checkpoint for a new exact key

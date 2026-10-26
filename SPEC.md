@@ -6098,7 +6098,11 @@ implicit recovery. A bounded per-placement recovery checkpoint SHALL persist in
 Postgres through the authenticated Active Controller; the Node remains the local
 policy/admission authority and SHALL NOT use a local file journal or direct
 database credentials. Only the Node SHALL originate checkpoint mutations;
-the Controller SHALL execute its authenticated compare-and-set requests.
+the Controller SHALL execute its authenticated compare-and-set requests. A Node
+Agent that runs inside the Controller's own BEAM in all-in-one source
+development SHALL invoke the same compare-and-set storage in-process instead of
+over the identity-bound path; it needs no Node inventory row or enrollment, and
+the same fail-closed rules apply when Postgres cannot answer.
 Operator API handlers SHALL validate/forward commands without pre-claiming or
 mutating the checkpoint. Before admitting a worker or recovery effect, the Node
 SHALL durably mark that exact placement's in-progress ownership and revision;
