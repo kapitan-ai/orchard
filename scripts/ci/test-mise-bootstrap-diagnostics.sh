@@ -124,7 +124,7 @@ check_workflow() {
   NF && $0 !~ /^[ \t]*#/ { stanza = stanza $0 "\n" }
   END {
     check_step()
-    count = split("linux-portable provider-conformance macos-host mlx-validation packaging-validation app-distribution-validation openspec-validation", jobs, " ")
+    count = split("linux-portable provider-conformance macos-host mlx-validation packaging-validation app-distribution-validation openspec-validation supply-chain-validation", jobs, " ")
     for (i = 1; i <= count; i++) if (installs[jobs[i]] != 1 || reports[jobs[i]] != 1) bad = 1
     for (name in installs) if (installs[name] != 1 || reports[name] != 1) bad = 1
     for (name in reports) if (installs[name] != 1 || reports[name] != 1) bad = 1
