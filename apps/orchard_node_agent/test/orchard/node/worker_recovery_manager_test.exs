@@ -807,6 +807,43 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   # checkpoint must stay bounded. Once the write has already failed, the claim
   # answers immediately instead of re-arming a 50 ms timer until the Controller
   # load deadline expires.
+  # SPEC.md §12.2.2: an ordinary ensure queued behind an acknowledged operator
+  # command must not load in the middle of it and leave the command claimed.
+  test "SPEC §12.2 an ordinary ensure cannot interleave with an acknowledged operator command",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    assert %{ok: true} =
+             ModelManager.unload_model(%UnloadModelRequest{
+               model_id: ctx.request.model_id,
+               version: ctx.request.version
+             })
+
+    :sys.replace_state(ModelManager, fn state ->
+      update_in(state.recovery[ctx.key], fn entry ->
+        assert entry.owner_epoch == entry.epoch and is_nil(entry.desired)
+
+        %{
+          entry
+          | command: %{
+              "id" => "operator-clear",
+              "fingerprint" => "fingerprint",
+              "action" => "clear",
+              "phase" => "claimed",
+              "outcome" => nil
+            }
+        }
+      end)
+    end)
+
+    assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
+             "worker_restart_in_progress"
+
+    assert :error = worker_pid(ctx)
+    assert {:ok, %{state: "restarting", eligible: false}} = inspect_key(ctx)
+  end
+
   test "SPEC §12.2 a sustained checkpoint outage answers the blocked claim promptly", ctx do
     exact = %{
       node_id: ctx.request.node_id,

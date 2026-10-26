@@ -1233,9 +1233,14 @@ defmodule Orchard.Node.ModelManager do
     entry.hydrated? and not entry.prior? and is_nil(entry.desired) and is_nil(entry.pending) and
       is_nil(entry.policy.incarnation) and
       entry.ownership["phase"] in ["resolved", "operator_terminated"] and
-      (entry.policy.state == :armed or
-         (entry.policy.state == :restarting and inflight.recovery_owner))
+      recovery_claim_owner?(entry, inflight.recovery_owner)
   end
+
+  # Only the recovery operation's own load may claim while it is in progress.
+  defp recovery_claim_owner?(entry, true), do: entry.policy.state in [:armed, :restarting]
+
+  defp recovery_claim_owner?(entry, _ordinary),
+    do: entry.policy.state == :armed and not RecoveryCommand.active?(entry.command)
 
   defp begin_operator_recovery(state, key, entry, command, from) do
     case operator_recovery_admission(state, key, entry, command) do

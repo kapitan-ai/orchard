@@ -247,6 +247,45 @@ defmodule Orchard.Node.ModelManagerTest do
       assert cleared.recovery[key].ownership["phase"] == "resolved"
     end
 
+    # SPEC §12.2.2: while an acknowledged operator command is in progress, only
+    # its own recovery load may claim the worker slot.
+    test "SPEC §12.2 an ordinary load cannot claim the worker slot during an operator command" do
+      key = {"model/operator-claim", "v1"}
+      base = :sys.get_state(ModelManager)
+
+      entry =
+        base.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> Map.merge(%{
+          owner_epoch: base.recovery_epoch,
+          command: %{"id" => "operator-clear", "phase" => "claimed"}
+        })
+
+      inflight = %{
+        task_pid: self(),
+        worker_pid: nil,
+        request: ensure_request("model/operator-claim", "v1"),
+        recovery_owner: false
+      }
+
+      state = %{
+        base
+        | recovery: Map.put(base.recovery, key, entry),
+          inflight_loads: Map.put(base.inflight_loads, key, inflight)
+      }
+
+      assert {:reply, {:error, {:worker_recovery_refused, :worker_restart_in_progress}}, next} =
+               ModelManager.handle_call(
+                 {:recovery_claim_worker, key},
+                 {self(), make_ref()},
+                 state
+               )
+
+      assert next.recovery[key].policy.incarnation == nil
+      assert next.recovery[key].desired == nil
+    end
+
     test "a finished eviction whose runtime is still under custody refuses instead of evicting again" do
       previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 

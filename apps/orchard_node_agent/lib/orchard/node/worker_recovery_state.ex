@@ -9,6 +9,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
 
   alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.Node.WorkerCrashPolicy, as: Policy
+  alias Orchard.Node.WorkerRecoveryCommand, as: RecoveryCommand
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint, as: Record
 
   @type t :: map()
@@ -203,6 +204,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
   def refusal(entry) do
     cond do
       recovery_required?(entry) -> :placement_recovery_required
+      operator_command_active?(entry) -> :worker_restart_in_progress
       entry.policy.state == :backoff -> :worker_restart_backoff
       entry.policy.state == :restarting -> :worker_restart_in_progress
       entry.policy.state == :open -> :placement_crash_breaker_open
@@ -215,6 +217,12 @@ defmodule Orchard.Node.WorkerRecoveryState do
       intentional_effect_pending?(Map.get(entry, :effects, [])) or
       entry.hydrated? == false or
       entry.policy.state == :recovery_required or entry.prior?
+  end
+
+  # An acknowledged operator command owns the placement until it completes, so
+  # an ordinary load cannot interleave with it (SPEC §12.2.2).
+  defp operator_command_active?(entry) do
+    RecoveryCommand.active?(Map.get(entry, :command)) and entry.owner_epoch == entry.epoch
   end
 
   defp intentional_effect_pending?(effects) do
@@ -245,5 +253,6 @@ defmodule Orchard.Node.WorkerRecoveryState do
   end
 
   defp projection_state(_state, :placement_recovery_required), do: :recovery_required
+  defp projection_state(_state, :worker_restart_in_progress), do: :restarting
   defp projection_state(state, _reason), do: state
 end
