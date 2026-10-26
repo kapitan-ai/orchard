@@ -86,7 +86,7 @@ Orchard MUST preserve `SPEC.md` sections 7.2.1, 7.2.4, 7.2.5, 7.5.3a, and 13.1 w
 
 #### Scenario: Implementation or deployment prerequisite is incomplete
 
-- **WHEN** the selector contract is accepted but any required #326-#329 implementation or applicable PR #421 deployment attestation remains incomplete
+- **WHEN** the selector contract is accepted but any required #326-#329 implementation, applicable PR #421 deployment attestation, or per-model final-only discovery metadata remains incomplete
 - **THEN** both endpoints keep rejecting the selector as an unsupported field exactly as they do today
 - **AND** Orchard does not treat contract acceptance, a merged reader, green CI, static fixtures, or successful rendered-input steering as activation evidence
 

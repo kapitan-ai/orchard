@@ -2493,6 +2493,7 @@ When the selector is present, the normalized public control, including `enabled`
 Contract acceptance does not activate the selector.
 Until activation, both endpoints SHALL keep rejecting it as an unsupported field exactly as they do today.
 Public exposure SHALL remain disabled until canonical normalization and exact rendering, negotiated runtime encoding, parser and final-only projection, and reasoning-aware usage, retry, and capture have all been implemented and merged.
+Activation SHALL also require per-model final-only discovery metadata, defined by a later accepted change, so that a client can determine whether the selected model supports the selector before sending it.
 Before classified usage writers required by that activation are enabled, the compatible usage-status reader bridge SHALL be deployed to every Controller and background reader and that deployment SHALL be explicitly attested.
 Activation SHALL NOT change rendered-effort behavior, and the selector's activation requirements SHALL NOT be inferred from successful rendered-input steering.
 

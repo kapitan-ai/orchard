@@ -13,7 +13,7 @@
 - [x] 2.2 Run strict validation for every OpenSpec change and review the package for placeholder prose.
 - [ ] 2.3 Run applicable documentation and specification checks and independent contract review of the reconciled selector design.
 - [ ] 2.4 After dependency-ordered archive or sync, rerun strict all-spec validation and review generated main specs for placeholder prose and for deferral prose this change has now satisfied. This includes `define-qualified-reasoning-effort`'s deferred-public-field-name sentence, the `define-reasoning-output-contract` 6.1 and `define-qualified-reasoning-effort` 4.2 tracking items, and the "negotiated final-only parsing remains separate" note in `request-local-reasoning-effort`. Reconcile each in its owning package rather than here.
-- [ ] 2.5 Product owner accepts the selector design: the `enabled` name rather than a named projection selector, the Chat top-level `reasoning` object containing only `enabled`, final-only effort limited to the closed negotiated vocabulary with other well-formed identifiers rejected as `unsupported_reasoning_control`, and unrecognized members keeping main's `unsupported_parameter` with `reasoning.<member>` instead of the earlier echo-free `reasoning` path.
+- [x] 2.5 Product owner accepts the selector design: the `enabled` name rather than a named projection selector, the Chat top-level `reasoning` object containing only `enabled`, final-only effort limited to the closed negotiated vocabulary with other well-formed identifiers rejected as `unsupported_reasoning_control`, and unrecognized members keeping main's `unsupported_parameter` with `reasoning.<member>` instead of the earlier echo-free `reasoning` path. Accepted by Najib on 2026-10-26, with per-model final-only discovery added as an activation gate (task 3.5).
 
 ## 3. Implement and activate in owned follow-on work
 
@@ -21,5 +21,5 @@
 - [ ] 3.2 Complete and merge issue #327 negotiated runtime encoding and exact loaded-proof implementation.
 - [ ] 3.3 Complete and merge issue #328 parser and final-only projection implementation.
 - [ ] 3.4 Complete and merge issue #329 usage, retry, capture, and replay implementation. Before its classified writers activate, explicitly attest that PR #421's compatible readers are deployed to every Controller and background reader.
-- [ ] 3.5 Implement the accepted selector consistently in Chat Completions and Responses only after tasks 3.1-3.4 are satisfied, with regression tests proving that omitted and effort-only requests keep their current outcomes.
-- [ ] 3.6 Keep Console #330, structured reasoning items and events, public reasoning-token usage, final-only discovery metadata, production registrations, and model-specific mappings outside this change.
+- [ ] 3.5 Implement the accepted selector consistently in Chat Completions and Responses only after tasks 3.1-3.4 are satisfied and a later accepted change defines per-model final-only discovery metadata, with regression tests proving that omitted and effort-only requests keep their current outcomes.
+- [ ] 3.6 Keep Console #330, structured reasoning items and events, public reasoning-token usage, the definition of final-only discovery metadata, production registrations, and model-specific mappings outside this change.
