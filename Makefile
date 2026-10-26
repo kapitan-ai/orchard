@@ -1,4 +1,4 @@
-.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version macos-native-helpers macos-native-test-helpers linux-native-helpers linux-native-test-helpers format compile credo dialyzer test cover check-elixir
+.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version supply-chain zizmor osv osv-diff macos-native-helpers macos-native-test-helpers linux-native-helpers linux-native-test-helpers format compile credo dialyzer test cover check-elixir
 
 MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
 
@@ -11,6 +11,10 @@ help:
 	  '  make dev-node-agent Run source-dev node-agent host' \
 	  '  make openspec       Run pinned OpenSpec validation' \
 	  '  make validate-product-version Validate Product Version consistency' \
+	  '  make supply-chain   Run the supply-chain lane (zizmor + osv-diff)' \
+	  '  make zizmor         Audit GitHub Actions workflows' \
+	  '  make osv            List every known dependency vulnerability' \
+	  '  make osv-diff       Fail on vulnerabilities introduced since OSV_BASE' \
 	  '  make macos-native-helpers Build macOS helpers for source development' \
 	  '  make macos-native-test-helpers Build macOS helpers for Mix tests' \
 	  '  make linux-native-helpers Build Linux helpers for source development' \
@@ -50,6 +54,19 @@ openspec:
 
 validate-product-version:
 	mise exec -- elixir scripts/validate-product-version.exs
+
+OSV_BASE ?= origin/main
+
+supply-chain: zizmor osv-diff
+
+zizmor:
+	mise exec -- zizmor .
+
+osv:
+	mise exec -- node scripts/ci/osv-scan.mjs
+
+osv-diff:
+	mise exec -- node scripts/ci/osv-scan.mjs --base "$(OSV_BASE)"
 
 macos-native-helpers:
 	scripts/build-macos-native-helpers.sh --output _build/dev/lib/orchard_cli/priv

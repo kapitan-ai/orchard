@@ -499,7 +499,7 @@ worker_generation_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
-         if worker_backend == "stub" do
+         if worker_backend in ["stub", "vllm_poc"] do
            "stream"
          else
            Keyword.fetch!(worker_defaults, :worker_generation_mode)
@@ -773,6 +773,10 @@ config :orchard_node_agent,
   runtime:
     node_runtime_defaults
     |> Keyword.merge(worker_settings)
+    |> Keyword.put(
+      :worker_model_overrides_file,
+      System.get_env("ORCHARD_WORKER_MODEL_OVERRIDES_FILE")
+    )
     |> Keyword.merge(
       worker_ready_timeout_ms:
         env_positive_int.(

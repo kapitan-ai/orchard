@@ -33,7 +33,7 @@ LEGACY_PROTO = (
 # real schema revision rather than the current bindings.
 N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
 N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
-EXPECTED_DESCRIPTOR_SET_SHA256 = "44e5b8e359730a95b343a78077b86b628b8690d012c21f19f070502958c52ca4"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "4cd6fe5d9bd9cf620466b570a836ea5103d469ff224385cf649a227a9fca8f76"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
@@ -85,6 +85,8 @@ EXPECTED_MESSAGES = {
         ("status_message", 13, "TYPE_STRING", False, None),
         ("session_started_unix_ms", 14, "TYPE_UINT64", False, None),
         ("prefix_cache_fingerprints", 15, "TYPE_STRING", True, None),
+        ("checkpoint_uncertain_count", 16, "TYPE_UINT32", False, None),
+        ("checkpoint_retained_bytes", 17, "TYPE_UINT64", False, None),
     ],
     "WorkerCapabilityProfile": [
         ("profile_id", 1, "TYPE_STRING", False, None),
@@ -578,6 +580,31 @@ def test_committed_python_fixture_is_produced_by_the_generated_binding() -> None
     assert fixture.read_bytes() == _python_worker_status_fixture().SerializeToString(
         deterministic=True
     )
+
+
+def _python_worker_status_checkpoints_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
+    response = _python_worker_status_fixture()
+    response.prefix_cache.implementation = "strict_prefix"
+    response.prefix_cache.checkpoint_uncertain_count = 1
+    response.prefix_cache.checkpoint_retained_bytes = 3_000
+    return response
+
+
+def test_committed_python_checkpoints_fixture_is_produced_by_the_generated_binding() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response_checkpoints.pb"
+
+    assert fixture.read_bytes() == _python_worker_status_checkpoints_fixture().SerializeToString(
+        deterministic=True
+    )
+
+
+def test_previous_revision_python_fixture_decodes_with_zero_checkpoint_counters() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
+
+    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes())
+
+    assert decoded.prefix_cache.checkpoint_uncertain_count == 0
+    assert decoded.prefix_cache.checkpoint_retained_bytes == 0
 
 
 def test_previous_revision_python_fixture_decodes_with_capabilities_absent() -> None:

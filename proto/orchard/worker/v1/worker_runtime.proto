@@ -62,6 +62,13 @@ message WorkerPrefixCacheStatus {
   string status_message = 13;
   uint64 session_started_unix_ms = 14;
   repeated string prefix_cache_fingerprints = 15;
+  // Strict-prefix checkpoints only (implementation == "strict_prefix"); zero
+  // otherwise. Uncertain checkpoints are failed copies that stay charged
+  // against the budget until unload and are never restored.
+  uint32 checkpoint_uncertain_count = 16;
+  // Measured bytes of retained checkpoint snapshots, as distinct from the
+  // fixed per-slot charges reported in total_bytes. Not process RSS.
+  uint64 checkpoint_retained_bytes = 17;
 }
 
 // One indivisible unit of capability evidence. Every scalar is required inside
