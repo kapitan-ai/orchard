@@ -20,6 +20,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
   @minimum_max_bytes 128
   @string_limit_bytes 512
   @model_ref_limit 160
+  # Matches the exact-key field bound of SPEC §12.2 recovery evidence.
+  @recovery_key_field_limit 256
   @status_limit 80
   @uint32_max 4_294_967_295
   @uint64_max 18_446_744_073_709_551_615
@@ -340,7 +342,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
     do: placement |> Map.from_struct() |> placement_model_ref_key()
 
   defp placement_model_ref_key(placement) when is_map(placement) do
-    case normalize_model_ref(value(placement, :model_ref)) do
+    case placement_model_ref(placement) do
       {:ok, %{"model_id" => model_id, "version" => version}} -> {:ok, {model_id, version}}
       :error -> :error
     end
@@ -348,8 +350,36 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp placement_model_ref_key(_placement), do: :error
 
-  # SPEC §12.2.3: dropping a recovery record whose model reference is unreadable
-  # would leave its key looking cold, so the observation is invalid instead.
+  # SPEC §12.2.3: a recovery record is evidence for one exact key, so it keeps
+  # its exact model reference within the recovery key bound instead of the
+  # truncated observation bound. Truncating it would leave the exact key looking
+  # cold, and invalidating it would drop every key on the Node.
+  defp placement_model_ref(placement) do
+    if is_nil(value(placement, :worker_recovery)),
+      do: normalize_model_ref(value(placement, :model_ref)),
+      else: exact_recovery_model_ref(value(placement, :model_ref))
+  end
+
+  defp exact_recovery_model_ref(%ModelRef{} = model_ref),
+    do: model_ref |> Map.from_struct() |> exact_recovery_model_ref()
+
+  defp exact_recovery_model_ref(model_ref) when is_map(model_ref) do
+    model_id = value(model_ref, :model_id)
+    version = value(model_ref, :version)
+
+    if recovery_key_field?(model_id) and recovery_key_field?(version),
+      do: {:ok, %{"model_id" => model_id, "version" => version}},
+      else: :error
+  end
+
+  defp exact_recovery_model_ref(_model_ref), do: :error
+
+  defp recovery_key_field?(value),
+    do: present_string?(value) and byte_size(value) <= @recovery_key_field_limit
+
+  # A recovery record whose model reference cannot be read at all is still
+  # incomplete evidence; dropping it would leave its key looking cold, so the
+  # observation is invalid instead.
   defp ensure_recovery_model_refs(placements) do
     if Enum.any?(placements, &unreadable_recovery_placement?/1),
       do: {:error, :invalid_worker_recovery_placement},
@@ -378,7 +408,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
     do: placement |> Map.from_struct() |> normalize_placement()
 
   defp normalize_placement(placement) when is_map(placement) do
-    case normalize_model_ref(value(placement, :model_ref)) do
+    case placement_model_ref(placement) do
       {:ok, model_ref} ->
         [
           %{
