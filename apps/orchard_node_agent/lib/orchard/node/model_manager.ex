@@ -116,6 +116,7 @@ defmodule Orchard.Node.ModelManager do
   @reset_recovery_wait_ms 10_000
   @reset_custody_wait_ms 3_000
   @reset_custody_poll_ms 25
+  @reset_custody_probe_ms 250
   @reset_call_timeout_ms max(@reset_recovery_wait_ms, @reset_custody_wait_ms) + 2_000
 
   @type inflight_load :: %{
@@ -851,8 +852,7 @@ defmodule Orchard.Node.ModelManager do
 
     cond do
       resolved? ->
-        await_custody_clear(deadlines.custody)
-        GenServer.reply(from, :ok)
+        GenServer.reply(from, await_custody_clear(deadlines.custody))
 
       System.monotonic_time(:millisecond) >= deadline ->
         GenServer.reply(from, {:error, :unavailable})
@@ -3669,19 +3669,29 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  # Reset returns once the runtimes it stopped have exited, so the next load is
-  # not refused for custody of a runtime this reset already stopped. The wait is
-  # bounded; a runtime still running after it keeps refusing loads.
+  # Reset returns :ok only once the reaper confirms that no runtime is under
+  # custody, so the next load is not refused for a runtime this reset already
+  # stopped. The reaper is asked at least once even when settling spent the
+  # budget; a runtime still held, or an unanswered query, fails the reset.
   defp await_custody_clear(deadline) do
     remaining_ms = deadline - System.monotonic_time(:millisecond)
 
-    with true <- remaining_ms > 0,
-         {:ok, keys} <- RuntimeProcessReaper.custody_model_keys(remaining_ms),
-         true <- MapSet.size(keys) > 0 do
-      Process.sleep(min(@reset_custody_poll_ms, remaining_ms))
-      await_custody_clear(deadline)
-    else
-      _cleared_or_out_of_time -> :ok
+    case RuntimeProcessReaper.custody_model_keys(max(remaining_ms, @reset_custody_probe_ms)) do
+      {:ok, keys} ->
+        cond do
+          MapSet.size(keys) == 0 ->
+            :ok
+
+          remaining_ms > 0 ->
+            Process.sleep(min(@reset_custody_poll_ms, remaining_ms))
+            await_custody_clear(deadline)
+
+          true ->
+            {:error, :unavailable}
+        end
+
+      {:error, :unavailable} ->
+        {:error, :unavailable}
     end
   end
 

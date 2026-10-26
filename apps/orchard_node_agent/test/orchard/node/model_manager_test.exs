@@ -92,7 +92,7 @@ defmodule Orchard.Node.ModelManagerTest do
       started = System.monotonic_time(:millisecond)
 
       try do
-        assert :ok = ModelManager.reset()
+        assert {:error, :unavailable} = ModelManager.reset()
         assert System.monotonic_time(:millisecond) - started < 4_000
       after
         Task.await(suspender)
@@ -132,7 +132,7 @@ defmodule Orchard.Node.ModelManagerTest do
       started = System.monotonic_time(:millisecond)
 
       try do
-        assert :ok = ModelManager.reset()
+        assert {:error, :unavailable} = ModelManager.reset()
         assert System.monotonic_time(:millisecond) - started < 4_000
       after
         Task.await(settler)
@@ -140,6 +140,39 @@ defmodule Orchard.Node.ModelManagerTest do
       end
 
       release.()
+    end
+
+    # SPEC.md §4.9: when settling recovery entries spends the whole custody
+    # budget, reset still asks the reaper before it reports success.
+    test "reset fails when settling spends the custody budget and a runtime is still held" do
+      %{owner_pid: owner_pid, release: release} = hold_custody("model/reset-spent", "v1")
+      Process.exit(owner_pid, :kill)
+      key = {"model/reset-spent-settling", "v1"}
+
+      :sys.replace_state(ModelManager, fn state ->
+        entry =
+          state.recovery_epoch
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+
+        %{
+          state
+          | recovery: Map.put(state.recovery, key, %{entry | prior?: true, pending: :settling})
+        }
+      end)
+
+      settler =
+        Task.async(fn ->
+          Process.sleep(3_200)
+          :sys.replace_state(ModelManager, &%{&1 | recovery: Map.delete(&1.recovery, key)})
+        end)
+
+      try do
+        assert {:error, :unavailable} = ModelManager.reset()
+      after
+        Task.await(settler)
+        release.()
+      end
     end
 
     test "an unanswered custody query refuses the load instead of assuming nothing runs" do
