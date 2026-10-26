@@ -41,6 +41,31 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     end
   end
 
+  defmodule LocalManager do
+    def inspect_worker_recovery(model_id, version) do
+      send(self(), {:local_inspect, model_id, version})
+      {:ok, evidence(model_id, version, "open")}
+    end
+
+    def recover_worker_placement(command) do
+      send(self(), {:local_recover, command})
+      {:ok, evidence(command.key.model_id, command.key.version, "armed")}
+    end
+
+    defp evidence(model_id, version, state) do
+      %{
+        key: %{node_id: Orchard.Node.node_id(), model_id: model_id, version: version},
+        epoch: "epoch-1",
+        owner_epoch: "epoch-1",
+        revision: if(state == "open", do: 4, else: 5),
+        state: state,
+        hydrated: true,
+        eligible: state == "armed",
+        reason: if(state == "open", do: "placement_crash_breaker_open")
+      }
+    end
+  end
+
   defmodule FailingAudit do
     def changeset(log, attrs) do
       changeset = AuditLog.changeset(log, attrs)
@@ -310,6 +335,61 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
 
     refute_received {:recover, _}
     refute_received {:inspect_recovery, _, _}
+  end
+
+  # ADR 0039: all-in-one source dev has no enrolled Node row, so its own
+  # placements are recovered in-process with the same validation and audit.
+  test "SPEC §12.2 all-in-one recovers its in-process Node's placement without a Node row",
+       ctx do
+    local_node_id = Orchard.Node.node_id()
+    refute Repo.get(Node, local_node_id)
+    path = "/ops/v1/worker-recovery/nodes/#{local_node_id}/models/#{ctx.model.id}"
+
+    previous_manager = Application.get_env(:orchard_node_agent, :worker_recovery_control_manager)
+    Application.put_env(:orchard_node_agent, :worker_recovery_control_manager, LocalManager)
+
+    on_exit(fn ->
+      if is_nil(previous_manager),
+        do: Application.delete_env(:orchard_node_agent, :worker_recovery_control_manager),
+        else:
+          Application.put_env(
+            :orchard_node_agent,
+            :worker_recovery_control_manager,
+            previous_manager
+          )
+    end)
+
+    assert request(:get, path <> "?version=exact-v1", ctx.token).status == 404
+
+    configure(:worker_recovery_local_control, Orchard.Node.WorkerRecoveryControlServer)
+
+    conn = request(:get, path <> "?version=exact-v1", ctx.token)
+    assert conn.status == 200
+
+    assert %{"state" => "open", "key" => %{"node_id" => ^local_node_id}} =
+             Jason.decode!(conn.resp_body)
+
+    assert_received {:local_inspect, "recovery-model", "exact-v1"}
+
+    conn = request(:post, path, ctx.token, body())
+    assert conn.status == 200
+    assert %{"state" => "armed", "eligible" => true} = Jason.decode!(conn.resp_body)
+    assert_received {:local_recover, command}
+
+    assert command.key == %{
+             node_id: local_node_id,
+             model_id: "recovery-model",
+             version: "exact-v1"
+           }
+
+    assert command.action == "clear" and command.expected_revision == 4
+    assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.completed"]
+
+    # The in-process path never stands in for another Node.
+    assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 200
+    assert_received {:inspect_recovery, node_id, _ref}
+    assert node_id == ctx.node.id
+    refute_received {:local_inspect, _, _}
   end
 
   defp body(action \\ "clear"),

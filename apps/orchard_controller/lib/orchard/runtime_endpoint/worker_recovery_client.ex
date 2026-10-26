@@ -44,6 +44,23 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
     end
   end
 
+  @doc """
+  Makes the same exchange with the Node Agent running in this BEAM.
+
+  Only all-in-one source development configures `control` (ADR 0039): it has
+  no enrolled Node or Controller certificate. The request and result use the
+  same exact-key encoding and validation as the certificate-bound path.
+  """
+  @spec local_call(module(), String.t(), atom(), ModelRef.t() | map()) ::
+          {:ok, map()} | {:error, atom()}
+  def local_call(control, node_id, operation, input) do
+    with {:ok, request, key} <- request(%{node_id: node_id}, operation, input) do
+      operation |> control.local(request) |> decode_result(key)
+    end
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
   @doc "Exchanges a command on a channel whose peer has already been pinned by the caller."
   @spec call_channel(
           Orchard.GRPCTypes.channel(),
@@ -69,7 +86,8 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
   end
 
   @doc "Builds exact-key wire input without accepting request flags as authorization."
-  @spec request(Target.t(), atom(), term()) :: {:ok, struct(), map()} | {:error, :invalid_command}
+  @spec request(Target.t() | %{node_id: String.t()}, atom(), term()) ::
+          {:ok, struct(), map()} | {:error, :invalid_command}
   def request(target, :inspect_worker_recovery_placement, %ModelRef{} = ref) do
     key = %{node_id: target.node_id, model_id: ref.model_id, version: ref.version}
     with {:ok, proto} <- proto_key(key), do: {:ok, proto, key}

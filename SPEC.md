@@ -6097,7 +6097,7 @@ breakers and crash history. ModelManager or Node Agent state loss SHALL NOT be
 implicit recovery. A bounded per-placement recovery checkpoint SHALL persist in
 Postgres through the authenticated Active Controller; the Node remains the local
 policy/admission authority and SHALL NOT use a local file journal or direct
-database credentials. Only the Node SHALL originate checkpoint mutations;
+database access from a separate Node process. Only the Node SHALL originate checkpoint mutations;
 the Controller SHALL execute its authenticated compare-and-set requests. A Node
 Agent that runs inside the Controller's own BEAM in all-in-one source
 development SHALL invoke the same compare-and-set storage in-process instead of
@@ -6136,7 +6136,10 @@ retried; it SHALL NOT falsely mark prior ownership resolved.
 
 Operator recovery SHALL route through the authenticated Active Controller
 Operator API to the identity-bound Runtime Endpoint, targeting the exact key
-and current recovery epoch/revision. Clear/reset acknowledgement and fresh load
+and current recovery epoch/revision. For the Node Agent inside its own BEAM in
+all-in-one source development, the Operator API SHALL forward the same
+validated, audited, and epoch/revision-fenced command in-process, bound to that
+Node Agent's own identity. Clear/reset acknowledgement and fresh load
 admission SHALL follow the corresponding durable checkpoint; a lost command
 acknowledgement SHALL NOT authorize automatic repetition of destructive work.
 The operation SHALL support clear,

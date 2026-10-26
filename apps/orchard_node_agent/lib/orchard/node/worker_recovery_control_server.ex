@@ -13,9 +13,42 @@ defmodule Orchard.Node.WorkerRecoveryControlServer do
           Orchard.GRPCTypes.server_stream()
         ) ::
           WorkerRecoveryResult.t()
-  def inspect_worker_recovery_placement(request, stream) do
+  def inspect_worker_recovery_placement(request, stream),
+    do: inspect_placement(request, authenticate(stream))
+
+  @doc "Forwards a dedicated recovery command without changing its epoch or revision."
+  @spec recover_worker_placement(WorkerRecoveryCommand.t(), Orchard.GRPCTypes.server_stream()) ::
+          WorkerRecoveryResult.t()
+  def recover_worker_placement(request, stream),
+    do: recover_placement(request, authenticate(stream))
+
+  @doc """
+  The identity of the Node Agent running in this BEAM, for the in-process
+  operator recovery path of all-in-one source development (ADR 0039).
+  """
+  @spec local_node_id() :: String.t()
+  def local_node_id, do: Orchard.Node.node_id()
+
+  @doc """
+  Handles an operator recovery exchange from a Controller in the same BEAM.
+
+  All-in-one source development has no enrolled Node and no Controller
+  certificate, so the caller is trusted by being in-process. The exact key is
+  still bound to this Node's own identity, and the command is validated and
+  fenced exactly as on the certificate-authenticated path.
+  """
+  @spec local(:inspect_worker_recovery_placement, WorkerRecoveryKey.t()) ::
+          WorkerRecoveryResult.t()
+  @spec local(:recover_worker_placement, WorkerRecoveryCommand.t()) :: WorkerRecoveryResult.t()
+  def local(:inspect_worker_recovery_placement, request),
+    do: inspect_placement(request, {:ok, local_node_id()})
+
+  def local(:recover_worker_placement, request),
+    do: recover_placement(request, {:ok, local_node_id()})
+
+  defp inspect_placement(request, authenticated) do
     result =
-      with {:ok, node_id} <- authenticate(stream),
+      with {:ok, node_id} <- authenticated,
            {:ok, key} <- bound_key(request, node_id) do
         manager().inspect_worker_recovery(key.model_id, key.version)
       end
@@ -23,12 +56,9 @@ defmodule Orchard.Node.WorkerRecoveryControlServer do
     Wire.evidence_result(result)
   end
 
-  @doc "Forwards a dedicated recovery command without changing its epoch or revision."
-  @spec recover_worker_placement(WorkerRecoveryCommand.t(), Orchard.GRPCTypes.server_stream()) ::
-          WorkerRecoveryResult.t()
-  def recover_worker_placement(request, stream) do
+  defp recover_placement(request, authenticated) do
     result =
-      with {:ok, node_id} <- authenticate(stream),
+      with {:ok, node_id} <- authenticated,
            {:ok, key} <- bound_key(request.key, node_id),
            {:ok, command} <- command(request, key, node_id) do
         manager().recover_worker_placement(command)

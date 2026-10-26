@@ -6,7 +6,13 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   alias Orchard.{ControlPlane, Governance, Inference, Repo}
   alias Orchard.Models.Model
   alias Orchard.Nodes.Node
-  alias Orchard.RuntimeEndpoint.{ModelRef, Operation, WorkerRecoveryEvidence}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    Operation,
+    WorkerRecoveryClient,
+    WorkerRecoveryEvidence
+  }
 
   @fields ~w(version action expected_epoch expected_revision command_id reason)
   @bounded_read_timeout_ms 2_000
@@ -43,9 +49,8 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
     with {:ok, node_id} <- Ecto.UUID.cast(node_id),
          {:ok, model_id} <- Ecto.UUID.cast(model_id),
          true <- bounded?(version, 256),
-         %Node{} <- Repo.get(Node, node_id),
-         %Model{version: ^version, state: :active} = model <- Repo.get(Model, model_id),
-         [target] <- Enum.filter(Inference.runtime_endpoint_targets(), &(&1.node_id == node_id)) do
+         {:ok, target} <- recovery_target(node_id),
+         %Model{version: ^version, state: :active} = model <- Repo.get(Model, model_id) do
       {:ok, target, model}
     else
       nil -> {:error, :not_found}
@@ -58,6 +63,23 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   end
 
   defp resolve(_params), do: {:error, :invalid_command}
+
+  # All-in-one source dev runs its Node Agent in this BEAM without enrollment,
+  # so its own placements are recovered in-process (ADR 0039). Every other Node
+  # must be enrolled and reached through its identity-bound Runtime Endpoint.
+  defp recovery_target(node_id) do
+    control = local_control()
+
+    if control && control.local_node_id() == node_id do
+      {:ok, %{node_id: node_id, local_control: control}}
+    else
+      with %Node{} <- Repo.get(Node, node_id),
+           [target] <- Enum.filter(Inference.runtime_endpoint_targets(), &(&1.node_id == node_id)),
+           do: {:ok, target}
+    end
+  end
+
+  defp local_control, do: Application.get_env(:orchard_controller, :worker_recovery_local_control)
 
   defp validate_body(body) when is_map(body) do
     if Enum.sort(Map.keys(body)) == Enum.sort(@fields) and
@@ -112,6 +134,12 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
     end
   end
 
+  defp forward(%{local_control: control, node_id: node_id}, operation, input) do
+    control
+    |> WorkerRecoveryClient.local_call(node_id, wire_operation(operation), input)
+    |> validate_evidence(node_id, input)
+  end
+
   defp forward(target, operation, input) do
     client = Inference.runtime_endpoint_client()
 
@@ -127,6 +155,9 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   catch
     :exit, _reason -> {:error, :unavailable}
   end
+
+  defp wire_operation(:inspect_worker_recovery), do: :inspect_worker_recovery_placement
+  defp wire_operation(:recover_worker_placement), do: :recover_worker_placement
 
   defp operation_timeout_ms(:inspect_worker_recovery), do: @bounded_read_timeout_ms
 

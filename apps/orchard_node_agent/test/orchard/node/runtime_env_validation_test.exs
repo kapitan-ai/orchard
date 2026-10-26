@@ -173,6 +173,13 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     refute runtime[:worker_recovery_control_enabled]
     assert is_nil(runtime[:worker_recovery_control_endpoint])
     assert is_nil(Keyword.fetch!(config, :orchard_controller)[:worker_recovery])
+
+    # ADR 0039: Operator recovery reaches the in-process Node Agent only here.
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery_local_control] ==
+             Orchard.Node.WorkerRecoveryControlServer
+
+    controller_config = read_runtime_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "controller"}, :dev)
+    refute Keyword.fetch!(controller_config, :orchard_controller)[:worker_recovery_local_control]
   end
 
   test "dev.exs does not parse recovery control runtime settings" do

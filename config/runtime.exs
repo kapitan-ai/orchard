@@ -1781,12 +1781,16 @@ if config_env() == :dev do
 
   # SPEC §12.2 checkpoints never use Node database credentials. All-in-one
   # source dev runs its Node Agent inside the Controller's BEAM, so it reads and
-  # writes checkpoints in-process. Split roles use the identity-bound control
-  # path and must name it explicitly, because a loopback Controller is not their
+  # writes checkpoints in-process, and Operator recovery reaches that Node Agent
+  # in-process too (ADR 0039). Split roles use the identity-bound control path
+  # and must name it explicitly, because a loopback Controller is not their
   # authority.
   if source_dev_role == :all_in_one do
     config :orchard_node_agent, :runtime,
       worker_recovery_checkpoint_client: Orchard.WorkerRecovery.LocalCheckpointClient
+
+    config :orchard_controller,
+      worker_recovery_local_control: Orchard.Node.WorkerRecoveryControlServer
   end
 
   recovery_control_enabled? =
