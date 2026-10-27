@@ -6189,7 +6189,11 @@ Prior-epoch ownership SHALL be resolved during explicit recovery using the
 existing runtime custody/cleanup boundary: no current worker/load for the key
 and affirmative termination/nonexistence proof for the recorded prior runtime
 incarnation, or proof that its host boot ended. Empty current memory or a reused
-PID alone is not proof. Unknown cleanup SHALL return unavailable and require
+PID alone is not proof. A live PID whose launch identity (owner and start time,
+recorded with custody in a form that neither the reader's timezone or locale nor
+a wall-clock step can change) no longer matches the recorded one is
+nonexistence proof for that incarnation; a missing or unreadable identity is
+not. Unknown cleanup SHALL return unavailable and require
 operator cleanup through existing host/runtime controls before recovery can be
 retried; it SHALL NOT falsely mark prior ownership resolved.
 

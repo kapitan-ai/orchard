@@ -102,20 +102,59 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   venv entrypoint, so argv changes under a stable PID. uid and start time do
   survive `exec`, and a recycled PID cannot reproduce them because reusing a PID
   requires wrapping the whole PID space — far longer than the one-second
-  resolution of `lstart`.
+  resolution of `lstart`. `ps` runs with a fixed timezone and locale, so a host
+  timezone change cannot make the same process read as a different one.
   """
   @spec process_identity(non_neg_integer() | nil) ::
           {:ok, custody_identity()} | {:error, :identity_unavailable}
   def process_identity(os_pid) when is_integer(os_pid) and os_pid > 0 do
     args = ["-o", "uid=", "-o", "lstart=", "-p", Integer.to_string(os_pid)]
 
-    case System.cmd("ps", args, stderr_to_stdout: true) do
+    case System.cmd("ps", args, stderr_to_stdout: true, env: [{"TZ", "UTC0"}, {"LC_ALL", "C"}]) do
       {output, 0} -> parse_process_identity(output)
       {_output, _exit_status} -> {:error, :identity_unavailable}
     end
   end
 
   def process_identity(_), do: {:error, :identity_unavailable}
+
+  @doc """
+  Captures an identity snapshot of `os_pid` that a later Node Agent lifetime can
+  compare (SPEC §12.2.2).
+
+  Linux derives `lstart` from the boot time, which moves when the wall clock is
+  stepped, so Linux reads the start time in clock ticks since boot from `/proc`
+  instead; the host boot identity recorded beside it scopes those ticks. Other
+  hosts use `process_identity/1`, whose start time is fixed when the process
+  starts.
+  """
+  @spec launch_identity(non_neg_integer() | nil) ::
+          {:ok, custody_identity()} | {:error, :identity_unavailable}
+  def launch_identity(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    case :os.type() do
+      {:unix, :linux} -> proc_identity(os_pid)
+      _platform -> process_identity(os_pid)
+    end
+  end
+
+  def launch_identity(_), do: {:error, :identity_unavailable}
+
+  # Field 22 of /proc/<pid>/stat is the start time; the command name before it is
+  # parenthesized and may itself contain spaces or parentheses.
+  defp proc_identity(os_pid) do
+    dir = "/proc/#{os_pid}"
+
+    with {:ok, %File.Stat{uid: uid}} <- File.stat(dir),
+         {:ok, stat} <- File.read(dir <> "/stat"),
+         [_ | _] = matches <- :binary.matches(stat, ") "),
+         {position, length} = List.last(matches),
+         fields = binary_part(stat, position + length, byte_size(stat) - position - length),
+         {:ok, start_ticks} <- fields |> String.split(" ") |> Enum.fetch(19) do
+      {:ok, "#{uid} #{start_ticks}"}
+    else
+      _unavailable -> {:error, :identity_unavailable}
+    end
+  end
 
   @doc """
   Sends `signal` to `os_pid` only while it still matches `identity`.

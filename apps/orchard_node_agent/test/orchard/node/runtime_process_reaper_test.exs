@@ -180,7 +180,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
              :sys.get_state(private_reaper).pending_resolutions
 
     refute RuntimeProcessReaper.ownership_resolved?(owner)
-    assert RuntimeProcessReaper.owner_custody(owner) == {:runtime_process, os_pid}
+    assert RuntimeProcessReaper.owner_custody(owner) == {:runtime_process, os_pid, os_identity}
 
     # SPEC §12.2.2 operator cleanup through host controls happens long after the
     # escalation budget, so the retained record is the only remaining evidence.
