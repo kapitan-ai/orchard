@@ -571,6 +571,25 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
              ModelManager.recover_worker_placement(command(ctx, evidence, "clear"))
   end
 
+  # Read pacing keys come from Controller-supplied model refs, so failed reads for
+  # many distinct keys must not grow the pacing map for the agent's lifetime.
+  test "SPEC §12.2 checkpoint read pacing is pruned after expiry and successful hydration" do
+    freeze_recovery_clock()
+    Checkpoints.mode(:read_unavailable)
+
+    assert {:error, :unavailable} = ModelManager.inspect_worker_recovery("paced/a", "v1")
+    assert Map.keys(:sys.get_state(ModelManager).recovery_read_retry_at) == [{"paced/a", "v1"}]
+
+    Checkpoints.time(1_001)
+    assert {:error, :unavailable} = ModelManager.inspect_worker_recovery("paced/b", "v1")
+    assert Map.keys(:sys.get_state(ModelManager).recovery_read_retry_at) == [{"paced/b", "v1"}]
+
+    Checkpoints.mode(:ok)
+    Checkpoints.time(2_002)
+    assert {:ok, %{eligible: true}} = ModelManager.inspect_worker_recovery("paced/b", "v1")
+    assert :sys.get_state(ModelManager).recovery_read_retry_at == %{}
+  end
+
   test "SPEC §12.2 cold inspection releases clean recovery retention and bounds status placements" do
     for index <- 1..41 do
       assert {:ok, %{eligible: true}} =

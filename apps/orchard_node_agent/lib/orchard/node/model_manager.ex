@@ -1061,6 +1061,7 @@ defmodule Orchard.Node.ModelManager do
 
   defp handle_recovery_hydration_result({:ok, checkpoint}, state, epoch, key, waiters) do
     entry = Recovery.new(epoch) |> Recovery.hydrate(checkpoint)
+    state = %{state | recovery_read_retry_at: Map.delete(state.recovery_read_retry_at, key)}
 
     if stale_clean_checkpoint?(entry, epoch) do
       entry = Recovery.checkpoint(%{entry | command: nil}, [{:hydration_complete, waiters}])
@@ -1072,9 +1073,18 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  # Keys come from Controller-supplied model refs, so expired pacing entries are
+  # dropped here; the map then holds only keys that failed within the last second.
   defp handle_recovery_hydration_result({:error, _reason}, state, _epoch, key, waiters) do
     Enum.each(waiters, &reply_recovery_unavailable/1)
-    {:noreply, put_in(state, [:recovery_read_retry_at, key], recovery_now() + 1_000)}
+    now = recovery_now()
+
+    retry_at =
+      state.recovery_read_retry_at
+      |> Map.reject(fn {_key, at} -> at <= now end)
+      |> Map.put(key, now + 1_000)
+
+    {:noreply, %{state | recovery_read_retry_at: retry_at}}
   end
 
   defp stale_clean_checkpoint?(entry, epoch),
