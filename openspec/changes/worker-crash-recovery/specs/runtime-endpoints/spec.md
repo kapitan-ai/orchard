@@ -19,6 +19,11 @@ Runtime Endpoint observations SHALL retain exact-key worker recovery state, curr
 - **THEN** its loaded placement data cannot establish recovery eligibility
 - **AND** fresh authenticated current evidence is required rather than a legacy-loaded fallback
 
+#### Scenario: Fresh epoch reports stored nonclean keys before cold absence
+- **WHEN** a Node Agent restarts with stored checkpoints that are not proven clean
+- **THEN** it lists those keys through the authenticated checkpoint path and hydrates each one before its status reports `worker_recovery_epoch`
+- **AND** until then it reports no epoch, so its projection establishes no cold absence and an unavailable listing or read stays fail-closed
+
 #### Scenario: Bounded recovery projection omits an exact key
 - **WHEN** a placement projection has reached its 40-entry bound and omits the requested model reference
 - **THEN** Orchard treats that absence as incomplete rather than proof of a cold placement
@@ -33,7 +38,7 @@ Runtime Endpoint observations SHALL retain exact-key worker recovery state, curr
 
 The Runtime Endpoint control boundary SHALL support exact-key `RecoverWorkerPlacement` and authenticated recovery checkpoint hydration/write semantics under `SPEC.md` §12.2.2. Operator recovery SHALL route through the authenticated Active Controller Operator API; for the Node Agent inside the Controller's own BEAM in all-in-one source development, that API SHALL forward the same validated and audited command in-process, bound to that Node Agent's identity. Ordinary load/unload callers MUST NOT acquire recovery authority by setting flags. Node-to-Controller checkpoint operations SHALL restrict writes to the authenticated Node's exact keys and current epoch/revision. Only the Node SHALL originate mutations; the Controller SHALL execute transactional CAS on Node request, while Operator API forwarding SHALL NOT pre-claim or mutate the checkpoint. No direct Node database access is required.
 
-The narrow Operator API SHALL provide status at `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id` with exact version, and recovery at the corresponding `POST` with version, `clear | unload | reload`, expected epoch/revision, bounded command identifier, and nonblank reason. Existing authentication, write authorization, identity resolution, and audit rules SHALL apply. Recovery MUST NOT modify Controller §5.10 breaker state.
+The narrow Operator API SHALL provide status at `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id` with exact version, and recovery at the corresponding `POST` with version, `clear | unload | reload`, expected epoch/revision, bounded command identifier, and nonblank reason. Existing authentication, write authorization, identity resolution, and audit rules SHALL apply. The Operator API SHALL reach an admitted Node through its activation-probe target as well as an active Node through its inference target, because both already hold checkpoint authority. Recovery MUST NOT modify Controller §5.10 breaker state.
 
 #### Scenario: Authenticated operator clears exact placement
 - **WHEN** the Active Controller authorizes an operator clear with matching key/epoch/revision
@@ -100,7 +105,8 @@ Nested keys SHALL use the existing `Target`, `ModelRef`, `Placement`,
 ADR 0017, extended by the `worker_recovery` placement projection defined for
 `SPEC.md` §12.2.3.
 `worker_recovery_epoch` SHALL be the Node's current authenticated recovery epoch
-string, and the nested `worker_recovery` projection SHALL carry exact-key
+string, reported only after that epoch has hydrated every stored checkpoint for the
+Node that is not proven clean, and the nested `worker_recovery` projection SHALL carry exact-key
 identity, epoch, revision, state, hydration validity, eligibility, and refusal
 reason.
 Neither field is a derived eligibility boolean: admission SHALL still be decided

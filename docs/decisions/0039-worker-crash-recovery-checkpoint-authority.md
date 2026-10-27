@@ -24,8 +24,11 @@ Two OpenSpec change packages proposed how to persist that state for issue #379:
 - After Node Agent state loss, interrupted or history-bearing placements require explicit operator recovery; clean and new placements load normally.
 - A successful non-forced `unload` recovery command resets the breaker, alongside operator clear and forced reload.
   An ordinary unload, including one an operator issues outside the recovery command, does not (`SPEC.md` §12.2.2).
-- A reused PID is not proof that a prior runtime exited.
+- A reused PID alone is not proof that a prior runtime exited.
   Automatic recovery stays blocked until custody proves the recorded runtime incarnation ended, or its host boot ended (`SPEC.md` §12.2.2).
+  Custody records a digest of the runtime's launch identity (owner and start time) with its PID, so a live PID whose identity no longer matches proves the recorded incarnation is gone.
+  That identity is read with a fixed timezone and locale, and on Linux from start ticks since boot, so a timezone change, a different Node Agent environment, or a wall-clock step cannot make a still-running runtime look replaced.
+  Custody without a digest, or a PID whose identity cannot be read, stays unresolved.
 - All-in-one source development runs the Node Agent inside the Controller's BEAM without an enrolled identity, so it calls the same compare-and-set storage in-process.
   The checkpoint table keys on the Node id without a foreign key to `nodes`, because that Node Agent has no inventory row.
   The in-process path trusts its caller by being in the same BEAM: it checks that the Node id is well formed but does not consult Node state or enrollment, so it is not equivalent to the certificate path and is configured only for all-in-one source development.

@@ -52,7 +52,9 @@ Worker recovery admission SHALL decide from the durable observation and its plac
 projections on that path.
 An omitted placement in a valid projection below its bound may be treated as cold, so a fresh
 authenticated recovery epoch SHALL admit it, while a loaded placement without exact
-current-epoch evidence SHALL remain refused.
+current-epoch evidence SHALL remain refused. Absence is cold evidence only because the Node
+reports its recovery epoch after hydrating every stored checkpoint that is not proven clean; an
+observation without an epoch SHALL NOT establish cold absence.
 Only the bounded unmanaged-compatibility wave MAY resolve a cold placement with a targeted
 read-only recovery query, and a transport that cannot answer that query SHALL fall back to
 epoch-only evidence only when a valid placement projection is below its bound.
@@ -76,6 +78,13 @@ This requirement refines `SPEC.md` §4.6.2, §5.9, and §12.2.3.
 - **THEN** recovery admission accepts it with no Runtime Endpoint status or inspection call
 - **AND** a loaded placement lacking exact current-epoch evidence is still refused without a
   reprobe
+
+#### Scenario: Restarted Node cannot present an unhydrated key as cold
+- **WHEN** a Node Agent restarts while a stored checkpoint for the requested key is open or
+  recovery-required
+- **THEN** its observation carries no recovery epoch until that key is hydrated, and then
+  reports the key's blocked state
+- **AND** recovery admission rejects the candidate before ranking in both phases
 
 #### Scenario: Uninspectable transport does not imply unrecovered state
 - **WHEN** the bounded unmanaged-compatibility wave reaches a transport that cannot answer a

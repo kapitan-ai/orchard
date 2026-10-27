@@ -6189,7 +6189,11 @@ Prior-epoch ownership SHALL be resolved during explicit recovery using the
 existing runtime custody/cleanup boundary: no current worker/load for the key
 and affirmative termination/nonexistence proof for the recorded prior runtime
 incarnation, or proof that its host boot ended. Empty current memory or a reused
-PID alone is not proof. Unknown cleanup SHALL return unavailable and require
+PID alone is not proof. A live PID whose launch identity (owner and start time,
+recorded with custody in a form that neither the reader's timezone or locale nor
+a wall-clock step can change) no longer matches the recorded one is
+nonexistence proof for that incarnation; a missing or unreadable identity is
+not. Unknown cleanup SHALL return unavailable and require
 operator cleanup through existing host/runtime controls before recovery can be
 retried; it SHALL NOT falsely mark prior ownership resolved.
 
@@ -6236,7 +6240,12 @@ or old-epoch recovery evidence SHALL NOT establish eligibility. Node-side checks
 remain authoritative if Controller observations lag. A targeted read-only recovery
 status query SHALL hydrate and report clean exact-key evidence for new/cold
 placements without requiring a prior load or operator re-arm; omission from a
-loaded-model list is not positive recovery evidence. Absence from a placement
+loaded-model list is not positive recovery evidence. A new Node recovery epoch
+SHALL hydrate every stored checkpoint for that Node and a cataloged model that
+is not proven clean before it reports that epoch, re-listing those checkpoints
+while any of them cannot be read, so absence under a reported epoch cannot hide an
+open or recovery-required placement; until then its observation SHALL carry no
+recovery epoch and establish no cold absence. Absence from a placement
 projection at its bounded 40-entry cap is incomplete and SHALL NOT prove a cold
 placement; explicit valid exact-key evidence remains usable at that cap. Invalid
 projected recovery evidence SHALL remain represented as invalid rather than be

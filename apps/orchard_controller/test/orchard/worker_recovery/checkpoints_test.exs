@@ -134,6 +134,33 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
     assert {:error, :unauthorized_checkpoint} = commit(ctx, nil, 0, "late", record("loading"))
   end
 
+  # SPEC.md §12.2.3: a fresh Node epoch hydrates these keys before it reports
+  # itself, so every stored checkpoint that is not proven clean must be listed.
+  test "SPEC §12.2.3 listing returns the authenticated Node's nonclean checkpoint keys", ctx do
+    assert {:ok, []} = Checkpoints.list(ctx.node.id, ctx.certificate)
+
+    assert {:ok, _} = commit(ctx, nil, 0, "loaded", record("loaded"))
+    assert {:ok, [key]} = Checkpoints.list(ctx.node.id, ctx.certificate)
+    assert key == ctx.key
+
+    assert {:ok, _} = commit(ctx, "epoch-1", 1, "stopped", record("resolved"))
+    assert {:ok, []} = Checkpoints.list(ctx.node.id, ctx.certificate)
+
+    assert {:error, :unauthorized_checkpoint} =
+             Checkpoints.list(Ecto.UUID.generate(), ctx.certificate)
+
+    assert {:error, :unauthorized_checkpoint} = Checkpoints.list(ctx.node.id, <<>>)
+
+    local = %{ctx.key | node_id: Ecto.UUID.generate()}
+    open = %{record("resolved") | "state" => "open", "crashes" => [-1], "delay_index" => 1}
+    assert {:ok, _} = Checkpoints.commit_local(local, nil, 0, "open", open)
+    assert {:ok, [^local]} = Checkpoints.list_local(local.node_id)
+
+    # A checkpoint whose catalog model is gone cannot be read or scheduled.
+    Repo.delete!(ctx.model)
+    assert {:ok, []} = Checkpoints.list_local(local.node_id)
+  end
+
   # SPEC.md §12.2.2: only operator recovery may clear state, so deleting and
   # re-importing a catalog model keeps an open placement open.
   test "SPEC §12.2 deleting and re-importing a model keeps its open checkpoint", ctx do
@@ -339,6 +366,10 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
 
     assert {:ok, %{revision: ^revision}} =
              ModelManager.recover_worker_placement(command)
+
+    # The manager's boot listing crossed the same authenticated control path.
+    assert ModelManager.current().worker_recovery_epoch == evidence.epoch
+    assert {:ok, []} = WorkerRecoveryCheckpointClient.list(ctx.key.node_id)
   end
 
   defp commit(ctx, epoch, revision, id, record),

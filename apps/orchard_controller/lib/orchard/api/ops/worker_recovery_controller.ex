@@ -74,10 +74,22 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
       {:ok, %{node_id: node_id, local_control: control}}
     else
       with %Node{} <- Repo.get(Node, node_id),
-           [target] <- Enum.filter(Inference.runtime_endpoint_targets(), &(&1.node_id == node_id)),
+           [target] <- node_targets(node_id),
            do: {:ok, target}
     end
   end
+
+  # An admitted Node is not an inference target yet, but it already holds
+  # checkpoint authority (SPEC §12.2.2), so recovery also reaches it through
+  # its activation-probe target.
+  defp node_targets(node_id) do
+    case for_node(Inference.runtime_endpoint_targets(), node_id) do
+      [] -> for_node(Inference.activation_probe_runtime_endpoint_targets(), node_id)
+      targets -> targets
+    end
+  end
+
+  defp for_node(targets, node_id), do: Enum.filter(targets, &(&1.node_id == node_id))
 
   defp local_control, do: Application.get_env(:orchard_controller, :worker_recovery_local_control)
 

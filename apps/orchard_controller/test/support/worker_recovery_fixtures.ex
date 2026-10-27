@@ -196,6 +196,7 @@ defmodule Orchard.TestSupport.WorkerRecoveryCheckpointClient do
   @moduledoc false
 
   def read(_key), do: {:ok, :absent}
+  def list(_node_id), do: {:ok, []}
 
   def commit(_key, _epoch, revision, transition_id, record) do
     {:ok,

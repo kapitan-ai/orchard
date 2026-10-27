@@ -22,6 +22,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   }
 
   alias Orchard.Node.Supervisor, as: NodeSupervisor
+  alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint
 
   @public_unload_call_timeout_ms 11_000
 
@@ -36,9 +37,24 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       if delay > 0, do: Process.sleep(delay)
 
       Agent.get(__MODULE__, fn state ->
-        if state.mode == :read_unavailable,
+        if state.mode in [:read_unavailable, :read_only_unavailable],
           do: {:error, :unavailable},
           else: {:ok, Map.get(state.rows, key, :absent)}
+      end)
+    end
+
+    def list(node_id) do
+      Agent.get(__MODULE__, fn
+        %{mode: mode} when mode in [:read_unavailable, :list_unavailable] ->
+          {:error, :unavailable}
+
+        state ->
+          keys =
+            for {%{node_id: ^node_id} = key, row} <- state.rows,
+                not WorkerRecoveryCheckpoint.clean?(row.record),
+                do: key
+
+          {:ok, keys}
       end)
     end
 
@@ -48,6 +64,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     def now, do: Agent.get(__MODULE__, &Map.get(&1, :now, System.monotonic_time(:millisecond)))
     def time(now), do: Agent.update(__MODULE__, &Map.put(&1, :now, now))
     def seed(key, row), do: Agent.update(__MODULE__, &put_in(&1, [:rows, key], row))
+
+    def delete(key),
+      do: Agent.update(__MODULE__, &update_in(&1.rows, fn r -> Map.delete(r, key) end))
 
     def commit(key, epoch, revision, id, record) do
       Agent.get_and_update(__MODULE__, fn state ->
@@ -274,6 +293,54 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
     assert record["ownership"]["phase"] == "loaded"
     assert record["ownership"]["custody"] == Custody.record_runtime_custody(nil, worker)
+  end
+
+  # SPEC.md §12.2.3: absence under a reported epoch is cold evidence, so a fresh
+  # epoch reports itself only after every stored nonclean checkpoint hydrated.
+  test "SPEC §12.2.3 a restarted manager reports stored recovery-required keys before its epoch",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:list_unavailable)
+    :ok = stop_supervised(ModelManager)
+    start_supervised!(ModelManager)
+
+    status = ModelManager.current()
+    assert status.worker_recovery_epoch == ""
+    assert RuntimeEndpointMapper.observation_from_status(nil, status).worker_recovery_epoch == nil
+
+    Checkpoints.mode(:ok)
+    eventually(fn -> ModelManager.current().worker_recovery_epoch != "" end)
+
+    status = ModelManager.current()
+
+    assert [placement] =
+             Enum.filter(status.runtime_model_placements, fn placement ->
+               placement.model_ref.model_id == ctx.request.model_id
+             end)
+
+    projection = Jason.decode!(placement.worker_recovery_json)
+    assert projection["state"] == "recovery_required"
+    assert projection["epoch"] == status.worker_recovery_epoch
+    refute projection["eligible"]
+  end
+
+  # A listed key can become unreadable, for example when its catalog model is
+  # deleted; the boot listing must refresh rather than withhold the epoch forever.
+  test "SPEC §12.2.3 a listed key that stays unreadable is listed again", ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:read_only_unavailable)
+    :ok = stop_supervised(ModelManager)
+    start_supervised!(ModelManager)
+
+    Process.sleep(1_200)
+    assert ModelManager.current().worker_recovery_epoch == ""
+
+    Checkpoints.delete(checkpoint_key(ctx))
+    eventually(fn -> ModelManager.current().worker_recovery_epoch != "" end, 200)
   end
 
   test "SPEC §12.2 manager restart retains prior ownership and cannot treat its empty worker map as cleanup",
@@ -569,6 +636,25 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     assert {:ok, %{state: "armed", eligible: true}} =
              ModelManager.recover_worker_placement(command(ctx, evidence, "clear"))
+  end
+
+  # Read pacing keys come from Controller-supplied model refs, so failed reads for
+  # many distinct keys must not grow the pacing map for the agent's lifetime.
+  test "SPEC §12.2 checkpoint read pacing is pruned after expiry and successful hydration" do
+    freeze_recovery_clock()
+    Checkpoints.mode(:read_unavailable)
+
+    assert {:error, :unavailable} = ModelManager.inspect_worker_recovery("paced/a", "v1")
+    assert Map.keys(:sys.get_state(ModelManager).recovery_read_retry_at) == [{"paced/a", "v1"}]
+
+    Checkpoints.time(1_001)
+    assert {:error, :unavailable} = ModelManager.inspect_worker_recovery("paced/b", "v1")
+    assert Map.keys(:sys.get_state(ModelManager).recovery_read_retry_at) == [{"paced/b", "v1"}]
+
+    Checkpoints.mode(:ok)
+    Checkpoints.time(2_002)
+    assert {:ok, %{eligible: true}} = ModelManager.inspect_worker_recovery("paced/b", "v1")
+    assert :sys.get_state(ModelManager).recovery_read_retry_at == %{}
   end
 
   test "SPEC §12.2 cold inspection releases clean recovery retention and bounds status placements" do

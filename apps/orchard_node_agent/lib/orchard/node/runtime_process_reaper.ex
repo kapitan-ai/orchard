@@ -80,7 +80,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           owner_pid: pid()
         }
 
-  @type owner_custody :: :resolved | :unknown | {:runtime_process, pos_integer()}
+  @type owner_custody ::
+          :resolved
+          | :unknown
+          | {:runtime_process, pos_integer(), WorkerProcessLifecycle.custody_identity()}
 
   # Kept below the 5_000ms child_spec shutdown budget so the sweep can never be
   # cut short by a brutal kill from the supervisor.
@@ -173,9 +176,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @doc """
   Reports the custody evidence this reaper holds for `owner_pid`.
 
-  `:resolved` is affirmative exit proof, `{:runtime_process, os_pid}` names the
-  runtime process whose exit is not proven yet, and `:unknown` means this reaper
-  never held OS custody for that owner.
+  `:resolved` is affirmative exit proof, `{:runtime_process, os_pid, os_identity}`
+  names the runtime process whose exit is not proven yet together with its launch
+  identity snapshot, and `:unknown` means this reaper never held OS custody for
+  that owner.
   """
   @spec owner_custody(pid()) :: owner_custody()
   def owner_custody(owner_pid) do
@@ -611,7 +615,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   defp custody_evidence(state, owner_pid) do
     case owned_runtime_process(state, owner_pid) do
       nil -> if owner_resolved?(state, owner_pid), do: :resolved, else: :unknown
-      os_pid -> {:runtime_process, os_pid}
+      {os_pid, os_identity} -> {:runtime_process, os_pid, os_identity}
     end
   end
 
@@ -620,7 +624,8 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     |> Stream.map(fn {_ref, lease} -> lease end)
     |> Stream.concat(Map.values(state.pending_resolutions))
     |> Enum.find_value(fn record ->
-      if record.owner_pid == owner_pid and is_binary(record.os_identity), do: record.os_pid
+      if record.owner_pid == owner_pid and is_binary(record.os_identity),
+        do: {record.os_pid, record.os_identity}
     end)
   end
 

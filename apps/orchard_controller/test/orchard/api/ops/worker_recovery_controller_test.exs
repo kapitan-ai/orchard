@@ -6,8 +6,11 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
   alias Orchard.{Governance, Repo}
   alias Orchard.Governance.AuditLog
   alias Orchard.Models.Model
-  alias Orchard.Nodes.Node
+  alias Orchard.NodeEnrollment.PKI
+  alias Orchard.Nodes.{Enrollment, Node}
+  alias Orchard.NodeTrust.PKI, as: NodeTrustPKI
   alias Orchard.RuntimeEndpoint.{ModelRef, Operation, Target}
+  alias Orchard.TransportTLS.CertificateIdentity
 
   @moduletag :db
 
@@ -390,6 +393,72 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert_received {:inspect_recovery, node_id, _ref}
     assert node_id == ctx.node.id
     refute_received {:local_inspect, _, _}
+  end
+
+  # An admitted Node already holds checkpoint authority, so recovery must not
+  # require the operator to activate it first.
+  test "SPEC §12.2.2 recovery reaches an admitted Node before it becomes active", ctx do
+    node = ctx.node |> Ecto.Changeset.change(state: :admitted) |> Repo.update!()
+    enroll!(node)
+
+    assert {:ok, []} = Orchard.Nodes.active_runtime_endpoint_targets()
+
+    assert {:ok, [%{node_id: node_id}]} =
+             Orchard.Nodes.activation_probe_runtime_endpoint_targets()
+
+    assert node_id == node.id
+
+    assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 200
+    assert_received {:inspect_recovery, ^node_id, _ref}
+
+    assert request(:post, ctx.path, ctx.token, body()).status == 200
+    assert_received {:recover, %{key: %{node_id: ^node_id}, action: "clear"}}
+  end
+
+  defp enroll!(node) do
+    now = DateTime.utc_now()
+    cluster = Ecto.UUID.generate()
+    controller = Ecto.UUID.generate()
+    authority = Ecto.UUID.generate()
+    {:ok, ca} = NodeTrustPKI.generate(cluster, controller, authority, Ecto.UUID.generate(), now)
+    {:ok, csr} = PKI.generate_csr(cluster, node.id)
+
+    {:ok, issued} =
+      PKI.issue_node_certificate(%{
+        csr_pem: csr.csr_pem,
+        cluster_id: cluster,
+        node_id: node.id,
+        ca_private_key_pem: ca.ca_private_key_pem,
+        ca_certificate_pem: ca.ca_certificate_pem,
+        now: now,
+        serial: 541,
+        certificate_identifier: "serial:541"
+      })
+
+    {:ok, certificate} = CertificateIdentity.from_pem(issued.certificate_pem)
+
+    Repo.insert!(%Enrollment{
+      node_id: node.id,
+      cluster_id: cluster,
+      expected_controller_id: controller,
+      trust_authority_id: authority,
+      token_prefix: "test541",
+      token_hash: "test-only",
+      state: :consumed,
+      creator_type: "operator",
+      issued_at: now,
+      published_at: now,
+      consumed_at: now,
+      expires_at: DateTime.add(now, 3600),
+      certificate_issuance_outcome: :issued,
+      certificate_identifier: "serial:541",
+      certificate_result: %{
+        "node_certificate_pem" => issued.certificate_pem,
+        "node_uri_san" => issued.node_uri_san,
+        "certificate_serial" => certificate.serial,
+        "runtime_trust_spki_sha256" => ca.ca_spki_fingerprint
+      }
+    })
   end
 
   defp body(action \\ "clear"),

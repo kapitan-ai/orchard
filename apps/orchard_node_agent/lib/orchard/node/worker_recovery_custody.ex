@@ -12,6 +12,12 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
   that outlives a Node Agent restart resolves once it exits — including when an
   operator kills it through host controls — instead of waiting for the host to
   reboot.
+
+  A recorded runtime process carries an opaque digest of its launch identity
+  snapshot (owner uid and start time). A live PID whose snapshot no longer
+  matches belongs to another process, so the recorded incarnation is gone. A
+  live PID without a recorded digest, or whose snapshot cannot be read, stays
+  unresolved.
   """
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcessLifecycle
@@ -74,9 +80,22 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
   def record_runtime_custody(previous_custody, owner_pid) do
     recorded = runtime_custody(owner_pid)
 
-    if provable?(recorded) or not provable?(previous_custody),
-      do: recorded,
-      else: previous_custody
+    cond do
+      same_runtime_with_digest?(previous_custody, recorded) -> previous_custody
+      provable?(recorded) or not provable?(previous_custody) -> recorded
+      true -> previous_custody
+    end
+  end
+
+  # Once the runtime's PID is reused its identity can no longer be confirmed, so a
+  # later write must not drop the digest recorded while it could.
+  defp same_runtime_with_digest?(previous, recorded) do
+    previous = decode(previous)
+    recorded = decode(recorded)
+
+    is_binary(previous.digest) and is_nil(recorded.digest) and not recorded.exited? and
+      not is_nil(recorded.os_pid) and
+      {previous.boot, previous.os_pid} == {recorded.boot, recorded.os_pid}
   end
 
   defp runtime_custody(owner_pid) when is_pid(owner_pid),
@@ -94,7 +113,7 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
     custody = decode(previous_custody)
 
     if custody.exited? or host_boot_ended?(custody.boot) or
-         prior_runtime_exited?(custody.os_pid),
+         prior_runtime_exited?(custody.os_pid, custody.digest),
        do: :resolved,
        else: :unresolved
   end
@@ -107,8 +126,37 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
   defp encode(boot, :unknown), do: boot
   defp encode(boot, :resolved), do: Enum.join([boot_segment(boot), @exited], "/")
 
-  defp encode(boot, {:runtime_process, os_pid}),
-    do: Enum.join([boot_segment(boot), os_pid], "/")
+  defp encode(boot, {:runtime_process, os_pid, os_identity}) do
+    process =
+      case recordable_launch_identity(os_pid, os_identity) do
+        {:ok, launch_identity} -> "#{os_pid}.#{identity_digest(launch_identity)}"
+        :error -> Integer.to_string(os_pid)
+      end
+
+    Enum.join([boot_segment(boot), process], "/")
+  end
+
+  # The reaper's snapshot proves the PID is still the launched runtime; only
+  # then may the lifetime-stable identity read now stand for that runtime.
+  defp recordable_launch_identity(os_pid, os_identity) do
+    with {:ok, ^os_identity} <- WorkerProcessLifecycle.process_identity(os_pid),
+         {:ok, launch_identity} <- WorkerProcessLifecycle.launch_identity(os_pid) do
+      {:ok, launch_identity}
+    else
+      _unproven -> :error
+    end
+  end
+
+  # The checkpoint holds custody as an opaque bounded token, so the identity
+  # snapshot is recorded as a digest rather than as host process details. The
+  # digest rides in the PID segment, so a reader that predates it still finds
+  # the boot segment and resolves once the host reboots.
+  defp identity_digest(os_identity) do
+    :sha256
+    |> :crypto.hash(os_identity)
+    |> binary_part(0, 16)
+    |> Base.encode16(case: :lower)
+  end
 
   defp boot_segment(nil), do: @absent_boot
   defp boot_segment(boot), do: boot
@@ -117,14 +165,22 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
     case String.split(value, "/") do
       [boot] -> custody(normalize(boot), false, nil)
       [boot, @exited] -> custody(normalize(boot), true, nil)
-      [boot, os_pid] -> custody(normalize(boot), false, parse_os_pid(os_pid))
+      [boot, process] -> process_custody(normalize(boot), String.split(process, "."))
       _unrecognized -> custody(nil, false, nil)
     end
   end
 
   defp decode(_value), do: custody(nil, false, nil)
 
-  defp custody(boot, exited?, os_pid), do: %{boot: boot, exited?: exited?, os_pid: os_pid}
+  defp process_custody(boot, [os_pid]), do: custody(boot, false, parse_os_pid(os_pid))
+
+  defp process_custody(boot, [os_pid, digest]) when digest != "",
+    do: custody(boot, false, parse_os_pid(os_pid), digest)
+
+  defp process_custody(boot, _unrecognized), do: custody(boot, false, nil)
+
+  defp custody(boot, exited?, os_pid, digest \\ nil),
+    do: %{boot: boot, exited?: exited?, os_pid: os_pid, digest: digest}
 
   defp parse_os_pid(value) do
     case Integer.parse(value) do
@@ -140,10 +196,23 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
     is_binary(current_boot) and current_boot != previous_boot
   end
 
-  defp prior_runtime_exited?(nil), do: false
+  defp prior_runtime_exited?(nil, _digest), do: false
 
-  defp prior_runtime_exited?(os_pid),
-    do: WorkerProcessLifecycle.os_process_status(os_pid) == :not_alive
+  defp prior_runtime_exited?(os_pid, digest) do
+    WorkerProcessLifecycle.os_process_status(os_pid) == :not_alive or
+      pid_reused?(os_pid, digest)
+  end
+
+  # A live PID whose identity snapshot differs from the recorded one belongs to
+  # another process: a process never changes PID, so the recorded one is gone.
+  defp pid_reused?(_os_pid, nil), do: false
+
+  defp pid_reused?(os_pid, digest) do
+    case WorkerProcessLifecycle.launch_identity(os_pid) do
+      {:ok, identity} -> identity_digest(identity) != digest
+      {:error, :identity_unavailable} -> false
+    end
+  end
 
   defp normalize(value) do
     value = String.trim(value)

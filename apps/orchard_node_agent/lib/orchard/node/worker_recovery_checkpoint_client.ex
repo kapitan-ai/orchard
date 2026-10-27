@@ -7,18 +7,37 @@ defmodule Orchard.Node.WorkerRecoveryCheckpointClient do
   """
 
   alias Orchard.Cluster.V1.ControllerWorkerRecoveryService.Stub
-  alias Orchard.Cluster.V1.{WorkerRecoveryKey, WorkerRecoveryMutation, WorkerRecoveryResult}
+
+  alias Orchard.Cluster.V1.{
+    WorkerRecoveryKey,
+    WorkerRecoveryKeyList,
+    WorkerRecoveryMutation,
+    WorkerRecoveryNode,
+    WorkerRecoveryResult
+  }
+
   alias Orchard.Node.{BeamPeerGrantClient, RuntimeTLS}
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint, as: Record
   alias Orchard.RuntimeEndpoint.WorkerRecoveryWire, as: Wire
 
   @callback read(Record.key()) :: {:ok, map() | :absent} | {:error, term()}
+  @callback list(String.t()) :: {:ok, [Record.key()]} | {:error, term()}
   @callback commit(Record.key(), String.t() | nil, non_neg_integer(), String.t(), Record.t()) ::
               {:ok, map()} | {:error, term()}
 
   @spec read(Record.key()) :: {:ok, map() | :absent} | {:error, term()}
   def read(key),
     do: request(:read_worker_recovery_checkpoint, struct!(WorkerRecoveryKey, key), key)
+
+  @doc "Lists this Node's stored checkpoint keys that are not proven clean."
+  @spec list(String.t()) :: {:ok, [Record.key()]} | {:error, term()}
+  def list(node_id),
+    do:
+      request(
+        :list_worker_recovery_checkpoint_keys,
+        %WorkerRecoveryNode{node_id: node_id},
+        %{node_id: node_id}
+      )
 
   @spec commit(Record.key(), String.t() | nil, non_neg_integer(), String.t(), Record.t()) ::
           {:ok, map()} | {:error, term()}
@@ -66,7 +85,7 @@ defmodule Orchard.Node.WorkerRecoveryCheckpointClient do
            ) do
       try do
         case apply(Stub, operation, [channel, request, [timeout: 5_000]]) do
-          {:ok, response} -> decode(response)
+          {:ok, response} -> decode(response, key.node_id)
           {:error, _reason} -> {:error, :unavailable}
         end
       after
@@ -86,9 +105,25 @@ defmodule Orchard.Node.WorkerRecoveryCheckpointClient do
     _, _ -> :ok
   end
 
-  defp decode(%WorkerRecoveryResult{status: 200, reason: "absent"}), do: {:ok, :absent}
+  defp decode(%WorkerRecoveryKeyList{status: 200, keys: keys}, node_id) do
+    keys
+    |> Enum.map(&Wire.key/1)
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, %{node_id: ^node_id} = key}, {:ok, acc} -> {:cont, {:ok, [key | acc]}}
+      _invalid, _acc -> {:halt, {:error, :unavailable}}
+    end)
+    |> case do
+      {:ok, keys} -> {:ok, Enum.reverse(keys)}
+      error -> error
+    end
+  end
 
-  defp decode(%WorkerRecoveryResult{status: 200, record_json: json}) do
+  defp decode(%WorkerRecoveryKeyList{}, _node_id), do: {:error, :unavailable}
+
+  defp decode(%WorkerRecoveryResult{status: 200, reason: "absent"}, _node_id),
+    do: {:ok, :absent}
+
+  defp decode(%WorkerRecoveryResult{status: 200, record_json: json}, _node_id) do
     with {:ok,
           %{
             "epoch" => epoch,
@@ -104,6 +139,6 @@ defmodule Orchard.Node.WorkerRecoveryCheckpointClient do
     end
   end
 
-  defp decode(%WorkerRecoveryResult{status: 409}), do: {:error, :stale_checkpoint}
-  defp decode(_response), do: {:error, :unavailable}
+  defp decode(%WorkerRecoveryResult{status: 409}, _node_id), do: {:error, :stale_checkpoint}
+  defp decode(_response, _node_id), do: {:error, :unavailable}
 end
