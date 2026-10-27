@@ -36,7 +36,9 @@ Two OpenSpec change packages proposed how to persist that state for issue #379:
 - In all-in-one source development, the Operator API forwards recovery commands for that in-process Node Agent's own identity in-process too.
   The command keeps the same catalog and exact-version checks, audit, Node-side validation, and epoch/revision fencing; any other Node id still requires an enrolled Node and its identity-bound Runtime Endpoint.
 - Checkpoints key on the exact runtime model id and version without a reference to the catalog row, so deleting and re-importing a catalog model cannot erase an open breaker or unresolved ownership.
-- The two-host crash and recovery proof, live mTLS activation, and the Apple Silicon real-model smoke are required before #379 closes, not before #444 merges.
+- The two-host crash and recovery proof, live mTLS activation, and the Apple Silicon real-model smoke were required before #379 closes, not before #444 merges.
+  On 2026-10-27 the accountable product owner closed #379 after the Apple Silicon real-model proof in all-in-one source development.
+  The two-host proof and live mTLS activation were not run, and the proof found #547.
 
 ## Consequences
 
