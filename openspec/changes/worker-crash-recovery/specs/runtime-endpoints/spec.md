@@ -19,6 +19,11 @@ Runtime Endpoint observations SHALL retain exact-key worker recovery state, curr
 - **THEN** its loaded placement data cannot establish recovery eligibility
 - **AND** fresh authenticated current evidence is required rather than a legacy-loaded fallback
 
+#### Scenario: Fresh epoch reports stored nonclean keys before cold absence
+- **WHEN** a Node Agent restarts with stored checkpoints that are not proven clean
+- **THEN** it lists those keys through the authenticated checkpoint path and hydrates each one before its status reports `worker_recovery_epoch`
+- **AND** until then it reports no epoch, so its projection establishes no cold absence and an unavailable listing or read stays fail-closed
+
 #### Scenario: Bounded recovery projection omits an exact key
 - **WHEN** a placement projection has reached its 40-entry bound and omits the requested model reference
 - **THEN** Orchard treats that absence as incomplete rather than proof of a cold placement
@@ -100,7 +105,8 @@ Nested keys SHALL use the existing `Target`, `ModelRef`, `Placement`,
 ADR 0017, extended by the `worker_recovery` placement projection defined for
 `SPEC.md` §12.2.3.
 `worker_recovery_epoch` SHALL be the Node's current authenticated recovery epoch
-string, and the nested `worker_recovery` projection SHALL carry exact-key
+string, reported only after that epoch has hydrated every stored checkpoint for the
+Node that is not proven clean, and the nested `worker_recovery` projection SHALL carry exact-key
 identity, epoch, revision, state, hydration validity, eligibility, and refusal
 reason.
 Neither field is a derived eligibility boolean: admission SHALL still be decided

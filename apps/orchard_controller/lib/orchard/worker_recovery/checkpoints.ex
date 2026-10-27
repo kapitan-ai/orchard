@@ -16,6 +16,9 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
 
   @type result :: {:ok, map() | :absent} | {:error, term()}
 
+  # Bounds the boot listing response; a Node holds far fewer exact placements.
+  @list_limit 256
+
   @spec read(Record.key(), binary()) :: result()
   def read(key, certificate), do: read_with(key, &authorize_peer(&1, certificate))
 
@@ -54,6 +57,53 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
       &authorize_local/1
     )
   end
+
+  @doc """
+  Lists the exact keys of the authenticated Node's stored checkpoints that are not
+  proven clean.
+
+  A fresh Node recovery epoch hydrates these keys before it reports itself, so a
+  placement that requires recovery is never absent from its projection (SPEC
+  §12.2.3). Keys without a catalog model are omitted: their checkpoint cannot be
+  read and no Request can schedule them. More than #{@list_limit} keys is
+  unavailable rather than a partial list, because a partial list would let an
+  omitted key look cold.
+  """
+  @spec list(Ecto.UUID.t(), binary()) :: {:ok, [Record.key()]} | {:error, term()}
+  def list(node_id, certificate),
+    do: list_with(fn -> authorize_peer_node(node_id, certificate) end)
+
+  @doc "Lists keys for the Node Agent running in this BEAM; see `read_local/1`."
+  @spec list_local(Ecto.UUID.t()) :: {:ok, [Record.key()]} | {:error, term()}
+  def list_local(node_id), do: list_with(fn -> Ecto.UUID.cast(node_id) end)
+
+  defp list_with(authorize) do
+    with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         {:ok, keys} <- Repo.transaction(fn -> authorized_keys(authorize.()) end) do
+      if length(keys) > @list_limit, do: {:error, :unavailable}, else: {:ok, keys}
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, :unavailable}
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  defp authorized_keys({:ok, node_id}) do
+    from(c in Checkpoint,
+      join: m in Model,
+      on: m.model_id == c.runtime_model_id and m.version == c.version,
+      where: c.node_id == ^node_id,
+      order_by: [asc: c.runtime_model_id, asc: c.version],
+      select: {c.runtime_model_id, c.version, c.record}
+    )
+    |> Repo.all()
+    |> Enum.reject(fn {_model_id, _version, record} -> Record.clean?(record) end)
+    |> Enum.map(fn {model_id, version, _record} ->
+      %{node_id: node_id, model_id: model_id, version: version}
+    end)
+  end
+
+  defp authorized_keys(:error), do: Repo.rollback(:unauthorized_checkpoint)
 
   defp read_with(key, authorize) do
     transact(key, authorize, fn node_id, model ->
@@ -103,14 +153,22 @@ defmodule Orchard.WorkerRecovery.Checkpoints do
   defp authorized(:error, _fun), do: Repo.rollback(:unauthorized_checkpoint)
 
   defp authorize_peer(key, certificate) do
+    with {:ok, node_id} <- authorize_peer_node(key.node_id, certificate),
+         %Model{} = model <- exact_model(key) do
+      {:ok, node_id, model}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp authorize_peer_node(node_id, certificate) do
     with {:ok, peer} <- BeamPeerGrants.authenticated_peer_from_certificate(certificate),
-         true <- peer.node_id == key.node_id,
+         true <- peer.node_id == node_id,
          %Enrollment{state: :consumed, certificate_issuance_outcome: :issued} <-
            lock_enrollment(peer.enrollment_id),
          %Node{} = node <- lock_node(peer.node_id),
-         true <- node.state in [:admitted, :active, :cordoned, :draining, :maintenance],
-         %Model{} = model <- exact_model(key) do
-      {:ok, node.id, model}
+         true <- node.state in [:admitted, :active, :cordoned, :draining, :maintenance] do
+      {:ok, node.id}
     else
       _invalid -> :error
     end

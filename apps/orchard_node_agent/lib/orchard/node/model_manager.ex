@@ -10,6 +10,7 @@ defmodule Orchard.Node.ModelManager do
   """
 
   use GenServer
+  require Logger
 
   import Bitwise, only: [band: 2, bsr: 2]
 
@@ -280,8 +281,15 @@ defmodule Orchard.Node.ModelManager do
 
   @impl true
   def init(_init_arg) do
-    {:ok, initial_state()}
+    {:ok, initial_state(), {:continue, :hydrate_stored_recovery}}
   end
+
+  # SPEC §12.2.3: a fresh epoch's empty recovery map would let every stored open
+  # or recovery-required key look cold, so status withholds the epoch until each
+  # stored checkpoint that is not proven clean has hydrated.
+  @impl true
+  def handle_continue(:hydrate_stored_recovery, state),
+    do: {:noreply, step_recovery_boot(state)}
 
   # -- handle_call -----------------------------------------------------------
 
@@ -724,6 +732,22 @@ defmodule Orchard.Node.ModelManager do
   # -- handle_info -----------------------------------------------------------
 
   @impl true
+  def handle_info({:recovery_boot_listed, epoch, result}, state)
+      when epoch == state.recovery_epoch do
+    case result do
+      {:ok, keys} ->
+        pending = MapSet.new(keys, &{&1.model_id, &1.version})
+        {:noreply, step_recovery_boot(%{state | recovery_boot: {:hydrating, pending}})}
+
+      {:error, _reason} ->
+        schedule_recovery_boot_tick(state)
+        {:noreply, recovery_boot_failed(state)}
+    end
+  end
+
+  def handle_info({:recovery_boot_tick, epoch}, state) when epoch == state.recovery_epoch,
+    do: {:noreply, step_recovery_boot(state)}
+
   def handle_info({:recovery_hydrated, epoch, key, ref, result}, state) do
     case Map.get(state.recovery_hydrations, key) do
       %{ref: ^ref, waiters: waiters} when epoch == state.recovery_epoch ->
@@ -1044,6 +1068,8 @@ defmodule Orchard.Node.ModelManager do
   def handle_info(message, state)
       when is_tuple(message) and
              elem(message, 0) in [
+               :recovery_boot_listed,
+               :recovery_boot_tick,
                :recovery_hydrated,
                :recovery_hydration_ready,
                :recovery_checkpoint_result,
@@ -1061,7 +1087,10 @@ defmodule Orchard.Node.ModelManager do
 
   defp handle_recovery_hydration_result({:ok, checkpoint}, state, epoch, key, waiters) do
     entry = Recovery.new(epoch) |> Recovery.hydrate(checkpoint)
-    state = %{state | recovery_read_retry_at: Map.delete(state.recovery_read_retry_at, key)}
+
+    state =
+      %{state | recovery_read_retry_at: Map.delete(state.recovery_read_retry_at, key)}
+      |> recovery_boot_hydrated(key)
 
     if stale_clean_checkpoint?(entry, epoch) do
       entry = Recovery.checkpoint(%{entry | command: nil}, [{:hydration_complete, waiters}])
@@ -1077,6 +1106,7 @@ defmodule Orchard.Node.ModelManager do
   # dropped here; the map then holds only keys that failed within the last second.
   defp handle_recovery_hydration_result({:error, _reason}, state, _epoch, key, waiters) do
     Enum.each(waiters, &reply_recovery_unavailable/1)
+    state = recovery_boot_read_failed(state, key)
     now = recovery_now()
 
     retry_at =
@@ -1417,6 +1447,82 @@ defmodule Orchard.Node.ModelManager do
 
         {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
     end
+  end
+
+  # The task supervisor starts after this manager under `:rest_for_one`, so the
+  # first boot step waits for it instead of reordering supervision.
+  defp step_recovery_boot(%{recovery_boot: :unlisted} = state) do
+    if Process.whereis(@task_supervisor) do
+      list_stored_recovery(state)
+    else
+      schedule_recovery_boot_tick(state, 50)
+      state
+    end
+  end
+
+  defp step_recovery_boot(%{recovery_boot: {:hydrating, pending}} = state) do
+    pending = MapSet.reject(pending, &Map.has_key?(state.recovery, &1))
+
+    state =
+      pending
+      |> Enum.reject(&Map.has_key?(state.recovery_hydrations, &1))
+      |> Enum.reduce(state, &hydrate_recovery(&2, &1, :rehydrate))
+
+    if MapSet.size(pending) == 0 do
+      %{state | recovery_boot: :complete}
+    else
+      schedule_recovery_boot_tick(state)
+      %{state | recovery_boot: {:hydrating, pending}}
+    end
+  end
+
+  defp step_recovery_boot(state), do: state
+
+  defp schedule_recovery_boot_tick(state, delay_ms \\ 1_000),
+    do: Process.send_after(self(), {:recovery_boot_tick, state.recovery_epoch}, delay_ms)
+
+  defp list_stored_recovery(state) do
+    client = recovery_client()
+    node_id = Node.node_id()
+    task = Task.Supervisor.async_nolink(@task_supervisor, fn -> client.list(node_id) end)
+
+    %{
+      state
+      | recovery_boot: :listing,
+        recovery_io_refs:
+          Map.put(state.recovery_io_refs, task.ref, {:recovery_boot_listed, state.recovery_epoch})
+    }
+  end
+
+  defp recovery_boot_hydrated(%{recovery_boot: {:hydrating, pending}} = state, key) do
+    pending = MapSet.delete(pending, key)
+
+    if MapSet.size(pending) == 0,
+      do: %{state | recovery_boot: :complete},
+      else: %{state | recovery_boot: {:hydrating, pending}}
+  end
+
+  defp recovery_boot_hydrated(state, _key), do: state
+
+  # A key can become unreadable after it was listed, for example when its catalog
+  # model is deleted, so a failed read lists again instead of waiting on a stale set.
+  defp recovery_boot_read_failed(%{recovery_boot: {:hydrating, pending}} = state, key) do
+    if MapSet.member?(pending, key), do: recovery_boot_failed(state), else: state
+  end
+
+  defp recovery_boot_read_failed(state, _key), do: state
+
+  defp recovery_boot_failed(state) do
+    failures = state.recovery_boot_failures + 1
+
+    if rem(failures, 60) == 1 do
+      Logger.warning(
+        "worker recovery epoch withheld: stored checkpoints are not hydrated yet " <>
+          inspect(%{attempts: failures})
+      )
+    end
+
+    %{state | recovery_boot: :unlisted, recovery_boot_failures: failures}
   end
 
   defp hydrate_recovery(state, key, waiter) do
@@ -2996,7 +3102,7 @@ defmodule Orchard.Node.ModelManager do
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
       worker_crash_counters: worker_crash_counters(state),
-      worker_recovery_epoch: state.recovery_epoch,
+      worker_recovery_epoch: reported_recovery_epoch(state),
       supports_prompt_token_ids: supports_prompt_token_ids,
       runtime_model_placements: runtime_model_placements(state, worker_request_limits),
       host_inventory: HostInventory.current()
@@ -3004,6 +3110,9 @@ defmodule Orchard.Node.ModelManager do
 
     {response, put_worker_request_limits(state, worker_request_limits)}
   end
+
+  defp reported_recovery_epoch(%{recovery_boot: :complete} = state), do: state.recovery_epoch
+  defp reported_recovery_epoch(_state), do: ""
 
   defp worker_crash_counters(state) do
     state.worker_crashes
@@ -3805,6 +3914,8 @@ defmodule Orchard.Node.ModelManager do
       recovery_hydrations: %{},
       recovery_io_refs: %{},
       recovery_read_retry_at: %{},
+      recovery_boot: :unlisted,
+      recovery_boot_failures: 0,
       eviction_continuations: %{},
       stopping?: false,
       resetting?: false

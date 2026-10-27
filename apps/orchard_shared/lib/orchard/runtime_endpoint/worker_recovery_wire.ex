@@ -1,6 +1,12 @@
 defmodule Orchard.RuntimeEndpoint.WorkerRecoveryWire do
   @moduledoc "Bounded encoding for the dedicated SPEC §12.2 control operations."
-  alias Orchard.Cluster.V1.{WorkerRecoveryKey, WorkerRecoveryResult}
+  alias Orchard.Cluster.V1.{
+    WorkerRecoveryKey,
+    WorkerRecoveryKeyList,
+    WorkerRecoveryNode,
+    WorkerRecoveryResult
+  }
+
   alias Orchard.RuntimeEndpoint.WorkerRecoveryEvidence
 
   @spec key(term()) :: {:ok, map()} | {:error, :invalid_key}
@@ -13,6 +19,23 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryWire do
   end
 
   def key(_key), do: {:error, :invalid_key}
+
+  @spec node_id(term()) :: {:ok, String.t()} | {:error, :invalid_key}
+  def node_id(%WorkerRecoveryNode{node_id: node_id})
+      when is_binary(node_id) and byte_size(node_id) in 1..256,
+      do: {:ok, node_id}
+
+  def node_id(_request), do: {:error, :invalid_key}
+
+  @doc "Encodes the complete key list of one Node, or an error without keys."
+  @spec key_list_result({:ok, [map()]} | {:error, term()}) :: WorkerRecoveryKeyList.t()
+  def key_list_result({:ok, keys}),
+    do: %WorkerRecoveryKeyList{status: 200, keys: Enum.map(keys, &struct!(WorkerRecoveryKey, &1))}
+
+  def key_list_result({:error, reason}) do
+    {status, code} = error(reason)
+    %WorkerRecoveryKeyList{status: status, reason: code}
+  end
 
   @spec decode_record(term()) :: {:ok, map()} | {:error, :invalid_checkpoint}
   def decode_record(value) when is_binary(value) and byte_size(value) <= 4096 do

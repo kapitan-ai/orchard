@@ -14,6 +14,14 @@ defmodule Orchard.WorkerRecovery.LocalCheckpointClient do
   @spec read(map()) :: {:ok, map() | :absent} | {:error, :stale_checkpoint | :unavailable}
   def read(key), do: key |> Checkpoints.read_local() |> result()
 
+  @spec list(String.t()) :: {:ok, [map()]} | {:error, :unavailable}
+  def list(node_id) do
+    case Checkpoints.list_local(node_id) do
+      {:ok, keys} -> {:ok, keys}
+      {:error, _reason} -> {:error, :unavailable}
+    end
+  end
+
   @spec commit(map(), String.t() | nil, non_neg_integer(), String.t(), map()) ::
           {:ok, map()} | {:error, :stale_checkpoint | :unavailable}
   def commit(key, epoch, revision, transition_id, record) do

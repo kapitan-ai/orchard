@@ -2,7 +2,14 @@ defmodule Orchard.WorkerRecovery.ControlServer do
   @moduledoc "Identity-bound Node-to-Controller SPEC §12.2 checkpoint operations."
   use GRPC.Server, service: Orchard.Cluster.V1.ControllerWorkerRecoveryService.Service
 
-  alias Orchard.Cluster.V1.{WorkerRecoveryKey, WorkerRecoveryMutation, WorkerRecoveryResult}
+  alias Orchard.Cluster.V1.{
+    WorkerRecoveryKey,
+    WorkerRecoveryKeyList,
+    WorkerRecoveryMutation,
+    WorkerRecoveryNode,
+    WorkerRecoveryResult
+  }
+
   alias Orchard.RuntimeEndpoint.WorkerRecoveryWire, as: Wire
   alias Orchard.WorkerRecovery.Checkpoints
 
@@ -37,6 +44,19 @@ defmodule Orchard.WorkerRecovery.ControlServer do
       end
 
     Wire.result(result)
+  end
+
+  @spec list_worker_recovery_checkpoint_keys(
+          WorkerRecoveryNode.t(),
+          Orchard.GRPCTypes.server_stream()
+        ) :: WorkerRecoveryKeyList.t()
+  def list_worker_recovery_checkpoint_keys(request, stream) do
+    result =
+      with {:ok, certificate} <- certificate(stream),
+           {:ok, node_id} <- Wire.node_id(request),
+           do: Checkpoints.list(node_id, certificate)
+
+    Wire.key_list_result(result)
   end
 
   defp certificate(%GRPC.Server.Stream{adapter: adapter, payload: payload}) do

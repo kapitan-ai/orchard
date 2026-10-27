@@ -7,6 +7,9 @@ import "cluster/v1/runtime.proto";
 service ControllerWorkerRecoveryService {
   rpc ReadWorkerRecoveryCheckpoint(WorkerRecoveryKey) returns (WorkerRecoveryResult);
   rpc CommitWorkerRecoveryCheckpoint(WorkerRecoveryMutation) returns (WorkerRecoveryResult);
+  // Keys of the authenticated Node's stored checkpoints that are not proven clean,
+  // so a fresh recovery epoch can hydrate them before reporting itself (SPEC §12.2.3).
+  rpc ListWorkerRecoveryCheckpointKeys(WorkerRecoveryNode) returns (WorkerRecoveryKeyList);
 }
 service NodeWorkerRecoveryService {
   rpc InspectWorkerRecoveryPlacement(WorkerRecoveryKey) returns (WorkerRecoveryResult);
@@ -16,6 +19,15 @@ message WorkerRecoveryKey {
   string node_id = 1;
   string model_id = 2;
   string version = 3;
+}
+message WorkerRecoveryNode {
+  string node_id = 1;
+}
+message WorkerRecoveryKeyList {
+  uint32 status = 1;
+  string reason = 2;
+  // Complete list of exact keys for that Node; empty for error.
+  repeated WorkerRecoveryKey keys = 3;
 }
 message WorkerRecoveryMutation {
   WorkerRecoveryKey key = 1;

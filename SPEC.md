@@ -6240,7 +6240,12 @@ or old-epoch recovery evidence SHALL NOT establish eligibility. Node-side checks
 remain authoritative if Controller observations lag. A targeted read-only recovery
 status query SHALL hydrate and report clean exact-key evidence for new/cold
 placements without requiring a prior load or operator re-arm; omission from a
-loaded-model list is not positive recovery evidence. Absence from a placement
+loaded-model list is not positive recovery evidence. A new Node recovery epoch
+SHALL hydrate every stored checkpoint for that Node and a cataloged model that
+is not proven clean before it reports that epoch, re-listing those checkpoints
+while any of them cannot be read, so absence under a reported epoch cannot hide an
+open or recovery-required placement; until then its observation SHALL carry no
+recovery epoch and establish no cold absence. Absence from a placement
 projection at its bounded 40-entry cap is incomplete and SHALL NOT prove a cold
 placement; explicit valid exact-key evidence remains usable at that cap. Invalid
 projected recovery evidence SHALL remain represented as invalid rather than be

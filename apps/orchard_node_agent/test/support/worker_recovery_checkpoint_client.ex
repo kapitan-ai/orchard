@@ -4,6 +4,9 @@ defmodule Orchard.Node.TestWorkerRecoveryCheckpointClient do
   @spec read(map()) :: {:ok, :absent}
   def read(_key), do: {:ok, :absent}
 
+  @spec list(String.t()) :: {:ok, []}
+  def list(_node_id), do: {:ok, []}
+
   @spec commit(map(), String.t() | nil, non_neg_integer(), String.t(), map()) :: {:ok, map()}
   def commit(_key, _epoch, revision, transition_id, record) do
     {:ok,

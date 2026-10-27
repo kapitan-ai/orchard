@@ -11,6 +11,30 @@ defmodule Orchard.Cluster.V1.WorkerRecoveryKey do
   field(:version, 3, type: :string)
 end
 
+defmodule Orchard.Cluster.V1.WorkerRecoveryNode do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.WorkerRecoveryNode",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:node_id, 1, type: :string, json_name: "nodeId")
+end
+
+defmodule Orchard.Cluster.V1.WorkerRecoveryKeyList do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.WorkerRecoveryKeyList",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:status, 1, type: :uint32)
+  field(:reason, 2, type: :string)
+  field(:keys, 3, repeated: true, type: Orchard.Cluster.V1.WorkerRecoveryKey)
+end
+
 defmodule Orchard.Cluster.V1.WorkerRecoveryMutation do
   @moduledoc false
 
@@ -77,6 +101,12 @@ defmodule Orchard.Cluster.V1.ControllerWorkerRecoveryService.Service do
     :CommitWorkerRecoveryCheckpoint,
     Orchard.Cluster.V1.WorkerRecoveryMutation,
     Orchard.Cluster.V1.WorkerRecoveryResult
+  )
+
+  rpc(
+    :ListWorkerRecoveryCheckpointKeys,
+    Orchard.Cluster.V1.WorkerRecoveryNode,
+    Orchard.Cluster.V1.WorkerRecoveryKeyList
   )
 end
 
