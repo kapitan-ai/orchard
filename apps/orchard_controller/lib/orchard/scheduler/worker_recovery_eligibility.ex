@@ -20,6 +20,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     ObservationBounds,
     Placement,
     Target,
+    WorkerRecoveryClient,
     WorkerRecoveryEvidence
   }
 
@@ -181,7 +182,26 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   defp inspect_endpoint(target, model_ref, opts) do
     case Keyword.get(opts, :worker_recovery_inspector) do
       inspector when is_function(inspector, 2) -> inspector.(target, model_ref)
-      _absent -> inspect_client(target, model_ref, opts)
+      _absent -> inspect_local_or_client(target, model_ref, opts)
+    end
+  end
+
+  # All-in-one source dev runs its Node Agent in this BEAM without enrollment or
+  # a Controller certificate, so the certificate-bound query is refused. Its own
+  # placements are inspected in-process with the same exact-key validation as
+  # the Operator API (ADR 0039); every other Node keeps the authenticated path.
+  defp inspect_local_or_client(target, model_ref, opts) do
+    control = Application.get_env(:orchard_controller, :worker_recovery_local_control)
+
+    if control && control.local_node_id() == target.node_id do
+      WorkerRecoveryClient.local_call(
+        control,
+        target.node_id,
+        :inspect_worker_recovery_placement,
+        model_ref
+      )
+    else
+      inspect_client(target, model_ref, opts)
     end
   end
 
