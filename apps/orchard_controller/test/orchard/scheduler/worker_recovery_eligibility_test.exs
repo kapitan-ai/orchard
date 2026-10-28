@@ -1,5 +1,6 @@
 defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
-  use ExUnit.Case, async: true
+  # Not async: the all-in-one inspection test changes application env.
+  use ExUnit.Case, async: false
 
   alias Orchard.CanonicalRequest
   alias Orchard.RuntimeEndpoint.{Observation, Placement, Target}
@@ -13,6 +14,36 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
     def connect(target), do: {:ok, target}
     def disconnect(_target), do: :ok
     def status(_target, _opts), do: {:ok, Process.get(:recovery_observation)}
+  end
+
+  # The plaintext gRPC compatibility transport refuses recovery control.
+  defmodule RefusingClient do
+    def connect(target), do: {:ok, target}
+    def disconnect(_target), do: :ok
+
+    def inspect_worker_recovery(connection, _ref, _opts) do
+      send(self(), {:client_inspect, connection.node_id})
+      {:error, :permission_denied}
+    end
+  end
+
+  defmodule LocalManager do
+    def inspect_worker_recovery(model_id, version) do
+      send(self(), {:local_inspect, model_id, version})
+      state = Process.get(:local_recovery_state, "armed")
+
+      {:ok,
+       %{
+         key: %{node_id: Orchard.Node.node_id(), model_id: model_id, version: version},
+         epoch: "current",
+         owner_epoch: "current",
+         revision: 1,
+         state: state,
+         hydrated: true,
+         eligible: state == "armed",
+         reason: if(state == "open", do: "placement_crash_breaker_open")
+       }}
+    end
   end
 
   # SPEC.md §12.2: a placement that is not loaded holds no recovery state, so a
@@ -188,6 +219,50 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              WorkerRecoveryEligibility.check(target(), status, @model)
   end
 
+  # #547, ADR 0039: all-in-one source dev has no Controller certificate, so the
+  # compatibility wave inspects its in-process Node Agent's cold placements
+  # in-process instead of failing closed on the refused gRPC query.
+  test "SPEC §12.2.3 all-in-one inspects its own cold placement in-process" do
+    local_node_id = Orchard.Node.node_id()
+    local_target = %{target() | node_id: local_node_id}
+    other_target = target()
+    cold = observation(nil, [])
+    opts = [status_client: RefusingClient]
+
+    put_env(:orchard_node_agent, :worker_recovery_control_manager, LocalManager)
+    put_env(:orchard_controller, :worker_recovery_local_control, nil)
+
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check_with_inspection(local_target, cold, @model, opts)
+
+    assert_received {:client_inspect, ^local_node_id}
+
+    put_env(
+      :orchard_controller,
+      :worker_recovery_local_control,
+      Orchard.Node.WorkerRecoveryControlServer
+    )
+
+    assert :ok = WorkerRecoveryEligibility.check_with_inspection(local_target, cold, @model, opts)
+    assert_received {:local_inspect, "recovery-model", "v1"}
+    refute_received {:client_inspect, _}
+
+    # The in-process answer is real evidence, not an epoch-only fallback.
+    Process.put(:local_recovery_state, "open")
+
+    assert {:error, :placement_crash_breaker_open} =
+             WorkerRecoveryEligibility.check_with_inspection(local_target, cold, @model, opts)
+
+    assert_received {:local_inspect, "recovery-model", "v1"}
+
+    # Any other Node keeps the certificate-bound path.
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check_with_inspection(other_target, cold, @model, opts)
+
+    assert_received {:client_inspect, @node_id}
+    refute_received {:local_inspect, _, _}
+  end
+
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do
     Process.put(
       :recovery_observation,
@@ -254,6 +329,18 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
       model_ref: struct!(CanonicalRequest.ModelRef, @model),
       admission: %{max_cold_start_ms: 1_000}
     }
+  end
+
+  defp put_env(app, key, value) do
+    previous = Application.fetch_env(app, key)
+    Application.put_env(app, key, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(app, key, value)
+        :error -> Application.delete_env(app, key)
+      end
+    end)
   end
 
   defp target,
