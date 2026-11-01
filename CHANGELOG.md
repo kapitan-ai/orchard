@@ -3,6 +3,29 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-11-01
+
+### Breaking changes
+
+- Worker recovery now requires authoritative checkpoint evidence before model residency or scheduling. **Required action:** upgrade the Controller before its Node Agents and coordinate the Node rollout; older Nodes without recovery evidence are ineligible, while new Nodes cannot finish boot hydration against a Controller without the checkpoint-listing RPC. For split-role source development, configure Controller HTTPS and Node trust, redeem Node enrollment, and configure authenticated recovery control in both directions as described in [Worker recovery control](docs/local-dev.md#worker-recovery-control); shared BEAM cookies alone no longer suffice for model loads. All-in-one `make dev` uses in-process control and needs no Node enrollment. ([#444](https://github.com/kapitan-ai/orchard/pull/444), [#544](https://github.com/kapitan-ai/orchard/pull/544))
+
+### Features
+
+- The Node Agent now restores crashed model residency with per-Node, exact-model-version restart delays of 1, 2, 4, 8, 16, then at most 30 seconds, opening a non-expiring placement breaker on the fifth qualifying crash within ten minutes. Recovery state is checkpointed in Postgres, and authenticated Operator API inspection and fenced `clear`, non-forced `unload`, and forced `reload` commands provide explicit recovery. Ten continuous loaded minutes reset crash history; interrupted or history-bearing placements require operator recovery after Node state loss. Residency recovery never replays an inference Request or clears the separate Controller breaker, and an ordinary unload does not reset crash state. Two-host recovery and live mTLS activation remain unproven. ([#444](https://github.com/kapitan-ai/orchard/pull/444))
+
+### Bug fixes
+
+- Restarted Node Agents now hydrate stored nonclean checkpoints before publishing their recovery epoch, preventing open or recovery-required placements from appearing cold and eligible. Listing or read failures withhold the epoch and keep the Node unschedulable; retries re-list unreadable keys rather than retaining a stale list indefinitely. ([#544](https://github.com/kapitan-ai/orchard/pull/544))
+- Runtime custody now records a launch-identity digest, allowing explicit recovery to prove that a prior runtime ended when its PID has been reused without requiring a host reboot. Identity checks no longer depend on the reader's timezone or locale, and missing or unreadable evidence still fails closed. Operator recovery also reaches admitted Nodes before activation instead of returning 503 solely because they are not yet active. Linux identity sourcing and in-lifetime checks remained open follow-ups ([#545](https://github.com/kapitan-ai/orchard/issues/545), [#546](https://github.com/kapitan-ai/orchard/issues/546)). ([#544](https://github.com/kapitan-ai/orchard/pull/544))
+- A repair migration removes obsolete checkpoint foreign keys and the old catalog `model_id` column from development databases that ran a pre-merge recovery schema. Run normal database migrations to restore checkpoint writes for all-in-one Nodes without inventory rows and prevent catalog deletion from erasing recovery state; databases created from the current schema are unchanged. ([#542](https://github.com/kapitan-ai/orchard/pull/542))
+- All-in-one `make dev` now inspects its own cold placements in-process instead of refusing them for a missing Controller certificate, restoring normal cold model admission without an operator-forced reload. Blocked recovery states still refuse admission, and other Nodes retain certificate-bound inspection. ([#553](https://github.com/kapitan-ai/orchard/pull/553))
+
+### Improvements
+
+- The accepted public final-only reasoning contract now defines a future `reasoning.enabled` boolean selector for Chat Completions and Responses while retaining each endpoint's existing effort field. This is contract-only: both APIs still reject the selector until implementation, per-model discovery, and deployment gates are met, and omitted or effort-only requests retain their current behavior. ([#435](https://github.com/kapitan-ai/orchard/pull/435))
+- Regression coverage now characterizes Worker terminal-event delivery before cleanup finishes and the existing object-only tool-parameter admission boundary on both inference APIs. These tests change neither runtime behavior nor JSON Schema semantic validation. ([#437](https://github.com/kapitan-ai/orchard/pull/437), [#439](https://github.com/kapitan-ai/orchard/pull/439))
+- Repository validation now includes a path-selected required supply-chain lane with zizmor workflow audits and OSV dependency comparisons, available locally through `make supply-chain`. Scanner failures fail closed, but only newly introduced advisories fail the dependency comparison; `make osv` reports the existing backlog. A separate main-only workflow submits Mix dependencies to GitHub's dependency graph without adding a product runtime dependency. ([#532](https://github.com/kapitan-ai/orchard/pull/532))
+
 ## 2026-10-25
 
 ### Breaking changes
