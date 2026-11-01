@@ -5,7 +5,7 @@ What is missing is one bounded Linux Node host profile that later slices can imp
 
 An earlier package-first version of this candidate contract was accepted in review but never merged.
 It paired the host matrix with a Node-only Debian artifact, a fixed package filesystem layout, a package-created service account, package-owned systemd lifecycle, bundled release runtime, closed dependency manifest, and air-gapped package media.
-Since then `main` has made source development the active installation path, paused native distribution under `SPEC.md` §11.0, required a fresh proposal for any new distribution channel, retired support bundles, and added two ADRs numbered 0034.
+Since then `main` has made source development the active installation path, paused native distribution under `SPEC.md` §11.0, required a fresh proposal for any new distribution channel, retired support bundles, and added the Console and Responses tool-boundary ADRs (both originally numbered 0034; Responses is now ADR 0040).
 See proposal.md for motivation.
 
 Several terms that the earlier contract used, including worker units, resource allocations, and serving profiles, are not yet defined in `SPEC.md`.
@@ -111,8 +111,8 @@ These deviations were introduced by this revision, are not covered by the earlie
 
 ### ADR numbering
 
-Both existing ADR 0034 records stay untouched.
-This decision uses the next unused number, 0035.
+The existing Console ADR 0034 and Responses tool-boundary ADR (now 0040, formerly 0034) were unchanged by this change.
+This decision used the next unused number at the time, 0035.
 
 ## Risks / Trade-offs
 
