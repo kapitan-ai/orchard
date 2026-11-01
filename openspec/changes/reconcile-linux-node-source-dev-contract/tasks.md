@@ -1,7 +1,7 @@
 ## 1. Contract reconciliation
 
 - [x] 1.1 Audit current `SPEC.md`, profile, packaging, transport, lifecycle, provider-neutral, support-bundle, and release-line boundaries against the earlier package-first candidate contract, and verify every package-first assumption is either reconciled to source development or deferred
-- [x] 1.2 Record proposed ADR 0035 with an unused number, and verify both existing ADR 0034 records are unchanged
+- [x] 1.2 Record proposed ADR 0035 with an unused number, and verify the existing Console ADR 0034 and Responses tool-boundary ADR (now 0040, formerly 0034) are unchanged by this change
 - [x] 1.3 Reconcile `SPEC.md` §1.4, §4.1, §4.9, §7.5.0, §10.6, the §11 preamble, §13.4, and Milestone 9, and verify no text claims Linux Node, distribution, or runtime-provider support
 - [x] 1.4 Add the `linux-node-platform` capability and ADDED requirements for `platform-profiles`, `host-lifecycle-adapters`, and `packaging-deployment`, and verify strict change validation passes
 - [x] 1.5 Add `docs/platforms/linux-node.md`, update orientation references including the `AGENTS.md` Milestone 9 row and the architecture acceptance-profile row, and verify relative links resolve
