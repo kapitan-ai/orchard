@@ -43,7 +43,7 @@ The accountable owner separately accepted this change's exact reviewed revision 
 - `SPEC.md` impact: amends §1.4, §4.1, §4.9, §7.5.0, §10.6, the §11 preamble, and §13.4, and adds Milestone 9 for experimental Linux Node qualification.
   The currently supported Apple Silicon macOS platform profile, the macOS native distribution design and its pause, and the Milestone 8 Linux Controller profile are unchanged.
 - Decisions: adds ADR 0035.
-  Both existing ADR 0034 records are unchanged.
+  The existing Console ADR 0034 and Responses tool-boundary ADR (now 0040, formerly 0034) were unchanged by this change.
 - Docs: adds `docs/platforms/linux-node.md` and updates orientation references that list current and candidate profiles, including the `AGENTS.md` milestone table row for Milestone 9.
 - Code, packaging, CI, services, databases, and hosts are unchanged.
   No implementation, host qualification, package build, release, publication, or support claim follows from this change.

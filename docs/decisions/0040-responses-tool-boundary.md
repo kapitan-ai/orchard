@@ -1,4 +1,8 @@
-# ADR: Responses tool dialect and client execution boundary
+# ADR 0040: Responses tool dialect and client execution boundary
+
+Formerly ADR 0034 (`0034-responses-tool-boundary.md`), also cited as
+"ADR 0034 (responses-tool-boundary)". Renumbered to resolve the duplicate;
+"ADR 0034-console" remains [ADR 0034: Installation-owned local Node association](0034-console-local-node-association.md).
 
 ## Status
 
