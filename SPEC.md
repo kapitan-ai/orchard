@@ -5971,13 +5971,13 @@ DMG SHALL include `Orchard.app` as the primary interactive install artifact.
 It SHALL NOT include or require a native PKG artifact under the current distribution contract.
 
 The release distribution set SHALL place release notes, a DMG SHA-256 checksum, and the before/after app-signing manifests alongside the DMG.
-These sidecars remain outside the DMG because Amore owns final image assembly and notarization, and changing the image afterward would invalidate that outer trust boundary.
+These sidecars remain outside the DMG because changing the image after final assembly, notarization, and stapling would invalidate that outer trust boundary.
 
 The app bundle SHALL be verified before DMG assembly.
 The mounted DMG SHALL be verified after assembly, and nested code signatures and entitlement digests SHALL match the verified input app.
 An outer distribution tool that changes nested code or entitlements SHALL cause the release handoff to fail closed.
-Amore SHALL be the current outer DMG assembly, notarization, stapling, hosting, and publication integration.
-Orchard SHALL feature-detect the required Amore CLI surface and SHALL keep nested signing and verification under Orchard control.
+This contract SHALL NOT require a specific commercial or proprietary distribution service for DMG assembly, notarization, stapling, hosting, or publication.
+Whatever tooling performs those steps, Orchard SHALL keep nested signing and verification under Orchard control and SHALL apply the same mounted verification to its output.
 
 ### 11.4 Root-Authorized App Service Lifecycle
 
