@@ -357,7 +357,7 @@ GitHub's dependency graph cannot read `mix.lock`.
 `.github/workflows/dependency-submission.yml` runs `erlef/mix-dependency-submission` on every push to `main` and on manual dispatch, and submits the Mix dependency snapshot so Hex dependencies get Dependabot alerts.
 Its job alone holds `contents: write`, which the Dependency Submission API requires; pull requests never submit.
 The action downloads its release binary and verifies its build provenance with `gh attestation verify` before running it.
-That proves the upstream release workflow built the binary from the `v1.3.4` tag, not a fixed digest, so the job's write token trusts the upstream release pipeline.
+That proves the upstream release workflow built the binary from the `v1.3.5` tag, not a fixed digest, so the job's write token trusts the upstream release pipeline.
 Dependabot does not open security-update pull requests for Hex.
 
 `packaging/app` declares no third-party Swift packages today.
