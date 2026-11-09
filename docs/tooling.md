@@ -88,6 +88,7 @@ Run `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers
 Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian, so GNU coreutils is a required host test prerequisite on every host.
 The Node Agent test helper checks fixed absolute paths in order and uses the first one whose `--version` identifies GNU coreutils `timeout`; it never searches `PATH` and installs nothing.
 Linux coreutils provides `/usr/bin/timeout`, which is checked first.
+Ubuntu 26.04 makes uutils the default coreutils, so its `/usr/bin/timeout` is not GNU; its `gnu-coreutils` package provides `/usr/bin/gnutimeout`, which is checked next.
 On macOS, `brew install coreutils` installs g-prefixed tools such as `gtimeout` and a `libexec/gnubin` directory with unprefixed names, and may also link an unprefixed `timeout` into the Homebrew `bin` directory when that does not conflict.
 The helper checks each of these under both `/opt/homebrew` and `/usr/local`: `bin/timeout`, `bin/gtimeout`, and `opt/coreutils/libexec/gnubin/timeout`.
 Those tests always run; without a verified GNU guardian they fail with install guidance rather than being skipped.
@@ -429,7 +430,8 @@ by mise:
 
 - PostgreSQL local or external service
 - GNU coreutils `timeout` for the Node Agent host-inventory probe tests
-  (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`,
+  (Linux coreutils `/usr/bin/timeout`, or `/usr/bin/gnutimeout` on Ubuntu
+  26.04; on macOS `brew install coreutils`,
   found as `timeout`, `gtimeout`, or the coreutils `gnubin` `timeout`)
 - POSIX ACL tools `/usr/bin/getfacl` and `/usr/bin/setfacl` on Linux for CLI
   output-path ACL inspection and its tests (Ubuntu `acl` package)

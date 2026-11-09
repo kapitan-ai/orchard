@@ -40,7 +40,7 @@ Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions r
 |------------|---------|-------|
 | mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, uv, Node.js, and npm |
 | PostgreSQL | ≥ 15 | Local instance |
-| GNU coreutils | any with GNU `timeout` | Required to run the test suite: Node Agent host-inventory probe tests need GNU `timeout` (Linux `/usr/bin/timeout`; macOS `brew install coreutils`, which provides `gtimeout` and a `gnubin` `timeout`) |
+| GNU coreutils | any with GNU `timeout` | Required to run the test suite: Node Agent host-inventory probe tests need GNU `timeout` (Linux `/usr/bin/timeout`, or `/usr/bin/gnutimeout` on Ubuntu 26.04; macOS `brew install coreutils`, which provides `gtimeout` and a `gnubin` `timeout`) |
 | POSIX ACL tools (Linux only) | any providing `/usr/bin/getfacl` and `/usr/bin/setfacl` | Required to run the test suite on Linux: CLI output-path ACL inspection and its tests call these tools (Ubuntu `sudo apt-get install acl`) |
 | C compiler | host `cc` (or `CC`) | Required for the explicit native-helper builders; on Linux `make test` builds the Transport publication helper with it (Ubuntu `build-essential`) |
 

@@ -12,10 +12,13 @@ defmodule Orchard.TestSupport.GnuTimeoutGuardian do
 
   alias Orchard.Node.HostInventory.Command
 
-  # Linux coreutils, then Homebrew coreutils on Apple silicon and Intel Macs:
-  # the optional unprefixed alias, the g-prefixed name, and the gnubin path.
+  # Linux coreutils, then Ubuntu 26.04's gnu-prefixed GNU coreutils (its
+  # /usr/bin/timeout is uutils), then Homebrew coreutils on Apple silicon and
+  # Intel Macs: the optional unprefixed alias, the g-prefixed name, and the
+  # gnubin path.
   @candidates [
     "/usr/bin/timeout",
+    "/usr/bin/gnutimeout",
     "/opt/homebrew/bin/timeout",
     "/usr/local/bin/timeout",
     "/opt/homebrew/bin/gtimeout",
@@ -26,7 +29,8 @@ defmodule Orchard.TestSupport.GnuTimeoutGuardian do
 
   @requirement """
   GNU coreutils `timeout` is required for host-inventory probe tests.
-  Linux: install coreutils so /usr/bin/timeout is GNU timeout.
+  Linux: install coreutils so /usr/bin/timeout is GNU timeout; on Ubuntu 26.04
+  and later, install gnu-coreutils for /usr/bin/gnutimeout.
   macOS: brew install coreutils.
   Checked, in order: #{Enum.join(@candidates, ", ")}.
   """
