@@ -6,9 +6,8 @@ defmodule Orchard.PackagedNodeCommand do
   alias Orchard.ClusterManagement.{
     ActionPreview,
     ActionPreviewBuilder,
-    MemoryBudgetPresenter,
     NodeStatus,
-    StatusBuilder
+    Reads
   }
 
   alias Orchard.ControlPlane
@@ -202,9 +201,8 @@ defmodule Orchard.PackagedNodeCommand do
   end
 
   defp inspect_node(node_id, json?) do
-    case fetch_node(node_id) do
-      {:ok, node} ->
-        output = node |> NodeAdmissionPresenter.node() |> with_memory_budget()
+    case Reads.node(node_id) do
+      {:ok, output} ->
         {:ok, render_node(output, json?)}
 
       {:error, :node_not_found} ->
@@ -238,8 +236,6 @@ defmodule Orchard.PackagedNodeCommand do
       message -> confirmation_error(preview, opts, action, message)
     end
   end
-
-  defp fetch_node(node_id), do: Nodes.fetch_node(node_id)
 
   defp pending_candidates do
     Nodes.list_admission_candidates(admission_category: AdmissionCandidate.review_categories())
@@ -631,15 +627,6 @@ defmodule Orchard.PackagedNodeCommand do
     "#{lifecycle_result_label(action)} node #{node.id}. State: #{node.state}."
   end
 
-  defp with_memory_budget(node) do
-    runtime_impl = Application.get_env(:orchard_controller, :console, [])[:runtime_impl]
-
-    case MemoryBudgetPresenter.for_node(node, runtime_impl || OrchardConsole.Runtime) do
-      nil -> node
-      memory_budget -> Map.put(node, :memory_budget, memory_budget)
-    end
-  end
-
   defp format_memory_budget(nil), do: nil
 
   defp format_memory_budget(%{runtime_memory_budgets: budgets} = memory_budget) do
@@ -799,16 +786,7 @@ defmodule Orchard.PackagedNodeCommand do
   end
 
   defp run_list_json do
-    nodes = Nodes.list_nodes()
-
-    payload = %{
-      object: "cluster_management.node_status_list",
-      contract_version: NodeStatus.contract_version(),
-      data: StatusBuilder.node_status_maps(nodes),
-      summary: Nodes.summary()
-    }
-
-    {:ok, encode_json(payload)}
+    {:ok, encode_json(Reads.nodes())}
   end
 
   defp format_summary(summary) do

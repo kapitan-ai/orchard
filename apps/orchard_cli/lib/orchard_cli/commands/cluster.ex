@@ -3,15 +3,12 @@ defmodule OrchardCLI.Commands.Cluster do
 
   require Logger
 
-  alias Orchard.ClusterManagement.ControlPlaneStatus
+  alias Orchard.ClusterManagement.{ControlPlaneStatus, Reads}
   alias Orchard.ControlPlane
   alias Orchard.Governance.ClusterBootstrap
   alias OrchardCLI.Commands.GovernanceHelpers
   alias OrchardCLI.PlatformACL
   alias OrchardCLI.RepoRuntime
-
-  @cluster_status_object "cluster_management.cluster_status"
-  @cluster_status_contract_version "orchard.cluster_management.cluster_status.v1"
 
   @cluster_init_object "cluster_management.cluster_init"
   @cluster_init_contract_version "orchard.cluster_management.cluster_init.v2"
@@ -1561,24 +1558,9 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp render_status(%ControlPlaneStatus{} = status, true),
-    do: status |> cluster_status_map() |> encode_json()
+    do: status |> Reads.cluster_status() |> encode_json()
 
   defp render_status(%ControlPlaneStatus{} = status, false), do: render_status_text(status)
-
-  defp cluster_status_map(%ControlPlaneStatus{} = status) do
-    control_plane = ControlPlaneStatus.to_map(status)
-
-    %{
-      object: @cluster_status_object,
-      contract_version: @cluster_status_contract_version,
-      summary: %{
-        deployment_mode: status.deployment_mode,
-        controller_role: status.controller_role,
-        advisory_lock_status: status.advisory_lock_status
-      },
-      control_plane: control_plane
-    }
-  end
 
   defp render_status_text(%ControlPlaneStatus{} = status) do
     [

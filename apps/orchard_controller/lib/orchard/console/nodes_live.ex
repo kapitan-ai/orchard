@@ -901,7 +901,7 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp fetch_inventory do
-    rows = Nodes.list_nodes_for_upgrade!()
+    rows = Nodes.list_nodes!()
     health_counts = Enum.frequencies_by(rows, & &1.health)
 
     summary = %{
