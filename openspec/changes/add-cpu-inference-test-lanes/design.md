@@ -22,9 +22,13 @@ server, not through Orchard's Worker. Model pins appear under Decisions.
 | Qwen3-0.6B peak memory | 1.2–1.4 GB | 5.2 GB |
 | Qwen3-0.6B decode, 8 / 4 threads | 150 / 94 tok/s | 49 / 29 tok/s |
 | Streaming, usage chunk, `[DONE]` | pass | pass |
-| Cancel, then next request | pass, idle in 0.4 s | pass, idle in 1.4 s |
+| Cancel, then next request | pass; host CPU idle after 0.4 s | pass; host CPU idle after 1.4 s |
 | Tool call, `json_object` | pass | pass |
 | Token-ID prompt on `/v1/completions` | pass | pass |
+
+The idle times come from watching host CPU use outside the runtime. They are
+probe observations, not evidence of native cessation, which stays unconfirmed
+for lane B under ADR 0037.
 
 On an 8-vCPU x86 host, llama.cpp also ran MiniCPM5-2B (2.7 GB, 28 tok/s) and
 Gemma 4 E2B (4.2 GB, 21 tok/s). Both passed the same checks, and both

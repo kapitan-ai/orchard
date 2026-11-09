@@ -126,4 +126,4 @@ compared across runtimes or thread counts.
 #### Scenario: Cancellation mid-stream
 
 - **WHEN** a client cancels a lane generation after its first deltas
-- **THEN** the Worker emits one cancelled terminal, the provider returns to idle, and the next request completes
+- **THEN** the request-owned reader settles within its bound, the Worker emits one cancelled terminal, and the next request completes without claiming confirmed native cessation
