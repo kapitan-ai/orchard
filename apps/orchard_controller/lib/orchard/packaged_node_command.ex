@@ -201,7 +201,7 @@ defmodule Orchard.PackagedNodeCommand do
   end
 
   defp inspect_node(node_id, json?) do
-    case Reads.node(node_id) do
+    case Reads.node(node_id, latest_decision: :full) do
       {:ok, output} ->
         {:ok, render_node(output, json?)}
 

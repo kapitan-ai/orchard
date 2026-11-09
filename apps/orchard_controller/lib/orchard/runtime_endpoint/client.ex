@@ -23,6 +23,11 @@ defmodule Orchard.RuntimeEndpoint.Client do
 
   @callback connect(Target.t() | keyword()) :: {:ok, connection()} | {:error, term()}
   @callback disconnect(connection()) :: :ok
+  @doc """
+  Reads status, retaining transport peer verification with `observe?: false`
+  but skipping inventory and capacity writes on both success and rejection.
+  Observation is enabled by default.
+  """
   @callback status(connection(), keyword()) :: {:ok, Observation.t()} | {:error, term()}
   @callback inspect_worker_recovery(connection(), ModelRef.t(), keyword()) ::
               {:ok, map()} | {:error, term()}

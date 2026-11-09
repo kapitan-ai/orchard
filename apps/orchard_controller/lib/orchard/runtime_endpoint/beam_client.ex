@@ -105,7 +105,9 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
       ) do
     with {:ok, response} <- receive_status_observation(connection, target, opts),
          {:ok, _node} <-
-           Nodes.observe_authenticated_status(target, response, response.observed_at, peer) do
+           Nodes.observe_authenticated_status(target, response, response.observed_at, peer,
+             observe?: Keyword.get(opts, :observe?, true)
+           ) do
       {:ok, response}
     else
       :noop -> {:error, :beam_peer_observation_rejected}

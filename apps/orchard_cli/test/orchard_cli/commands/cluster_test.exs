@@ -2217,7 +2217,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
   end
 
   describe "status" do
-    test "SPEC CLI/Console parity emits read-only control-plane JSON status" do
+    test "SPEC.md §7.3 cluster JSON matches Operator API read-only control-plane status" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
@@ -2256,6 +2256,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
                "writes_return_503_controller_standby"
 
       assert decoded["control_plane"]["last_observed_leadership_error"] == nil
+      OrchardCLI.OperatorAPIAssertions.assert_json("/ops/v1/cluster", decoded)
     end
 
     test "human output explains directly addressed standby write paths without failover actions" do

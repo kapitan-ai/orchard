@@ -636,6 +636,9 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | GET | `/health/live` | Liveness probe |
 | GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
 | GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
+| GET | `/ops/v1/cluster` | Serving Controller status, including on Standby; cluster Operator/admin Bearer token required |
+| GET | `/ops/v1/nodes` | Node inventory and summary from the active Controller; cluster Operator/admin Bearer token required |
+| GET | `/ops/v1/nodes/:node_id` | Node status, restricted admission decision, and available memory budget from the active Controller; cluster Operator/admin Bearer token required |
 | GET | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` | Exact bounded worker-recovery status; cluster Operator/admin Bearer token required |
 | POST | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id` | Exact `clear`, non-forced `unload`, or forced `reload` recovery command; cluster Operator/admin Bearer token required |
 | GET | `/metrics` | Prometheus exposition on the same listener; cluster Operator/admin Bearer token required; `503` when valid exposition cannot be produced |

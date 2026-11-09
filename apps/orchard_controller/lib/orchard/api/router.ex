@@ -86,6 +86,9 @@ defmodule Orchard.API.Router do
     pipe_through(:operator_api)
 
     get("/health", HealthController, :show)
+    get("/cluster", ClusterController, :show)
+    get("/nodes", NodesController, :index)
+    get("/nodes/:node_id", NodesController, :show)
     post("/requests/:id/retry", RequestRetriesController, :create)
     get("/worker-recovery/nodes/:node_id/models/:model_id", WorkerRecoveryController, :show)
     post("/worker-recovery/nodes/:node_id/models/:model_id", WorkerRecoveryController, :recover)

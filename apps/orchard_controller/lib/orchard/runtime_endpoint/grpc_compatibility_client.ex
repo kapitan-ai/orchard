@@ -52,7 +52,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     case TransportClient.status(channel, opts) do
       {:ok, response} ->
         observation = GrpcCompatibilityMapper.observation_from_status(target, response)
-        authenticated_status_result(target, observation, security)
+        authenticated_status_result(target, observation, security, opts)
 
       {:error, reason} ->
         transport_status_error(reason, security)
@@ -207,16 +207,17 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     TransportClient.connect(target.address, cred: credential)
   end
 
-  defp authenticated_status_result(_target, observation, :plaintext_compatibility) do
+  defp authenticated_status_result(_target, observation, :plaintext_compatibility, _opts) do
     {:ok, observation}
   end
 
-  defp authenticated_status_result(target, observation, {:mutual_tls, _credential, peer}) do
+  defp authenticated_status_result(target, observation, {:mutual_tls, _credential, peer}, opts) do
     case Nodes.observe_authenticated_status(
            target,
            observation,
            observation.observed_at,
-           peer
+           peer,
+           observe?: Keyword.get(opts, :observe?, true)
          ) do
       {:ok, _node} -> {:ok, observation}
       :noop -> {:error, :authenticated_observation_rejected}
