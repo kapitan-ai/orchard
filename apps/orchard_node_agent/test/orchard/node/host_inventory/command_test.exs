@@ -99,6 +99,18 @@ defmodule Orchard.Node.HostInventory.CommandTest do
       assert GnuTimeoutGuardian.discover(dir) == gtimeout
     end
 
+    test "Ubuntu 26.04 gnutimeout is discovered behind a uutils /usr/bin/timeout", %{
+      tmp_dir: dir
+    } do
+      uutils = Path.join(dir, "usr/bin/timeout")
+      File.mkdir_p!(Path.dirname(uutils))
+      script!(Path.dirname(uutils), "timeout", "echo 'timeout (uutils coreutils) 0.8.0'")
+      gnutimeout = gnu_timeout!(dir, "usr/bin/gnutimeout")
+      gnu_timeout!(dir, "opt/homebrew/bin/gtimeout")
+
+      assert GnuTimeoutGuardian.discover(dir) == gnutimeout
+    end
+
     # Each candidate gets the bounded guardian check, so an earlier candidate
     # that cannot run or never answers `--version` cannot stall discovery.
     @tag timeout: 15_000

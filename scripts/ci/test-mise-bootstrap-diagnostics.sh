@@ -78,9 +78,13 @@ for original in 22 1 127; do
 done
 
 # A reporter write failure must remain a failure for its continue-on-error step.
+# Use /dev/full, not a closed stdout: a Rust /usr/bin/env, such as uutils on
+# Ubuntu 26.04, reopens a closed stdout as /dev/null before exec'ing bash.
+[[ -c /dev/full ]] || fail '/dev/full is required for the reporter write-failure case'
 reporter_status=0
-"$REPORT" failure 2026.9.2 >&- 2> "$FIXTURE/stderr" || reporter_status=$?
+"$REPORT" failure 2026.9.2 > /dev/full 2> "$FIXTURE/stderr" || reporter_status=$?
 [[ "$reporter_status" != 0 ]] || fail 'reporter hid a write failure'
+grep -Fq 'write error' "$FIXTURE/stderr" || fail 'reporter failed without a write error'
 pass
 
 # Assert the actual workflow scheduling boundary: only the diagnostic has
