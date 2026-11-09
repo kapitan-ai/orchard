@@ -209,6 +209,14 @@ jobs:
           MIX_ENV=test mise exec -- mix ecto.create
           MIX_ENV=test mise exec -- mix ecto.migrate
 
+      # A PLT is valid only for the Erlang build that wrote it, and that build
+      # changes with the runner image (ubuntu24 PLTs fail on ubuntu26 with
+      # "Old PLT file"). The env context cannot read the runner's ImageOS.
+      - name: Key Dialyzer PLTs to the runner image
+        run: |
+          [[ "${ImageOS:-}" =~ ^[a-z0-9]+$ ]] || { printf 'Runner ImageOS is missing or invalid.\n' >&2; exit 1; }
+          printf 'ORCHARD_RUNNER_IMAGE_OS=%s\n' "$ImageOS" >> "$GITHUB_ENV"
+
       - name: Cache Dialyzer PLTs
         id: dialyzer-plt
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
@@ -217,7 +225,7 @@ jobs:
             ~/.mix/dialyxir_erlang-*.plt
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
             _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
-          key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ env.ORCHARD_RUNNER_IMAGE_OS }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
 
       # Re-evaluates the unchanged cache key expression above (actions/cache
       # exposes only cache-hit) and records its SHA-256 identity.
@@ -226,7 +234,7 @@ jobs:
         continue-on-error: true
         env:
           DIALYZER_PLT_CACHE_HIT: ${{ steps.dialyzer-plt.outputs.cache-hit }}
-          DIALYZER_PLT_KEY: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          DIALYZER_PLT_KEY: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ env.ORCHARD_RUNNER_IMAGE_OS }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
           DIALYZER_PLT_OUTCOME: ${{ steps.dialyzer-plt.outcome }}
           REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: >-
