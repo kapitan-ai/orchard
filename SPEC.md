@@ -213,6 +213,13 @@ Orchard SHALL distinguish these concepts:
 Portable policy and scheduling MUST NOT infer one concept from another or use operating-system and provider names as capability proof.
 Additional runtime providers require their own runtime-provider profile with provider-neutral conformance and applicable real-runtime acceptance before support is claimed.
 
+A CPU inference test lane MAY run real models through the existing local Worker contract (§4.10) on hosts without an accelerator.
+Each lane backend SHALL be separately selected and default-off, and SHALL leave the default Worker backend, the MLX-LM runtime provider, and its locks unchanged.
+A CPU inference test lane is not a runtime-provider profile.
+Its results SHALL be implementation evidence only and SHALL NOT establish runtime-provider, platform, model, acceleration, or agentic execution qualification, production activation, or support, nor substitute for the real MLX runtime acceptance of the macOS MLX Node runtime profile.
+A lane SHALL pin its runtime build and model artifacts by digest, SHALL verify its host before mutation, and SHALL NOT make an accelerator visible to the runtime it exercises.
+The OpenSpec change `add-cpu-inference-test-lanes` and ADR 0040 define the proposed lanes.
+
 ### 1.6 Non-goals for v1
 
 * Kubernetes integration
