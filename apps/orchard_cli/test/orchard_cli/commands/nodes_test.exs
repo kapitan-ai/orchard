@@ -282,13 +282,22 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "unreachable"
     end
 
-    test "json output derives status data from shared cluster management structures" do
+    test "SPEC.md §7.3 list JSON reports inventory query failure instead of an empty list" do
+      Repo.query!("ALTER TABLE nodes RENAME TO unavailable_nodes")
+
+      assert {:error, output, 1} = NodesCmd.run(["list", "--json"])
+      assert %{"object" => "error", "code" => "database_unavailable"} = Jason.decode!(output)
+    end
+
+    test "SPEC.md §7.3 list JSON matches Operator API and shared cluster management structures" do
+      now = DateTime.utc_now()
+
       node =
         insert_node!(
           display_name: "json-node",
           state: :registered,
           health: :healthy,
-          last_heartbeat_at: DateTime.utc_now()
+          last_heartbeat_at: now
         )
 
       assert {:ok, output} = NodesCmd.run(["list", "--json"])
@@ -303,6 +312,8 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert get_in(decoded, ["data", Access.at(0), "scheduling", "reason_codes"]) == [
                "node_not_admitted"
              ]
+
+      OrchardCLI.OperatorAPIAssertions.assert_json("/ops/v1/nodes", decoded)
     end
   end
 
@@ -338,8 +349,9 @@ defmodule OrchardCLI.Commands.NodesTest do
              ]
     end
 
-    test "SPEC.md §7.5.3 json output renders runtime memory budget data" do
-      node = insert_node!(display_name: "budget-node", state: :active, health: :healthy)
+    test "SPEC.md §7.3 and §7.5.3 inspect JSON matches Operator API with runtime memory budget" do
+      now = DateTime.utc_now()
+      node = insert_node!(display_name: "budget-node", last_heartbeat_at: now)
       insert_model!(model_id: "test-model", version: "v1", max_context_tokens: 32_768)
 
       :persistent_term.put(
@@ -367,6 +379,8 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert budget["prefill_workspace_bytes_per_token"] == 2_048
       assert budget["recommended_context_tokens"] == 24_576
       assert budget["max_context_tokens"] == 32_768
+
+      OrchardCLI.OperatorAPIAssertions.assert_json("/ops/v1/nodes/#{node.id}", decoded)
     end
 
     test "json output renders zero recommended context tokens as unknown" do
@@ -446,8 +460,9 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "Note: 3 additional memory budget row(s) truncated upstream."
     end
 
-    test "json output omits memory budget when no Runtime Endpoint budget is available" do
-      node = insert_node!(display_name: "no-budget-node", state: :active, health: :healthy)
+    test "SPEC.md §7.3 inspect JSON matches Operator API without a Runtime Endpoint budget" do
+      now = DateTime.utc_now()
+      node = insert_node!(display_name: "no-budget-node", last_heartbeat_at: now)
 
       :persistent_term.put(
         {OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub, :node_id},
@@ -460,6 +475,50 @@ defmodule OrchardCLI.Commands.NodesTest do
       decoded = Jason.decode!(output)
 
       refute Map.has_key?(decoded, "memory_budget")
+      OrchardCLI.OperatorAPIAssertions.assert_json("/ops/v1/nodes/#{node.id}", decoded)
+    end
+
+    test "SPEC.md §7.3 Operator API projects provenance while local CLI retains the full decision" do
+      now = DateTime.utc_now()
+      node = insert_node!(display_name: "decision-node", last_heartbeat_at: now)
+
+      decision =
+        %AdmissionDecision{}
+        |> AdmissionDecision.changeset(%{
+          node_id: node.id,
+          decision: :admitted,
+          actor_type: "service_account",
+          actor_id: "private-actor",
+          reason: "private-reason",
+          observed_identity: %{"private" => "identity"},
+          target_ref: "private-target",
+          metadata: %{"private" => "metadata"},
+          decided_at: now
+        })
+        |> Repo.insert!()
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id, "--json"])
+      decoded = Jason.decode!(output)
+      full = decoded["latest_decision"]
+      assert full["id"] == decision.id
+      assert full["reason"] == "private-reason"
+      assert full["actor_type"] == "service_account"
+      assert full["actor_id"] == "private-actor"
+      assert full["observed_identity"] == %{"private" => "identity"}
+      assert full["target_ref"] == "private-target"
+      assert full["metadata"] == %{"private" => "metadata"}
+      assert Map.has_key?(full, "audit_log_id")
+
+      projected = %{
+        "object" => "node_admission_decision",
+        "decision" => "admitted",
+        "decided_at" => DateTime.to_iso8601(now)
+      }
+
+      OrchardCLI.OperatorAPIAssertions.assert_json(
+        "/ops/v1/nodes/#{node.id}",
+        Map.put(decoded, "latest_decision", projected)
+      )
     end
 
     test "missing node reports not found" do

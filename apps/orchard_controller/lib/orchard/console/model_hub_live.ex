@@ -769,7 +769,7 @@ defmodule OrchardConsole.ModelHubLive do
   defp load_model_destination(socket, params) do
     socket
     |> assign_async(:node_inventory, fn ->
-      {:ok, %{node_inventory: Orchard.Nodes.list_nodes_for_upgrade!()}}
+      {:ok, %{node_inventory: Orchard.Nodes.list_nodes!()}}
     end)
     |> start_search(Map.get(params, "query", ""))
   end

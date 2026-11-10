@@ -57,13 +57,13 @@ end
 defmodule Orchard.UpgradeTest.ErrorNodes do
   @moduledoc false
 
-  def list_nodes_for_upgrade!, do: {:error, :repo_unavailable}
+  def list_nodes!, do: {:error, :repo_unavailable}
 end
 
 defmodule Orchard.UpgradeTest.RaisingNodes do
   @moduledoc false
 
-  def list_nodes_for_upgrade!, do: raise("node inventory unavailable")
+  def list_nodes!, do: raise("node inventory unavailable")
 end
 
 defmodule Orchard.UpgradeTest do

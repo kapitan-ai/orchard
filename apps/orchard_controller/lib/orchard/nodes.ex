@@ -121,7 +121,7 @@ defmodule Orchard.Nodes do
   @spec list_nodes() :: [Node.t()]
   def list_nodes do
     if repo_available?() do
-      list_nodes_for_upgrade!()
+      list_nodes!()
     else
       []
     end
@@ -130,13 +130,13 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
-  Lists node inventory for upgrade preflight.
+  Lists all nodes ordered by display_name, then id, raising on query failure.
 
-  Unlike `list_nodes/0`, this function lets query failures propagate so safety
-  checks can distinguish empty inventory from unavailable inventory.
+  Unlike `list_nodes/0`, this function lets callers distinguish empty inventory
+  from unavailable inventory.
   """
-  @spec list_nodes_for_upgrade!() :: [struct()]
-  def list_nodes_for_upgrade! do
+  @spec list_nodes!() :: [Node.t()]
+  def list_nodes! do
     Node
     |> order_by([n], asc: n.display_name, asc: n.id)
     |> Repo.all()
@@ -549,6 +549,10 @@ defmodule Orchard.Nodes do
   contain the certificate-bound Node ID plus its issued certificate identifier.
   The target, reported identity, persisted Node, and consumed enrollment are
   revalidated under row locks before any lifecycle update.
+
+  With `observe?: false`, performs the same trust checks without lifecycle or
+  capacity writes, including on rejection. Row locks keep verification coherent
+  with concurrent revocation; no write-path authorization is needed.
   """
   @spec observe_authenticated_status(
           Target.t(),
@@ -565,6 +569,28 @@ defmodule Orchard.Nodes do
         peer_identity,
         opts \\ []
       ) do
+    if Keyword.get(opts, :observe?, true) do
+      observe_authenticated_peer(target, status_response, observed_at, peer_identity, opts)
+    else
+      validate_authenticated_status(target, status_response, observed_at, peer_identity, opts)
+    end
+  end
+
+  defp validate_authenticated_status(target, status_response, observed_at, peer_identity, opts) do
+    with {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
+         true <- authenticated_status_health_present?(status_response),
+         {:ok, candidate} <- normalize_candidate_observation(target, status_response),
+         {:ok, observation} <- normalize_observation(target, candidate, observed_at),
+         true <- observation.id == peer_identity.node_id,
+         {:ok, node} <-
+           execute_authenticated_observe(target, observation, peer_identity, candidate, opts) do
+      {:ok, node}
+    else
+      _other -> :noop
+    end
+  end
+
+  defp observe_authenticated_peer(target, status_response, observed_at, peer_identity, opts) do
     case normalize_authenticated_peer_identity(peer_identity) do
       {:ok, peer_identity} ->
         observe_with_authenticated_peer(
@@ -1746,14 +1772,7 @@ defmodule Orchard.Nodes do
            true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
            :ok <- BeamPeerGrants.ensure_active_grant_current(grant.id, opts) do
-        update_fresh_authenticated_beam_observation(
-          node,
-          target,
-          observation,
-          status_response,
-          grant.id,
-          opts
-        )
+        apply_authenticated_observation(node, target, observation, status_response, opts)
       else
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
@@ -1780,13 +1799,7 @@ defmodule Orchard.Nodes do
            :ok <- ensure_authenticated_target(target, node, enrollment),
            true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at) do
-        update_fresh_authenticated_observation(
-          node,
-          target,
-          observation,
-          status_response,
-          opts
-        )
+        apply_authenticated_observation(node, target, observation, status_response, opts)
       else
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
@@ -1798,12 +1811,19 @@ defmodule Orchard.Nodes do
       {:noop, :constraint_conflict}
   end
 
-  defp update_fresh_authenticated_beam_observation(
+  defp apply_authenticated_observation(node, target, observation, status_response, opts) do
+    if Keyword.get(opts, :observe?, true) do
+      update_fresh_authenticated_observation(node, target, observation, status_response, opts)
+    else
+      node
+    end
+  end
+
+  defp update_fresh_authenticated_observation(
          node,
-         target,
+         %Target{transport: :beam} = target,
          observation,
          status_response,
-         grant_id,
          opts
        ) do
     case ensure_fresh_observation(%{existing_by_id: node}, observation) do
@@ -1813,7 +1833,7 @@ defmodule Orchard.Nodes do
           target,
           observation,
           status_response,
-          grant_id,
+          metadata_value(target.metadata, :grant_id),
           opts
         )
 

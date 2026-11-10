@@ -12,9 +12,9 @@ defmodule Orchard.ClusterManagement.MemoryBudgetPresenter do
           runtime_memory_budgets_truncated_count: non_neg_integer()
         }
 
-  @spec for_node(map() | struct(), module()) :: memory_budget_block() | nil
-  def for_node(node, runtime_impl \\ OrchardConsole.Runtime) do
-    runtime_impl.cluster_snapshot(timeout: @probe_timeout_ms)
+  @spec for_node(map() | struct(), module(), keyword()) :: memory_budget_block() | nil
+  def for_node(node, runtime_impl \\ OrchardConsole.Runtime, opts \\ []) do
+    runtime_impl.cluster_snapshot(Keyword.put_new(opts, :timeout, @probe_timeout_ms))
     |> Enum.find(&runtime_snapshot_matches_node?(&1, node))
     |> memory_budget_from_snapshot()
   rescue

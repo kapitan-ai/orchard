@@ -5,6 +5,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
   alias Orchard.ControllerInstances
   alias Orchard.DispatchCapacity
   alias Orchard.Inference
+  alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
@@ -15,6 +16,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
   alias Orchard.RuntimeEndpoint.{
     AuthenticatedPeer,
     BeamClient,
+    GrpcCompatibilityClient,
     ModelRef,
     Observation,
     Operation,
@@ -37,6 +39,8 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
       restore_runtime_endpoint_config(previous_config)
       restore_peer_grant_config(previous_grants)
       Application.put_env(:orchard_controller, :inference, previous_inference)
+      Application.delete_env(:orchard_controller, :beam_client_reported_node_id)
+      Application.delete_env(:orchard_controller, :authenticated_grpc_status)
 
       if Process.whereis(:beam_client_test_pid) == self() do
         Process.unregister(:beam_client_test_pid)
@@ -121,7 +125,8 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
               aggregate_active_request_count: 0,
               aggregate_max_concurrency: 2,
               metadata: %{
-                node_id: node.id,
+                node_id:
+                  Application.get_env(:orchard_controller, :beam_client_reported_node_id, node.id),
                 display_name: node.display_name,
                 hostname: node.hostname,
                 listen_host: node.connect_host,
@@ -134,6 +139,34 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
       {:ok, Observation.new(attrs)}
     end
+  end
+
+  defmodule ConnectedBeamClient do
+    def connect(target) do
+      {:ok,
+       %Orchard.RuntimeEndpoint.BeamClient{
+         authenticated_peer: Process.get(:authenticated_status_peer),
+         node: node(),
+         server_module: FutureObservationServer,
+         target: target
+       }}
+    end
+
+    defdelegate status(connection, opts), to: Orchard.RuntimeEndpoint.BeamClient
+    defdelegate disconnect(connection), to: Orchard.RuntimeEndpoint.BeamClient
+  end
+
+  defmodule StatusServer do
+    use GRPC.Server, service: Orchard.Cluster.V1.NodeRuntimeService.Service
+
+    def get_status(_request, _stream) do
+      Application.fetch_env!(:orchard_controller, :authenticated_grpc_status)
+    end
+  end
+
+  defmodule StatusEndpoint do
+    use GRPC.Endpoint
+    run(StatusServer)
   end
 
   defmodule RaisingServer do
@@ -437,6 +470,277 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     assert DateTime.compare(observation.observed_at, after_status) in [:eq, :lt]
     refute observation.observed_at == remote_observed_at
     assert evidence.observed_at == observation.observed_at
+  end
+
+  test "SPEC §7.3 authenticated snapshot reads preserve domain rows; default status observes" do
+    {target, peer} = authenticated_beam_fixture!()
+    Process.put(:authenticated_status_peer, peer)
+    previous_console = Application.get_env(:orchard_controller, :console, [])
+
+    Application.put_env(:orchard_controller, :console,
+      runtime_endpoint_client_impl: ConnectedBeamClient
+    )
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous_console) end)
+    {source, capacity_grant} = seed_capacity_source(peer.node_id)
+    before_rows = domain_rows()
+
+    assert {:ok, %{node_metadata: %{node_id: node_id}}} =
+             OrchardConsole.Runtime.snapshot(target: target, observe?: false, timeout: 2_000)
+
+    assert node_id == peer.node_id
+    assert domain_rows() == before_rows
+    assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+    assert Repo.get!(Node, node_id).state == :admitted
+
+    assert {:ok, connection} = ConnectedBeamClient.connect(target)
+    assert {:ok, _observation} = BeamClient.status(connection)
+    assert Repo.get!(Node, node_id).state == :active
+    assert DispatchCapacity.get_capacity_evidence(node_id)
+    refute domain_rows() == before_rows
+
+    Application.put_env(:orchard_controller, :control_plane, role: :standby)
+    active_rows = domain_rows()
+    assert {:ok, _observation} = BeamClient.status(connection, timeout: 2_000, observe?: false)
+    assert domain_rows() == active_rows
+    assert :ok = QueueManager.release(capacity_grant)
+  end
+
+  test "SPEC §7.3 authenticated read rejects invalid peers without clearing capacity" do
+    {target, peer} = authenticated_beam_fixture!()
+
+    connection = %BeamClient{
+      authenticated_peer: peer,
+      node: node(),
+      server_module: FutureObservationServer,
+      target: target
+    }
+
+    assert {:ok, _} = BeamClient.status(connection)
+    assert DispatchCapacity.get_capacity_evidence(peer.node_id)
+    {source, capacity_grant} = seed_capacity_source(peer.node_id)
+    before_rows = domain_rows()
+
+    for invalid <- [
+          %{connection | authenticated_peer: %{peer | certificate_identifier: "wrong"}},
+          %{connection | authenticated_peer: %{peer | certificate_fingerprint: "wrong"}},
+          %{connection | authenticated_peer: %{peer | enrollment_id: Ecto.UUID.generate()}},
+          %{connection | authenticated_peer: %{peer | node_id: Ecto.UUID.generate()}},
+          %{connection | target: %{target | address: "wrong@10.0.0.20"}}
+        ] do
+      assert {:error, :beam_peer_observation_rejected} =
+               BeamClient.status(invalid, observe?: false)
+
+      assert domain_rows() == before_rows
+      assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+    end
+
+    Application.put_env(:orchard_controller, :beam_client_reported_node_id, Ecto.UUID.generate())
+
+    assert {:error, :beam_peer_observation_rejected} =
+             BeamClient.status(connection, observe?: false)
+
+    assert domain_rows() == before_rows
+    Application.delete_env(:orchard_controller, :beam_client_reported_node_id)
+    assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+
+    enrollment = Repo.get!(Enrollment, peer.enrollment_id)
+    grant = Repo.get!(BeamPeerGrants.Grant, target.metadata.grant_id)
+    node = Repo.get!(Node, peer.node_id)
+
+    for {record, changes} <- [
+          {enrollment, [state: :revoked, revoked_at: DateTime.utc_now()]},
+          {enrollment, [certificate_result: %{}]},
+          {grant, [state: :revoked, revoked_at: DateTime.utc_now()]},
+          {grant,
+           [
+             not_before_at: DateTime.add(DateTime.utc_now(), -2, :second),
+             expires_at: DateTime.add(DateTime.utc_now(), -1, :second)
+           ]},
+          {node, [state: :registered]}
+        ] do
+      record |> Ecto.Changeset.change(changes) |> Repo.update!()
+      rejected_rows = domain_rows()
+
+      assert {:error, :beam_peer_observation_rejected} =
+               BeamClient.status(connection, observe?: false)
+
+      assert domain_rows() == rejected_rows
+      assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+
+      record
+      |> Repo.reload!()
+      |> Ecto.Changeset.change(
+        Keyword.new(changes, fn {key, _} -> {key, Map.fetch!(record, key)} end)
+      )
+      |> Repo.update!()
+
+      assert {:ok, _} = BeamClient.status(connection, observe?: false)
+    end
+
+    assert :ok = QueueManager.release(capacity_grant)
+  end
+
+  test "SPEC §7.3 mTLS compatibility reads preserve rows and reject unverified status" do
+    {_target, peer} = authenticated_beam_fixture!()
+    connection = authenticated_grpc_connection!(peer)
+    before_rows = domain_rows()
+
+    assert {:ok, observation} = GrpcCompatibilityClient.status(connection, observe?: false)
+    assert observation.metadata.node_id == peer.node_id
+    assert domain_rows() == before_rows
+
+    assert {:ok, _} = GrpcCompatibilityClient.status(connection)
+    assert Repo.get!(Node, peer.node_id).state == :active
+    assert DispatchCapacity.get_capacity_evidence(peer.node_id)
+    refute domain_rows() == before_rows
+    {source, capacity_grant} = seed_capacity_source(peer.node_id)
+    active_rows = domain_rows()
+
+    {:mutual_tls, credential, _peer} = connection.security
+
+    invalid = %{
+      connection
+      | security: {:mutual_tls, credential, %{peer | certificate_identifier: "wrong"}}
+    }
+
+    assert {:error, :authenticated_observation_rejected} =
+             GrpcCompatibilityClient.status(invalid, observe?: false)
+
+    assert domain_rows() == active_rows
+    assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+
+    response = Application.fetch_env!(:orchard_controller, :authenticated_grpc_status)
+
+    Application.put_env(:orchard_controller, :authenticated_grpc_status, %{
+      response
+      | node_metadata: %{response.node_metadata | node_id: Ecto.UUID.generate()}
+    })
+
+    assert {:error, :authenticated_observation_rejected} =
+             GrpcCompatibilityClient.status(connection, observe?: false)
+
+    assert domain_rows() == active_rows
+    Application.put_env(:orchard_controller, :authenticated_grpc_status, response)
+
+    Repo.get!(Enrollment, peer.enrollment_id)
+    |> Ecto.Changeset.change(state: :revoked, revoked_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    revoked_rows = domain_rows()
+
+    assert {:error, :authenticated_observation_rejected} =
+             GrpcCompatibilityClient.status(connection, observe?: false)
+
+    assert domain_rows() == revoked_rows
+    assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+    assert :ok = QueueManager.release(capacity_grant)
+  end
+
+  defp seed_capacity_source(node_id) do
+    source = {:node, node_id, :cold}
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(
+               %{
+                 request_id: Ecto.UUID.generate(),
+                 public_id: "read-probe",
+                 tenant_id: Ecto.UUID.generate(),
+                 model_id: "read-probe",
+                 version: "v1",
+                 caller_pid: self()
+               },
+               config: [
+                 enabled: true,
+                 capacity: 0,
+                 max_queued_per_tenant: 32,
+                 max_wait_ms: 60_000
+               ]
+             )
+
+    assert :ok = QueueManager.refresh_capacity("read-probe", "v1", 2, source: source)
+    assert {:ok, grant} = QueueManager.await(ticket)
+    assert QueueManager.active_capacity_source_lanes(source) == [{"read-probe", "v1"}]
+
+    on_exit(fn ->
+      QueueManager.release(grant)
+      QueueManager.clear_capacity_source(source)
+    end)
+
+    {source, grant}
+  end
+
+  defp authenticated_grpc_connection!(peer) do
+    assert {:ok, paths} = NodeTrust.runtime_client_generation_paths()
+    enrollment = Repo.get!(Enrollment, peer.enrollment_id)
+    certfile = Path.join(Path.dirname(paths.certfile), "status-node-cert.pem")
+    keyfile = Path.join(Path.dirname(paths.certfile), "status-node-key.pem")
+    File.write!(certfile, enrollment.certificate_result["node_certificate_pem"])
+    File.write!(keyfile, Process.get({:node_private_key, peer.node_id}))
+    File.chmod!(keyfile, 0o600)
+
+    credential =
+      GRPC.Credential.new(
+        ssl: [
+          certfile: certfile,
+          keyfile: keyfile,
+          cacertfile: paths.cacertfile,
+          verify: :verify_peer,
+          fail_if_no_peer_cert: true
+        ]
+      )
+
+    {:ok, socket} = :gen_tcp.listen(0, active: false)
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+
+    start_supervised!(
+      {GRPC.Server.Supervisor,
+       endpoint: StatusEndpoint,
+       port: port,
+       start_server: true,
+       adapter_opts: [ip: {127, 0, 0, 1}, cred: credential]}
+    )
+
+    node =
+      Repo.get!(Node, peer.node_id)
+      |> Ecto.Changeset.change(connect_host: "127.0.0.1", connect_port: port)
+      |> Repo.update!()
+
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: false)
+    assert {:ok, [target]} = Nodes.activation_probe_runtime_endpoint_targets()
+    assert target.transport == :grpc_compat
+
+    Application.put_env(
+      :orchard_controller,
+      :authenticated_grpc_status,
+      %Orchard.Cluster.V1.StatusResponse{
+        node_metadata: %Orchard.Cluster.V1.RuntimeNodeMetadata{
+          node_id: node.id,
+          display_name: node.display_name,
+          hostname: node.hostname,
+          listen_host: node.connect_host,
+          listen_port: port
+        },
+        runtime_health: %Orchard.Cluster.V1.RuntimeHealth{ready: true},
+        max_concurrency: 2
+      }
+    )
+
+    assert {:ok, connection} = GrpcCompatibilityClient.connect(target)
+    assert {:mutual_tls, _, ^peer} = connection.security
+    on_exit(fn -> GrpcCompatibilityClient.disconnect(connection) end)
+    connection
+  end
+
+  defp domain_rows do
+    %{rows: tables} = Repo.query!("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+
+    Map.new(tables, fn [table] ->
+      quoted = String.replace(table, "\"", "\"\"")
+      %{rows: rows} = Repo.query!(~s|SELECT to_jsonb(t) FROM "#{quoted}" t|)
+      {table, Enum.sort(rows)}
+    end)
   end
 
   test "prefix-cache scoring fails open when a BEAM target is unavailable" do

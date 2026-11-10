@@ -634,8 +634,8 @@ defmodule Orchard.Upgrade do
       not start_repo?() ->
         {:error, :config_error}
 
-      function_exported?(nodes_impl, :list_nodes_for_upgrade!, 0) ->
-        nodes_impl.list_nodes_for_upgrade!()
+      function_exported?(nodes_impl, :list_nodes!, 0) ->
+        nodes_impl.list_nodes!()
         |> normalize_node_inventory_result()
 
       true ->

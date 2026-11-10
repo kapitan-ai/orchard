@@ -123,7 +123,7 @@ defmodule OrchardConsole.Runtime do
   unreachable target costs at most one bounded timeout rather than cumulative
   sequential waits.
   Successful probes trigger best-effort `observe_status/3` via the existing
-  `snapshot/1` path, including queue capacity refresh.
+  `snapshot/1` path, including queue capacity refresh, unless `:observe?` is false.
   Per-target failures are isolated - one failed target never aborts the cluster
   result. Inventory-read failures return `{:error, :node_inventory_unavailable}`
   rather than an empty snapshot list.
@@ -131,6 +131,7 @@ defmodule OrchardConsole.Runtime do
   Options:
   - `:targets` - explicit ordered target list (default: `Inference.runtime_endpoint_targets/0`)
   - `:observed_at` - shared timestamp for all probes (default: `DateTime.utc_now()`)
+  - `:observe?` - persist observations and refresh queue capacity (default: `true`)
   - `:timeout` - per-target `snapshot/1` timeout; also bounds the concurrent probe
     wait. When absent, probes wait for the client default with no extra bound.
   """
@@ -153,11 +154,15 @@ defmodule OrchardConsole.Runtime do
   end
 
   defp probe_cluster(targets, opts) do
-    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+    snapshot_opts =
+      opts
+      |> Keyword.take([:observed_at, :timeout, :observe?])
+      |> Keyword.put_new_lazy(:observed_at, &DateTime.utc_now/0)
+
     timeout = opts[:timeout]
 
     targets
-    |> Task.async_stream(fn target -> probe_target(target, observed_at, timeout) end,
+    |> Task.async_stream(fn target -> probe_target(target, snapshot_opts) end,
       ordered: true,
       max_concurrency: max(length(targets), 1),
       timeout: cluster_snapshot_task_timeout(timeout),
@@ -176,12 +181,8 @@ defmodule OrchardConsole.Runtime do
 
   defp cluster_snapshot_task_timeout(_timeout), do: :infinity
 
-  defp probe_target(target, observed_at, timeout) do
-    snapshot_opts =
-      [target: target, observed_at: observed_at]
-      |> then(fn o -> if timeout, do: Keyword.put(o, :timeout, timeout), else: o end)
-
-    case snapshot(snapshot_opts) do
+  defp probe_target(target, opts) do
+    case snapshot(Keyword.put(opts, :target, target)) do
       {:ok, snap} ->
         Map.merge(snap, %{target: target, status: :ok, message: nil})
 
@@ -227,16 +228,17 @@ defmodule OrchardConsole.Runtime do
   Options:
   - `:target` - override runtime target (default: first Runtime Endpoint target)
   - `:observed_at` - override observation timestamp (default: `DateTime.utc_now()`)
+  - `:observe?` - persist observations and refresh queue capacity (default: `true`)
   - `:timeout` - status RPC timeout in milliseconds (default: client default)
   """
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot(opts) do
     target = Keyword.get_lazy(opts, :target, &default_runtime_target/0)
     {client, client_target} = runtime_client(target)
-    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
-    status_opts = if timeout = opts[:timeout], do: [timeout: timeout], else: []
+    observation_opts = Keyword.put_new_lazy(opts, :observed_at, &DateTime.utc_now/0)
+    status_opts = Keyword.take(opts, [:timeout, :observe?])
 
-    snapshot_target(client, target, client_target, observed_at, status_opts)
+    snapshot_target(client, target, client_target, observation_opts, status_opts)
   end
 
   defp default_runtime_target do
@@ -246,25 +248,27 @@ defmodule OrchardConsole.Runtime do
     end
   end
 
-  defp snapshot_target(_client, nil, _client_target, _observed_at, _status_opts) do
+  defp snapshot_target(_client, nil, _client_target, _observation_opts, _status_opts) do
     {:error,
      error_snapshot(:error, "runtime_target_unconfigured", "runtime target is not configured")}
   end
 
-  defp snapshot_target(client, target, client_target, observed_at, status_opts) do
+  defp snapshot_target(client, target, client_target, observation_opts, status_opts) do
     case safe_connect(client, client_target, target) do
       {:ok, channel} ->
-        read_target_status(client, channel, target, observed_at, status_opts)
+        read_target_status(client, channel, target, observation_opts, status_opts)
 
       {:error, reason} ->
         {:error, error_snapshot_for(reason)}
     end
   end
 
-  defp read_target_status(client, channel, target, observed_at, status_opts) do
+  defp read_target_status(client, channel, target, observation_opts, status_opts) do
     case safe_status(client, channel, status_opts, target) do
       {:ok, response} ->
-        observe_status_best_effort(target, response, observed_at)
+        if Keyword.get(observation_opts, :observe?, true) do
+          observe_status_best_effort(target, response, observation_opts[:observed_at])
+        end
 
         snapshot =
           response
