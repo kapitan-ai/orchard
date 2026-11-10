@@ -62,7 +62,8 @@ Two observations shape the corpus:
 
 - Greedy output for a 200-token prompt with 256 generated tokens differed
   between 4 and 8 threads on both runtimes.
-- Prefix caching changed generated text on both runtimes.
+- With prefix caching on, repeated greedy runs differed on llama.cpp at both
+  thread counts and on vLLM at 8 threads.
 
 SGLang's CPU backend requires Intel AMX and supports 4-bit checkpoints only
 on AMX, so it cannot serve a lane meant for commodity CPUs.
@@ -113,20 +114,41 @@ Worker-owned grandchild, which is a new custody boundary under `SPEC.md`
 Agent's tree kill runs only after its SIGTERM timeout, so the Worker must not
 rely on it:
 
-- The child starts in the Worker's process tree and dies with the Worker:
-  on Linux, `PR_SET_PDEATHSIG` set for the child, plus a process group the
+- The child starts in the Worker's process tree and dies with the Worker. On
+  Linux it sets `PR_SET_PDEATHSIG`. That signal fires when the parent
+  *thread* exits, so the Worker spawns the child from a thread that lives as
+  long as the Worker, and the child checks `getppid()` after `prctl` to close
+  the startup race. The child also gets its own process group, which the
   Worker signals on unload and shutdown.
-- Each Worker instance uses its own loopback port, and before admission
-  checks the server's `/props` for the pinned model path and the identity it
-  launched. A stale server left by a previous Worker therefore cannot serve a
-  replacement.
+- Each launch gets a per-launch nonce passed as `--alias` and a per-launch
+  `--api-key-file`. Before admission, the Worker reads `/props` with that key
+  and checks `model_alias`, `model_path` and `total_slots == 1`. A stale
+  server left by a previous Worker on the same model path cannot pass, and
+  other local users cannot drive the server.
 - Unload and shutdown stop and reap the child. A child that cannot be reaped
   marks the Worker unhealthy and blocks admission until replacement.
+- These are Worker-side measures on top of the existing custody. The Node
+  Agent stays the lifecycle and cleanup owner of the Worker process tree, so
+  `SPEC.md` §4.10 and ADR 0025 are unchanged.
 
-The child runs the pinned CPU-only release archive with no offload device,
-one slot, a pinned context and a pinned thread count. It runs without
-`--jinja`, which has no effect on `/v1/completions` and would enable the
-template renderer the lane does not use.
+At b12211, `llama-server` enables its Jinja renderer by default, keeps an
+8192 MiB host-memory prompt cache that saves and restores independently of
+the per-request `cache_prompt` flag, and lets `LLAMA_ARG_*` variables
+override flags. ggml also loads backends from the executable directory, the
+working directory and `GGML_BACKEND_PATH`. The Worker therefore launches the
+pinned CPU-only archive with an explicit argument list:
+
+```text
+--no-jinja -np 1 --no-cache-prompt --cache-ram 0 --no-slots
+--device none -ngl 0 -c <pinned context> -t <pinned threads>
+--host 127.0.0.1 --port <per-instance port>
+--alias <launch nonce> --api-key-file <per-launch key file>
+```
+
+The Worker scrubs the child's environment of `LLAMA_ARG_*`, `GGML_*` and
+CUDA, HIP and Vulkan variables, and starts it in a working directory with no
+ggml libraries. It confirms from the startup output that only the CPU backend
+loaded.
 
 Embedding llama.cpp through Python bindings was rejected. It would add a
 native build to the Worker environment, and the bindings lag upstream
@@ -135,14 +157,44 @@ releases.
 ### Lane A sends only authoritative token IDs
 
 The Worker sends Orchard's `prompt_token_ids` to `/v1/completions`. MLX and
-`vllm_poc` fall back to rendered text when IDs are absent, and the
-Controller's token-ID gate can dispatch without IDs in some modes. Lane A
-does not fall back: a request without IDs is rejected before generation.
+`vllm_poc` fall back to rendered text when IDs are absent. Lane A does not
+fall back: a request without IDs is rejected before generation. The
+Controller's default `tokenizer_safe_mode` is `off`, and in that mode it
+strips `prompt_token_ids` before dispatch, so slice 3's end-to-end runs must
+set `ORCHARD_TOKENIZER_SAFE_MODE=reject`.
 
-Every request sends `cache_prompt: false`, and the Worker fails a generation
-whose response reports reused prompt tokens (`cache_n` or `cached_tokens`
-above zero). llama-server caches prompts per slot by default, and cache-on
-runs both reused tokens and changed output in the probes.
+llama-server fills every omitted sampler field with its own defaults, which
+include top-k 40, min-p 0.05, temperature 0.8 and a random seed. Each request
+therefore carries a complete sampler:
+
+- `temperature` and `top_p` from `GenerationParams`
+- `top_k` 0, `min_p` 0, and neutral repetition, presence and frequency
+  penalties
+- a pinned `seed`
+- `stop` from `stop_sequences`, and `n_predict` bounded by the pinned context
+
+Token-ID output, logprobs and any control the Worker does not map are rejected
+before generation, as `vllm_poc` does.
+
+Prompt caching is disabled at launch (`--no-cache-prompt`, `--cache-ram 0`)
+and again per request (`cache_prompt: false`). On a streamed
+`/v1/completions` request, `cache_n` and `cached_tokens` arrive only in the
+final chunk unless `timings_per_token` is set. Each request therefore sets
+it, and the Worker fails the generation before emitting its first delta when
+the first chunk reports reused prompt tokens or omits the count. In the
+probes, cache-on runs both reused tokens and changed output.
+
+### Lane A serves thinking-disabled prompts only
+
+Qwen3-0.6B and MiniCPM5-2B emit `<think>…</think>` when thinking is on.
+`vllm_poc` handles that framing itself, and the MLX path has a
+provider-neutral `reasoning.py`. Lane A takes neither path in slice 1. It
+returns all generated text as answer content and publishes no reasoning
+evidence (`WorkerCapabilities` fields 8 and 9 omitted, so no `SPEC.md`
+§7.5.3a evidence). Corpus prompts are rendered with thinking disabled, and a
+case whose output contains the reasoning-open marker fails rather than
+grading reasoning text as the answer. Routing lane A through `reasoning.py`
+is later work.
 
 ### Lane A checks tokenizer parity against a pinned source
 
@@ -151,10 +203,19 @@ corrupt output is decoding: the GGUF's vocabulary turns generated IDs into
 bytes, and its end-of-generation IDs decide when generation stops. Parity
 therefore requires:
 
-- the same ID-to-piece mapping in the GGUF and the pinned upstream tokenizer
+- the same ID-to-piece mapping for every ID the pinned tokenizer defines,
+  including added tokens, and only unused or padding tokens above that range
 - identical decoded bytes for every corpus entry, including special and
   control tokens
-- equal end-of-generation ID sets
+- the pinned `generation_config.json` end-of-sequence IDs contained in the
+  GGUF's end-of-generation set, with any extra GGUF IDs recorded
+
+Exact-set and full-range comparisons would reject every candidate. llama.cpp
+pads the GGUF vocabulary beyond the IDs `tokenizer.json` defines, and it adds
+fill-in-the-middle and text-matched tokens to the GGUF's end-of-generation
+set. `orchard_tokenizer` has no end-of-generation concept, and the tokenizer
+configuration names only one end-of-sequence token, so the generation
+configuration is the reference.
 
 `orchard_tokenizer` needs `tokenizer.json`, its configuration and the chat
 template, which the GGUF repositories do not ship. Each model therefore pins
@@ -174,10 +235,19 @@ logical unload and reload, matching ADR 0037's rule for `vllm_poc`.
 
 ### Lane A publishes a diagnostic capability envelope
 
-The Worker's `Status` reports provider identity and version, the `gguf`
-artifact format, CPU acceleration and concurrency one. Under `SPEC.md` §4.10
-this evidence stays diagnostic-only and changes no admission or scheduling
-behaviour.
+The Worker's `Status` carries a complete `WorkerCapabilities` envelope, where
+every required scalar is non-empty:
+
+- `provider_id`, `provider_version` (the llama.cpp build),
+  `implementation_version` and `service_incarnation`
+- one profile with `profile_id`, `artifact_format` `gguf`, `acceleration`
+  `cpu`, `device_binding`, `memory_semantics`, `runtime_features`,
+  `max_concurrency` 1, and an empty `cache_capabilities` set because prompt
+  caching is off
+- no `loaded_binding` and no `reasoning_evidence` (fields 8 and 9)
+
+Under `SPEC.md` §4.10 this evidence stays diagnostic-only and changes no
+admission or scheduling behaviour.
 
 ### Hosts pass a preflight before mutation
 
@@ -192,6 +262,11 @@ Lane A checks before downloading or starting anything:
 A failed preflight skips the lane with a recorded reason. It is never a
 silent pass.
 
+The AVX2 floor is a lane policy, not a requirement of the build. The x64
+archive ships CPU backend variants from SSE4.2 to Sapphire Rapids and picks
+one per host. The variant actually loaded is recorded as part of the host
+class, because it can change generated text.
+
 ### The corpus asserts outcomes, not prose
 
 Lane tests assert protocol behaviour (event order, one terminal, usage
@@ -201,8 +276,10 @@ exact values in prompted JSON). JSON cases are prompted and validated by the
 test; they test instruction-following, not enforcement. The plumbing model
 gets only loose semantic checks.
 
-Golden text is allowed only within one runtime, one pinned host class and one
-thread count, with prefix caching off. It is never compared across runtimes
+Exact-answer and golden-text cases run at temperature 0 with the pinned seed.
+Golden text is allowed only within one runtime, one pinned host class
+(including the loaded CPU variant) and one thread count, with prefix caching
+off. It is never compared across runtimes
 or thread counts.
 
 ### Model roles and pins
@@ -241,7 +318,10 @@ Tokenizer source for Qwen3-0.6B: `Qwen/Qwen3-0.6B` revision
 `c1899de289a04d12100db370d81485cdf75e47ca`, `tokenizer.json` SHA-256
 `aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4`,
 `tokenizer_config.json` (which carries the chat template) SHA-256
-`d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101`. The
+`d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101`,
+`generation_config.json` SHA-256
+`2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2`
+(end-of-sequence IDs 151645 and 151643). The
 MiniCPM5-2B and Gemma 4 E2B tokenizer sources are pinned the same way when
 their parity runs.
 

@@ -24,32 +24,45 @@ and §1.5.
 - **WHEN** documentation, diagnostics or a qualification record cites a passing CPU lane
 - **THEN** it describes the result as implementation evidence and makes no runtime-provider, platform or model support claim
 
-### Requirement: Lane A runs pinned GGUF models through llama.cpp on CPU
+### Requirement: Lane A launches a pinned CPU-only llama.cpp server
 
 The `llamacpp_cpu` lane backend SHALL run exactly one llama.cpp server child
 per Worker instance from a pinned CPU-only llama.cpp release build whose
 archive digest is verified before use, and SHALL load pinned GGUF files whose
-digests are verified before load. The child SHALL bind to a loopback port
-owned by that Worker instance, with one slot, concurrency one, a pinned
-context length, a pinned thread count, no accelerator device, and the
-server's own chat-template rendering and tool-call parsing disabled. Before
-admission, the Worker SHALL confirm through the server that it is the child
-this Worker instance started and that it serves the pinned model file.
+digests are verified before load.
 
-The child SHALL stay inside the Worker's process tree and SHALL terminate when
-the Worker exits, including when the Worker crashes. Unload and Worker
-shutdown SHALL stop and reap the child. A child that cannot be reaped SHALL
-make the Worker unhealthy and deny admission until the Worker is replaced.
-
-The Worker's `Status` SHALL publish a truthful capability envelope for the
-lane, naming its provider identity and version, the `gguf` artifact format,
-CPU acceleration and concurrency one. That evidence SHALL remain
-diagnostic-only under `SPEC.md` §4.10.
+The Worker SHALL launch the child with an explicit argument list that sets
+one slot, a pinned context length, a pinned thread count and no offload
+device, and that disables the server's chat-template renderer, its prompt
+cache and its host-memory prompt cache. The child SHALL start from an
+environment with no llama.cpp argument, ggml or accelerator variables, in a
+working directory that contains no runtime libraries.
 
 #### Scenario: Artifact digest differs from its pin
 
 - **WHEN** a runtime archive or GGUF file digest differs from its pinned value
 - **THEN** the Worker fails before starting the server child or loading the model
+
+#### Scenario: Launch environment would override the pinned arguments
+
+- **WHEN** the Worker's environment carries a llama.cpp argument, ggml or accelerator variable
+- **THEN** the child starts without it, and its effective settings match the pinned argument list
+
+### Requirement: Lane A owns and verifies its server child
+
+The child SHALL bind to a loopback port owned by that Worker instance and
+SHALL require a per-launch credential on every request. Its slot inspection
+endpoint SHALL be disabled. Before admission, the Worker SHALL confirm through
+the server's properties that it serves the per-launch identity this Worker
+instance assigned, the pinned model file and exactly one slot, and SHALL
+confirm that only the CPU backend loaded.
+
+The child SHALL stay inside the Worker's process tree and SHALL terminate when
+the Worker exits, including when the Worker crashes. Unload and Worker
+shutdown SHALL stop and reap the child. A child that cannot be reaped SHALL
+make the Worker unhealthy and deny admission until the Worker is replaced.
+The Node Agent SHALL remain the lifecycle and cleanup owner of the Worker
+process tree under `SPEC.md` §4.10.
 
 #### Scenario: Server child survives unload
 
@@ -63,8 +76,23 @@ diagnostic-only under `SPEC.md` §4.10.
 
 #### Scenario: Loopback port answers with another server
 
-- **WHEN** the Worker's loopback port is answered by a server it did not start, or by one serving a different model file
+- **WHEN** the Worker's loopback port is answered by a server without this launch's identity, or by one serving a different model file, more than one slot or a non-CPU backend
 - **THEN** the Worker refuses admission before provider generation
+
+### Requirement: Lane A publishes a diagnostic capability envelope
+
+The Worker's `Status` SHALL publish a complete capability envelope for lane A
+under `SPEC.md` §4.10: provider identity and version, implementation version,
+service incarnation, and one profile with its profile ID, the `gguf` artifact
+format, CPU acceleration, device binding, memory semantics, runtime features,
+an empty cache capability set and concurrency one. Lane A SHALL publish no
+loaded-binding or reasoning evidence. The envelope SHALL remain
+diagnostic-only.
+
+#### Scenario: Status reports lane A capabilities
+
+- **WHEN** the Node Agent reads `Status` from a lane A Worker
+- **THEN** the envelope carries every required field with no cache capability and no reasoning evidence, and admission is unchanged by it
 
 ### Requirement: Lane A generates only from authoritative prompt token IDs
 
@@ -75,14 +103,26 @@ or ask llama.cpp to render or retokenize prompts. Unlike providers that fall
 back to rendered text, lane A SHALL reject a request that carries no prompt
 token IDs before provider generation.
 
-Every lane A request SHALL disable the server's prompt cache, and the Worker
-SHALL fail the generation if the server reports reused prompt tokens.
-Provider usage SHALL equal the Controller's input token count.
+Every request SHALL carry a complete sampler: temperature and top-p from the
+request, top-k, min-p and repetition penalties set to neutral values, and a
+pinned seed. The Worker SHALL map stop sequences, SHALL bound output tokens by
+the pinned context, and SHALL reject token-ID output, logprobs and any other
+control it does not map before provider generation.
+
+Every request SHALL also disable the prompt cache and request per-token
+timings. The Worker SHALL fail the generation before emitting its first delta
+when the first chunk reports reused prompt tokens or omits the cached-token
+count. Provider usage SHALL equal the Controller's input token count.
 
 #### Scenario: Prompt token IDs are absent
 
 - **WHEN** a lane A request carries rendered prompt text but no prompt token IDs
 - **THEN** the Worker rejects it before provider generation and sends no prompt text to the server
+
+#### Scenario: Request carries an unmapped control
+
+- **WHEN** a lane A request asks for token-ID output, logprobs or another control the Worker does not map
+- **THEN** the Worker rejects it before provider generation
 
 #### Scenario: Provider usage disagrees
 
@@ -91,21 +131,38 @@ Provider usage SHALL equal the Controller's input token count.
 
 #### Scenario: Server reuses cached prompt tokens
 
-- **WHEN** the server reports that a lane A generation reused cached prompt tokens
-- **THEN** the generation fails rather than returning output produced from cached state
+- **WHEN** the first chunk of a lane A generation reports reused prompt tokens or carries no cached-token count
+- **THEN** the Worker fails the generation before emitting any delta
+
+### Requirement: Lane A serves thinking-disabled prompts only
+
+Lane A SHALL return generated text as answer content without reasoning
+separation and SHALL publish no reasoning evidence. Corpus cases SHALL render
+their prompts with thinking disabled. A case whose output contains the
+model's reasoning-open marker SHALL fail rather than be graded on that text.
+
+#### Scenario: Model emits reasoning despite a thinking-disabled prompt
+
+- **WHEN** a lane A corpus case's output contains the model's reasoning-open marker
+- **THEN** the case fails as a model behaviour failure and its answer is not graded
 
 ### Requirement: Lane A admits a model only after tokenizer parity
 
 A GGUF model SHALL enter lane A only after parity with `orchard_tokenizer`
 loaded from a pinned upstream tokenizer source: a repository revision and the
-file digests of its tokenizer, tokenizer configuration and chat template.
-Parity SHALL require that:
+file digests of its tokenizer, tokenizer configuration, chat template and
+generation configuration. The reference ID range is every ID the pinned
+tokenizer defines, including added tokens; the reference end-of-generation
+set is the generation configuration's end-of-sequence IDs. Parity SHALL
+require that:
 
-- the GGUF vocabulary maps every token ID to the same piece as the pinned
-  source
+- every ID in the reference range maps to the same piece in the GGUF
+  vocabulary, and every GGUF ID above that range is an unused or padding
+  token
 - decoding each parity corpus entry's token IDs yields identical bytes under
   both tokenizers, including special and control tokens
-- both define the same set of end-of-generation token IDs
+- the reference end-of-generation set is contained in the GGUF's
+  end-of-generation set, and the parity record lists any extra GGUF IDs
 
 The corpus SHALL cover ASCII, non-Latin scripts, emoji, whitespace runs and
 every special or control token the model's template emits. The parity record
@@ -113,7 +170,7 @@ SHALL state the special-token parse mode used to encode the corpus.
 
 #### Scenario: Embedded tokenizer disagrees
 
-- **WHEN** any vocabulary piece, decoded corpus entry or end-of-generation ID differs between the two tokenizers
+- **WHEN** a reference-range piece or decoded corpus entry differs, a GGUF ID above the reference range is a used token, or a reference end-of-generation ID is missing from the GGUF
 - **THEN** that model is excluded from lane A and the mismatch is reported
 
 #### Scenario: Tokenizer source is not pinned
@@ -170,8 +227,10 @@ the Worker parses. JSON output cases SHALL be prompted cases whose output the
 test validates. Lane A SHALL NOT claim `json_object` enforcement and SHALL NOT
 simulate it through an internal provider field.
 
-Every lane run SHALL pin its thread count. Tests SHALL assert protocol and
-semantic outcomes. Exact generated text MAY be asserted only within one
+Every lane run SHALL pin its thread count and record the CPU backend variant
+the runtime loaded as part of its host class. Tests SHALL assert protocol and
+semantic outcomes. Exact-answer and exact-text cases SHALL use temperature 0
+with the pinned seed. Exact generated text MAY be asserted only within one
 runtime, host class and thread count, and SHALL NOT be compared across
 runtimes or thread counts.
 

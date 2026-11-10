@@ -8,15 +8,16 @@
 ## 2. Slice 1: lane A Worker conformance
 
 - [ ] 2.1 First, run a streamed `/v1/completions` request with token IDs, a usage trailer and cancellation against the pinned `llama-server` on a Linux host, the combination the probes did not cover.
-- [ ] 2.2 Add the default-off `llamacpp_cpu` Worker backend that runs one pinned, digest-checked CPU-only `llama-server` child per Worker instance on its own loopback port, with one slot, no offload device and no `--jinja`.
-- [ ] 2.3 Keep the child in the Worker's process tree with death-with-Worker on Linux, verify its identity and model path through `/props` before admission, and stop and reap it on unload and shutdown; mark the Worker unhealthy when reaping is uncertain.
-- [ ] 2.4 Send only authoritative prompt token IDs with `cache_prompt: false`, reject requests without IDs, fail on reported cached prompt tokens, require provider usage to equal the input count, and map streaming and terminal usage onto existing Worker events.
-- [ ] 2.5 Implement cancellation through request-owned reader settlement within a bound, with native cessation unconfirmed and a sticky unhealthy latch for an unsettled reader.
-- [ ] 2.6 Publish the diagnostic-only capability envelope on `Status`.
-- [ ] 2.7 Add the host preflight (Linux, pinned architecture, AVX2 on x86, free memory, accelerator isolation) that runs before mutation.
-- [ ] 2.8 Pin each model's upstream tokenizer source, add the vocabulary, decode and end-of-generation parity check, and record results and the special-token parse mode for Qwen3-0.6B, MiniCPM5-2B and Gemma 4 E2B.
-- [ ] 2.9 Add the lane corpus with pinned threads, asserting protocol and semantic outcomes and treating JSON as prompted cases.
-- [ ] 2.10 Cover every new branch, including a Worker crash and a stale server on the port, with model-free fake-provider tests, then run the corpus against real pinned models on a Linux host.
+- [ ] 2.2 Add the default-off `llamacpp_cpu` Worker backend that runs one pinned, digest-checked CPU-only `llama-server` child per Worker instance on its own loopback port, launched with `--no-jinja -np 1 --no-cache-prompt --cache-ram 0 --no-slots --device none -ngl 0`, a pinned context and thread count, a scrubbed environment (no `LLAMA_ARG_*`, `GGML_*` or accelerator variables) and a working directory with no ggml libraries.
+- [ ] 2.3 Keep the child in the Worker's process tree with `PR_SET_PDEATHSIG` from a Worker-lifetime thread plus a `getppid()` check, give each launch a nonce `--alias` and an `--api-key-file`, verify `model_alias`, `model_path`, `total_slots == 1` and a CPU-only backend before admission, and stop and reap the child on unload and shutdown; mark the Worker unhealthy when reaping is uncertain.
+- [ ] 2.4 Send only authoritative prompt token IDs with `cache_prompt: false` and `timings_per_token`, reject requests without IDs, send a complete sampler (request temperature and top-p, neutral top-k, min-p and penalties, a pinned seed), map stop sequences and bound output by the context, reject token-ID output, logprobs and unmapped controls, fail before the first delta on reported or missing cached-token counts, require provider usage to equal the input count, and map streaming and terminal usage onto existing Worker events.
+- [ ] 2.5 Return generated text as answer content with no reasoning evidence, render corpus prompts with thinking disabled, and fail cases whose output contains the reasoning-open marker.
+- [ ] 2.6 Implement cancellation through request-owned reader settlement within a bound, with native cessation unconfirmed and a sticky unhealthy latch for an unsettled reader.
+- [ ] 2.7 Publish the complete diagnostic-only capability envelope on `Status`, with an empty cache capability set and no loaded-binding or reasoning evidence.
+- [ ] 2.8 Add the host preflight (Linux, pinned architecture, AVX2 on x86, free memory, accelerator isolation) that runs before mutation.
+- [ ] 2.9 Pin each model's upstream tokenizer source including `generation_config.json`, add the reference-range vocabulary, decode and end-of-generation containment checks, and record results, extra GGUF end-of-generation IDs and the special-token parse mode for Qwen3-0.6B, MiniCPM5-2B and Gemma 4 E2B.
+- [ ] 2.10 Add the lane corpus with pinned threads and the loaded CPU variant recorded, asserting protocol and semantic outcomes, running exact cases at temperature 0 with the pinned seed, and treating JSON as prompted cases.
+- [ ] 2.11 Cover every new branch, including a Worker crash, a stale server on the port and an overriding launch environment, with model-free fake-provider tests, then run the corpus against real pinned models on a Linux host.
 
 ## 3. Slice 2: Worker-side tool calls
 
@@ -36,5 +37,5 @@
 
 ## 6. Slice 3: end-to-end source dev (separate design)
 
-- [ ] 6.1 Design an additive `gguf` artifact format and `llama_cpp` adapter under `SPEC.md` §6.4 migration rules, reviewed before implementation.
+- [ ] 6.1 Design an additive `gguf` artifact format and `llama_cpp` adapter under `SPEC.md` §6.4 migration rules, reviewed before implementation. End-to-end runs need `ORCHARD_TOKENIZER_SAFE_MODE=reject`, because the default `off` mode strips prompt token IDs.
 - [ ] 6.2 Only after that review, run the lane corpus through the Controller and Node in source development.

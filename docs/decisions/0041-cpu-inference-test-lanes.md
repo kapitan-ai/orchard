@@ -18,14 +18,14 @@ Bounded probes on 2026-11-09, run against each runtime's own server rather than 
 - vLLM 0.27.1's CPU build ran Qwen3-0.6B in BF16 on an AVX-512/AMX host, starting in about 90 s with about 5.2 GiB. Its docs give AVX2 hosts only basic support.
 - On `/v1/chat/completions`, both passed streaming with a usage chunk, cancellation followed by a successful request, tool calls through their own parsers and `json_object` through their own enforcement. Both accepted a non-streamed token-ID prompt on `/v1/completions`.
 - The Worker's actual path, a streamed `/v1/completions` request with token IDs, a usage trailer and cancellation, was not run.
-- Greedy output changed with thread count and with prefix caching on both.
+- Greedy output changed with thread count on both. With prefix caching on, repeated greedy runs differed on llama.cpp at both thread counts and on vLLM at 8 threads.
 - SGLang's CPU backend requires Intel AMX, so it cannot serve commodity CPUs.
 
 ## Decision
 
 Use two default-off CPU test lanes:
 
-- **Lane A, llama.cpp:** a separately selected `llamacpp_cpu` Worker backend for Linux on x86-64 with AVX2 or on arm64, run frequently. The Worker owns one pinned `llama-server` child, sends only authoritative token IDs with the prompt cache off, and checks tokenizer parity per model.
+- **Lane A, llama.cpp:** a separately selected `llamacpp_cpu` Worker backend for Linux on x86-64 with AVX2 or on arm64, run frequently. The Worker owns one pinned `llama-server` child launched with an explicit argument list from a scrubbed environment, sends only authoritative token IDs with a complete sampler and the prompt cache off, serves thinking-disabled prompts only, and checks tokenizer parity per model.
 - **Lane B, vLLM CPU:** the `vllm_poc` adapter generalized to frozen serving profiles, with a CPU profile for chosen AVX-512 hosts launched by a lane harness, run nightly or on demand. It is specified in its own change, which modifies `linux-source-dev-inference-poc` and revises ADR 0037.
 
 Do not use SGLang for CPU lanes.
@@ -34,7 +34,8 @@ Lane tests assert protocol and semantic outcomes with prefix caching off and pin
 ## Consequences
 
 Orchard gets real-token coverage of the Worker seam without an accelerator, and lane A runs the provider-neutral contract in [ADR 0025](0025-provider-neutral-worker-runtime-contract.md) against a second real provider, including a diagnostic-only capability envelope.
-Lane A introduces the first Worker-owned provider subprocess, so the child must die with the Worker and prove its identity before admission.
+Lane A introduces the first Worker-owned provider subprocess, so the child must die with the Worker and prove its per-launch identity before admission.
+These are Worker-side measures: the Node Agent stays the lifecycle and cleanup owner of the Worker process tree, so `SPEC.md` §4.10 and ADR 0025 are unchanged.
 Lane A does not exercise vLLM or MLX-LM behaviour, and neither lane covers Metal or GPU kernels.
 JSON lane cases are prompted and validated, because the Worker seam carries no `response_format`.
 GGUF needs tokenizer parity checks against `orchard_tokenizer` from a pinned upstream tokenizer source, and an end-to-end path needs an additive artifact format under `SPEC.md` §6.4, reviewed separately.

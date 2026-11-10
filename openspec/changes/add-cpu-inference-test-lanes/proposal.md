@@ -32,8 +32,8 @@ a usage trailer and cancellation, was not run on either runtime. It is slice
 1's first check.
 
 Greedy output was not byte-identical across thread counts for a 200-token
-prompt with 256 generated tokens, and prefix caching changed output on both
-runtimes.
+prompt with 256 generated tokens. With prefix caching on, repeated greedy
+runs differed on llama.cpp at both thread counts and on vLLM at 8 threads.
 
 SGLang was considered and rejected for this purpose: its CPU backend requires
 Intel AMX.
@@ -56,19 +56,25 @@ Intel AMX.
 - Pin lane A's runtime build, model revisions, file digests and upstream
   tokenizer sources. Fail before mutation on a digest mismatch or an unmet
   host preflight.
-- Keep the llama-server child inside the Worker's process tree, verify its
-  identity before admission, and stop it with the Worker.
-- Send only authoritative prompt token IDs with the server's prompt cache off,
-  and reject requests without IDs.
+- Launch the llama-server child with an explicit argument list (no template
+  renderer, no prompt or host-memory cache, one slot, no offload device) from
+  a scrubbed environment. Keep it inside the Worker's process tree, give each
+  launch its own alias nonce and API key, verify both before admission, and
+  stop it with the Worker.
+- Send only authoritative prompt token IDs with a complete sampler and the
+  prompt cache off. Reject requests without IDs and unmapped controls, and
+  fail before the first delta if the server reports reused prompt tokens.
+- Serve thinking-disabled prompts only, with no reasoning evidence.
 - Settle cancellation through the request-owned reader with native cessation
   unconfirmed, and latch the Worker unhealthy when the reader does not settle.
 - Run one lane test corpus. It asserts protocol and semantic outcomes, not
   exact prose across hosts, thread counts or runtimes. JSON cases are prompted
   and validated, not enforced.
 - Gate lane A on **tokenizer parity** between each GGUF and `orchard_tokenizer`
-  from a pinned upstream tokenizer source: identical vocabulary pieces, decode
-  parity on a fixed corpus and equal end-of-generation IDs. A mismatch keeps
-  that model out of the lane.
+  from a pinned upstream tokenizer source: identical pieces over the pinned
+  tokenizer's ID range, decode parity on a fixed corpus, and the generation
+  configuration's end-of-sequence IDs contained in the GGUF's set. A mismatch
+  keeps that model out of the lane.
 - Assign model roles for lane A:
   - Qwen3-0.6B Q4\_K\_M: plumbing only.
   - MiniCPM5-2B Q4\_K\_M: exact-answer quick check.
