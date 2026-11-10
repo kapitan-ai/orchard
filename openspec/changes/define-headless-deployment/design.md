@@ -84,7 +84,7 @@ The inventory lives in an operator document rather than in `SPEC.md`, because it
 | Node list and inspect | `available` | `/ops/v1/nodes`, `/ops/v1/nodes/:node_id` | — |
 | Node admission review, admit, reject | `available` | `/admin/v1/node-admission/*`, `/admin/v1/nodes/:node_id/admit` | — |
 | Scheduler explanation, request retry, worker recovery, circuit breakers | `available` | `/ops/v1` | — |
-| Node cordon, uncordon, drain, maintenance, resume, decommission | `local_cli` | `orchardctl nodes <action>` | `SPEC.md` §7.3.1, §7.4.1 |
+| Node cordon, uncordon, drain, cancel-drain, maintenance, resume, decommission | `local_cli` | `orchardctl nodes <action>` on the Controller host; preview, confirmation, and lifecycle blockers still apply; maintenance is preview-only on both surfaces until drain completion can be verified | `SPEC.md` §7.3.1, §7.4.1 |
 | Node enrollment bundle issue | `local_cli` | `orchardctl nodes enrollment create` | `SPEC.md` §7.4.1 bootstrap tokens |
 | Request details and captured output | `planned` | Console only (`orchardctl requests inspect` shows only the scheduler explanation, already `available`) | `SPEC.md` §7.3.1 `GET /ops/v1/requests/:request_id`, pending a capture-mode redaction decision |
 | Request list and browsing | `undecided` (Q1) | Console only | — |
@@ -94,13 +94,13 @@ The inventory lives in an operator document rather than in `SPEC.md`, because it
 | Credential revoke | `local_cli` | `orchardctl api-keys revoke` | `cross-surface-authorization-contract` |
 | Credential list, inspect | `planned` | Console only | `cross-surface-authorization-contract` |
 | API Client disable | `planned` | Console only | `SPEC.md` §7.4.1 service accounts |
-| Active model list, import, delete | `local_cli` | `orchardctl models list|import|delete` (list shows active models only) | `SPEC.md` §7.4.1 |
+| Active model list, import; delete of previously retired models | `local_cli` | `orchardctl models list`, `models import`, `models delete` on the Controller host; list shows active models only. Delete works only for a model already retired through the Console, with no non-terminal requests; retirement has no CLI or API path | `SPEC.md` §7.4.1 |
 | Full model catalog (inactive, deprecated, retired) | `planned` | Console only | `SPEC.md` §7.4.1 `GET /admin/v1/models` |
 | Model activate, deprecate, retire | `planned` | Console, or `orchardctl models import --activate` at import | `SPEC.md` §7.4.1 |
 | Tenant model grants, routing policy | `local_cli` | `orchardctl models access|routing-policy` | `SPEC.md` §7.4.1 routing policies |
 | Model Hub search and download | `undecided` (Q5) | Console only | — |
 | Portal User create, invite, disable | `undecided` (Q6) | Console only | no API route specified |
-| Playground inference defaults | `console_only` (proposed, Q1) | Console only | — |
+| Playground inference defaults | `undecided` (Q1) | Console settings only; proposed `console_only`, pending a product-owner decision | — |
 
 ### D5. Defer MCP and propose a client-side adapter
 

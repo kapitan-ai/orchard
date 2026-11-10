@@ -1,6 +1,12 @@
 defmodule OrchardConsole.AuthTest do
   use Orchard.ConnCase, async: false
 
+  import Phoenix.LiveViewTest
+
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.Governance
+  alias Orchard.Repo
+
   @moduletag :live
   @moduletag :db
 
@@ -69,6 +75,42 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 302
       assert redirected_to(conn) == "/console"
       assert get_session(conn, OrchardConsole.Auth.session_marker_key()) == true
+    end
+
+    test "SPEC.md §2.3 refuses a stale Console LiveView reconnect after disablement", %{
+      conn: conn
+    } do
+      Sandbox.mode(Repo, {:shared, self()})
+
+      {:ok, tenant} =
+        Governance.create_tenant(%{
+          slug: "reconnect-private",
+          name: "Private reconnect workspace"
+        })
+
+      authenticated =
+        conn
+        |> put_req_header("authorization", Plug.BasicAuth.encode_basic_auth("operator", "secret"))
+        |> get("/console/tenants")
+
+      assert redirected_to(authenticated) == "/console/tenants"
+      assert get_session(authenticated, OrchardConsole.Auth.session_marker_key()) == true
+
+      page = authenticated |> recycle() |> get("/console/tenants")
+      {:ok, view, html} = live(page)
+      assert html =~ tenant.name
+      GenServer.stop(view.pid)
+
+      config = Application.fetch_env!(:orchard_controller, :console)
+      Application.put_env(:orchard_controller, :console, Keyword.put(config, :enabled, false))
+
+      # Reuse the issued LiveView session, without a fresh HTTP request that would
+      # stop at the route guard before exercising the connected mount.
+      assert {:error, {:redirect, %{to: "/console"}}} = live(page)
+
+      denied = page |> recycle() |> get("/console")
+      assert response(denied, 404) == "Not Found"
+      refute denied.resp_body =~ tenant.name
     end
 
     test "follow-up request after redirect loads console without re-auth", %{conn: conn} do

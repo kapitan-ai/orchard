@@ -14,7 +14,13 @@ defmodule Orchard.Portal.SessionControllerTest do
   @moduletag :db
   @password "sixteen-chars-ok"
 
-  setup do
+  setup context do
+    previous_console = Application.fetch_env!(:orchard_controller, :console)
+    console = Keyword.put(previous_console, :enabled, Map.get(context, :console_enabled, true))
+    Application.put_env(:orchard_controller, :console, console)
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous_console) end)
+
     enable_https_proxy!()
 
     case Process.whereis(PortalPasswordVerifier) do
@@ -45,13 +51,22 @@ defmodule Orchard.Portal.SessionControllerTest do
     end
   end
 
-  test "named HTTPS login stores the portal token and redirects to own keys", %{conn: conn} do
-    {tenant, user} = active_user!("portal-login-ok")
+  for enabled <- [true, false] do
+    @tag console_enabled: enabled
+    test "SPEC.md §§2.3, 7.4a HTTPS login establishes a Portal session with Console enabled=#{enabled}",
+         %{conn: conn} do
+      {tenant, user} = active_user!("portal-login-ok")
 
-    conn = post_login(conn, tenant.slug, user.email, @password)
+      conn = post_login(conn, tenant.slug, user.email, @password)
 
-    assert redirected_to(conn) == "/portal/portal-login-ok/keys"
-    assert get_session(conn, Auth.session_token_key())
+      assert redirected_to(conn) == "/portal/portal-login-ok/keys"
+      assert get_session(conn, Auth.session_token_key())
+
+      keys = conn |> recycle() |> https_conn() |> get("/portal/portal-login-ok/keys")
+      assert html_response(keys, 200) =~ ~s(id="portal-keys")
+      assert keys.resp_body =~ tenant.name
+      refute keys.resp_body =~ "console-sidebar"
+    end
   end
 
   test "exact requested Model survives login into the scoped keys page", %{conn: conn} do

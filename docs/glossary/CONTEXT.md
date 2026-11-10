@@ -46,6 +46,12 @@ _Avoid_: Platform Profile, Distribution Profile, source tree
 The accepted headless Linux Platform Profile for a Controller Host using operator-provided external Postgres and no implicit Apple or accelerator dependency.
 _Avoid_: Linux Orchard, Linux Node Profile, supported profile before Milestone 8 acceptance
 
+**Headless Deployment**:
+The standard production Controller release with the Console disabled by boot-time runtime configuration, while APIs and the Developer Portal retain their existing contracts.
+This is independent of the host's Platform Profile: the headless Linux Controller Profile means no desktop components, not no Console.
+Source development and the `rollback_console_disabled` recovery state are excluded; see `SPEC.md` §§2.3 and 7.1 and [`../headless-mode.md`](../headless-mode.md) for current capability limits.
+_Avoid_: Console-free build, headless-only package, source-dev headless mode, full Console parity, Linux Controller Profile
+
 **macOS Native Distribution Profile**:
 The macOS Distribution Profile whose approved interactive artifact is `Orchard.app` inside a DMG and whose lifecycle preserves platform-native trust and retained operator state.
 _Avoid_: macOS Platform Profile, DMG artifact alone, native PKG

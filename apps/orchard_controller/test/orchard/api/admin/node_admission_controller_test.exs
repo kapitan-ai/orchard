@@ -2,18 +2,88 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
   use Orchard.ConnCase, async: false
 
   import Ecto.Query
+  import Orchard.TestSupport.PortalConn
 
   alias Orchard.API.Admin.NodeAdmissionController
   alias Orchard.API.Router
   alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.PortalPasswordVerifier
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.Portal.Auth
   alias Orchard.Repo
 
   describe "Admin API node admission" do
     @describetag :db
+
+    @tag :live
+    test "SPEC.md §7.1 refuses a valid Portal cookie on Admin routes with Console disabled" do
+      previous_console = Application.fetch_env!(:orchard_controller, :console)
+
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Keyword.put(previous_console, :enabled, false)
+      )
+
+      on_exit(fn -> Application.put_env(:orchard_controller, :console, previous_console) end)
+      enable_https_proxy!()
+      start_supervised!(PortalPasswordVerifier)
+
+      {:ok, tenant} = Governance.create_tenant(%{slug: "portal-not-admin", name: "Portal"})
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
+      {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+      password = "sixteen-chars-ok"
+      {:ok, user} = Governance.redeem_portal_invite(tenant.slug, invite.token, password)
+
+      login = build_conn() |> https_conn() |> get("/portal/#{tenant.slug}")
+      [_, csrf] = Regex.run(~r/name="_csrf_token" value="([^"]+)"/, login.resp_body)
+
+      session =
+        login
+        |> recycle()
+        |> https_conn()
+        |> put_private(:plug_skip_csrf_protection, false)
+        |> put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> post(
+          "/portal/#{tenant.slug}/session",
+          URI.encode_query(%{
+            "_csrf_token" => csrf,
+            "session[email]" => user.email,
+            "session[password]" => password
+          })
+        )
+
+      assert redirected_to(session) == "/portal/#{tenant.slug}/keys"
+      assert get_session(session, Auth.session_token_key())
+      keys = session |> recycle() |> https_conn() |> get("/portal/#{tenant.slug}/keys")
+      assert html_response(keys, 200) =~ ~s(id="portal-keys")
+
+      candidate = insert_candidate!()
+
+      admin =
+        admin_json(:get, "/admin/v1/node-admission/candidates", admin_token!("cookie-control"))
+
+      assert [%{"id" => candidate_id}] = json_response(admin, 200)["data"]
+      assert candidate_id == candidate.id
+
+      denied =
+        session
+        |> recycle()
+        |> https_conn()
+        |> put_req_header("accept", "application/json")
+        |> get("/admin/v1/node-admission/candidates")
+
+      assert get_req_header(denied, "authorization") == []
+
+      assert json_response(denied, 401) == %{
+               "error" => %{"code" => "invalid_api_key", "message" => "Invalid API key provided."}
+             }
+
+      refute denied.resp_body =~ candidate.id
+    end
 
     test "SPEC.md §7.4 lists and shows admission candidates with latest decision metadata" do
       token = admin_token!("admin-node-admission-list")

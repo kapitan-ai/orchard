@@ -327,6 +327,61 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert Map.has_key?(error, "code")
     end
 
+    @tag :live
+    test "define-headless-deployment: Production release starts without Console configuration preserves chat completions" do
+      previous_console = Application.fetch_env!(:orchard_controller, :console)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :console, previous_console)
+      end)
+
+      model = create_model!(%{state: :active})
+      model_ref = "#{model.model_id}@#{model.version}"
+      %{token: token} = create_api_key_with_token!("headless-chat")
+
+      stub_chat_orchestrator(
+        prepare_real: true,
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.output_text_delta("Headless inference stays available."),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ]
+      )
+
+      for enabled <- [true, false] do
+        Application.put_env(
+          :orchard_controller,
+          :console,
+          Keyword.put(previous_console, :enabled, enabled)
+        )
+
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => model_ref,
+              "messages" => [%{"role" => "user", "content" => "hello"}]
+            },
+            token,
+            "application/json"
+          )
+
+        assert conn.status == 200
+        body = Jason.decode!(conn.resp_body)
+        assert body["object"] == "chat.completion"
+        assert body["model"] == model_ref
+
+        assert [
+                 %{
+                   "finish_reason" => "stop",
+                   "message" => %{
+                     "role" => "assistant",
+                     "content" => "Headless inference stays available."
+                   }
+                 }
+               ] = body["choices"]
+      end
+    end
+
     @tag :db
     @tag :live
     test "successful metadata-capture request returns JSON without retaining the response", %{

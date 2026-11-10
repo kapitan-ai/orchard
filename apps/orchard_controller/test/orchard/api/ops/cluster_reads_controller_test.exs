@@ -124,30 +124,72 @@ defmodule Orchard.API.Ops.ClusterReadsControllerTest do
     end
   end
 
-  test "SPEC.md §7.3 only cluster status is served on Standby or with unproven leadership", %{
-    node: node
-  } do
-    token = client_token!(:operator, :cluster)
+  for enabled <- [true, false] do
+    @console_enabled enabled
+    test "SPEC.md §§2.3, 7.3 Standby and unproven leadership retain read gates with Console enabled=#{enabled}",
+         %{
+           node: node
+         } do
+      token = client_token!(:operator, :cluster)
+      config = Application.fetch_env!(:orchard_controller, :console)
 
-    for {role, code} <- [standby: "controller_standby", leader: "controller_leadership_unproven"] do
-      Application.put_env(:orchard_controller, :control_plane,
-        role: role,
-        this_controller_identity: "serving-controller"
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Keyword.put(config, :enabled, @console_enabled)
       )
 
-      before_state = domain_rows()
+      for {role, code} <- [
+            standby: "controller_standby",
+            leader: "controller_leadership_unproven"
+          ] do
+        Application.put_env(:orchard_controller, :control_plane,
+          role: role,
+          this_controller_identity: "serving-controller"
+        )
 
-      for route <- [:nodes, :node] do
-        assert_error(request(path(route, node), token), 503, code)
+        before_state = domain_rows()
+
+        for route <- [:nodes, :node] do
+          assert_error(request(path(route, node), token), 503, code)
+        end
+
+        conn = request("/ops/v1/cluster", token)
+        assert conn.status == 200
+        assert get_resp_header(conn, "cache-control") == ["no-store"]
+        expected_role = if role == :standby, do: "standby", else: "unknown"
+        assert Jason.decode!(conn.resp_body)["control_plane"]["controller_role"] == expected_role
+        assert domain_rows() == before_state
       end
-
-      conn = request("/ops/v1/cluster", token)
-      assert conn.status == 200
-      assert get_resp_header(conn, "cache-control") == ["no-store"]
-      expected_role = if role == :standby, do: "standby", else: "unknown"
-      assert Jason.decode!(conn.resp_body)["control_plane"]["controller_role"] == expected_role
-      assert domain_rows() == before_state
     end
+  end
+
+  test "SPEC.md §7.1 refuses configured Console Basic Auth on the headless Operator API", %{
+    node: node
+  } do
+    Application.put_env(:orchard_controller, :console,
+      enabled: false,
+      auth: :basic,
+      username: "operator",
+      password: "secret"
+    )
+
+    control = request("/ops/v1/nodes", client_token!(:operator, :cluster))
+    assert_payload(:nodes, json_response(control, 200), node)
+
+    denied =
+      build_conn(:get, "/ops/v1/nodes")
+      |> put_req_header("accept", "application/json")
+      |> put_req_header("authorization", Plug.BasicAuth.encode_basic_auth("operator", "secret"))
+      |> Router.call(Router.init([]))
+
+    assert_error(denied, 401, "invalid_api_key")
+
+    assert Jason.decode!(denied.resp_body) == %{
+             "error" => %{"code" => "invalid_api_key", "message" => "Invalid API key provided."}
+           }
+
+    refute denied.resp_body =~ node.id
   end
 
   test "SPEC.md §7.3 successful inspect probes do not mutate domain rows, including CLI", %{

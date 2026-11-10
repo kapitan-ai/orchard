@@ -86,6 +86,32 @@ defmodule Orchard.API.HealthControllerTest do
     assert_unavailable_response()
   end
 
+  test "SPEC.md §2.3 readiness is unchanged when the Console is disabled" do
+    previous_console = Application.fetch_env!(:orchard_controller, :console)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous_console)
+    end)
+
+    for enabled <- [true, false],
+        {impl, status, body} <- [
+          {OkReadiness, 200, ~s({"status":"ok"})},
+          {FailedReadiness, 503, ~s({"status":"error"})}
+        ] do
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Keyword.put(previous_console, :enabled, enabled)
+      )
+
+      put_impl(impl)
+
+      conn = request("/health/ready")
+      assert conn.status == status
+      assert conn.resp_body == body
+    end
+  end
+
   test "SPEC.md §3.1 health ready fails closed through Endpoint when readiness raises" do
     put_impl(RaiseReadiness)
     conn = assert_unavailable_response()
