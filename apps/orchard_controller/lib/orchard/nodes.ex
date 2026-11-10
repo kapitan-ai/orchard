@@ -143,48 +143,6 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
-  Returns a summary of node counts grouped by state and health.
-
-  All enum values are present, zero-filled when no rows exist.
-  Returns a zero-filled summary when the repo is unavailable.
-  """
-  @spec summary() :: %{
-          total: non_neg_integer(),
-          by_state: %{required(atom()) => non_neg_integer()},
-          by_health: %{required(atom()) => non_neg_integer()}
-        }
-  def summary do
-    if repo_available?() do
-      state_counts =
-        Node
-        |> group_by([n], n.state)
-        |> select([n], {n.state, count(n.id)})
-        |> Repo.all()
-        |> Map.new()
-
-      health_counts =
-        Node
-        |> group_by([n], n.health)
-        |> select([n], {n.health, count(n.id)})
-        |> Repo.all()
-        |> Map.new()
-
-      by_state = zero_fill(state_counts, Node.states())
-      by_health = zero_fill(health_counts, Node.health_values())
-
-      %{
-        total: by_state |> Map.values() |> Enum.sum(),
-        by_state: by_state,
-        by_health: by_health
-      }
-    else
-      empty_summary()
-    end
-  rescue
-    _ -> empty_summary()
-  end
-
-  @doc """
   Returns nodes eligible for multi-node scheduling.
 
   Eligible nodes must be:
@@ -3521,18 +3479,6 @@ defmodule Orchard.Nodes do
        do: "#{host}:#{port}"
 
   defp format_connect_target(_observation), do: "unknown"
-
-  defp zero_fill(counts, values) do
-    Map.new(values, fn v -> {v, Map.get(counts, v, 0)} end)
-  end
-
-  defp empty_summary do
-    %{
-      total: 0,
-      by_state: zero_fill(%{}, Node.states()),
-      by_health: zero_fill(%{}, Node.health_values())
-    }
-  end
 
   # -- Transport Failure Classification --
 

@@ -4,6 +4,7 @@
 - [x] 1.2 Move the `cluster_management.node_status_list` and inspected Node payload builders into Controller-owned code and make `orchardctl nodes list --json` and `orchardctl nodes inspect --json` call them.
 - [x] 1.3 Add an explicit `latest_decision` projection option: operator projection (`object`, `decision`, `decided_at`) for the Operator API and the existing full projection for the local CLI.
 - [x] 1.4 Add a non-observing Runtime Endpoint snapshot option that skips `Orchard.Nodes.observe_status/3` and queue-capacity refresh, and use it for the shared memory budget.
+- [x] 1.5 Share the strict inventory read and summary between text and JSON modes of `orchardctl nodes list`, reporting `database_unavailable` with exit status 1 in both modes while preserving healthy output (KAP-208).
 
 ## 2. Operator API Routes
 
@@ -18,7 +19,7 @@
 - [x] 3.3 With an injected `runtime_impl`, assert each HTTP payload and its CLI payload share `object`, `contract_version`, and field set, and that list values match.
 - [x] 3.4 Assert the operator `latest_decision` projection omits reason, actor, audit, observed-identity, target, and metadata fields, and the CLI keeps the full projection.
 - [x] 3.5 With a Runtime Endpoint probe that succeeds, assert Node inspect creates or updates no Node, Admission Candidate, queue-capacity source, audit, or Admission Decision row.
-- [x] 3.6 Cover unknown and malformed Node IDs, an empty Node inventory, a Node with and without a memory budget, and inventory query failures on the Operator API and `orchardctl nodes list --json`.
+- [x] 3.6 Cover unknown and malformed Node IDs, an empty Node inventory, nonzero state and health summary counts, a Node with and without a memory budget, and inventory query failures on the Operator API and both text and JSON modes of `orchardctl nodes list`.
 - [x] 3.7 Exercise authenticated BEAM status and a real mTLS compatibility connection with `observe?: false`: preserve domain rows and queue sources on success and rejection, reject invalid peer/target/enrollment/grant bindings, and retain default observation as a positive control.
 
 ## 4. Validation

@@ -772,8 +772,7 @@ defmodule Orchard.PackagedNodeCommand do
   defp lifecycle_command_action(_command), do: :error
 
   defp run_list do
-    nodes = Nodes.list_nodes()
-    summary = Nodes.summary()
+    %{nodes: nodes, summary: summary} = Reads.node_inventory()
 
     summary_line = format_summary(summary)
 

@@ -5,7 +5,7 @@
 The three reads already have Controller-side producers:
 
 - `Orchard.ControlPlane.read_only_status/0` builds `Orchard.ClusterManagement.ControlPlaneStatus`; `OrchardCLI.Commands.Cluster` wraps it in the `cluster_management.cluster_status` object, whose `object` and `contract_version` strings exist today only as private attributes in `orchard_cli`.
-- `Orchard.PackagedNodeCommand` builds the `cluster_management.node_status_list` object from `Orchard.Nodes.list_nodes/0`, `Orchard.ClusterManagement.StatusBuilder.node_status_maps/1`, and `Orchard.Nodes.summary/0`.
+- `Orchard.ClusterManagement.Reads.nodes/0` builds the `cluster_management.node_status_list` object from the strict `Reads.node_inventory/0` result and `Orchard.ClusterManagement.StatusBuilder.node_status_maps/1`. The text CLI consumes the same inventory result, keeping raw Node records for its table and deriving summary counts from those records.
 - `Orchard.PackagedNodeCommand` builds the inspected Node from `Orchard.API.Admin.NodeAdmissionPresenter.node/1` plus `Orchard.ClusterManagement.MemoryBudgetPresenter.for_node/2`.
 
 `MemoryBudgetPresenter.for_node/2` calls `OrchardConsole.Runtime.cluster_snapshot/1`, which probes every Runtime Endpoint target and, on each successful probe, calls `Orchard.Nodes.observe_status/3`.
@@ -54,6 +54,7 @@ These routes follow that precedent rather than the `422` used by circuit-breaker
 ### Database failure after admission
 
 Node inventory query failures return `503 database_unavailable` in the shared `AdminErrorHelpers` envelope.
+Both text and JSON modes of `orchardctl nodes list` report `database_unavailable` with exit status 1 (KAP-208), using the existing human-readable message in text mode and the error code in JSON mode. Healthy inventory output is unchanged.
 Later diagnostics and memory-budget reads retain their existing degraded-data behavior on failure.
 A database outage during token admission keeps the shared pipeline's current behavior, which affects every `/ops/v1` and `/admin/v1` route and is left to a separate change.
 
