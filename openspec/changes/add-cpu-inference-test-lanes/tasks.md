@@ -1,7 +1,7 @@
 ## 1. Contract
 
 - [x] 1.1 Amend `SPEC.md` §1.5 so default-off CPU test-lane backends may exist as implementation evidence without a runtime-provider profile or support claim.
-- [ ] 1.2 Get accountable product owner approval of the §1.5 amendment and accept ADR 0040; the decision index already lists it as proposed.
+- [ ] 1.2 Get accountable product owner approval of the §1.5 amendment and accept ADR 0041; the decision index already lists it as proposed.
 - [ ] 1.3 Confirm the Gemma 4 E2B license for the pinned GGUF build from the publisher before it enters any automated lane.
 - [x] 1.4 Validate this change and all OpenSpec packages strictly.
 

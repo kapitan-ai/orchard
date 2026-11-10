@@ -66,7 +66,7 @@ Intel AMX.
      an additive `gguf` artifact format and `llama_cpp` adapter under
      `SPEC.md` §6.4's migration rules, reviewed separately before
      implementation.
-- Record the runtime choice in ADR 0040.
+- Record the runtime choice in ADR 0041.
 
 ## Capabilities
 

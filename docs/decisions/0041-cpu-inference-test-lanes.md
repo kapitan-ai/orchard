@@ -1,4 +1,4 @@
-# ADR 0040: CPU inference test lanes use llama.cpp and vLLM's CPU build
+# ADR 0041: CPU inference test lanes use llama.cpp and vLLM's CPU build
 
 ## Status
 
