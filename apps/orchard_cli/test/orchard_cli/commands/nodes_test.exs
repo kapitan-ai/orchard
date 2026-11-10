@@ -217,8 +217,8 @@ defmodule OrchardCLI.Commands.NodesTest do
     test "empty output shows zero summary and empty message" do
       assert {:ok, output} = NodesCmd.run(["list"])
 
-      assert output =~ "Summary: total=0 healthy=0 degraded=0 unhealthy=0 unreachable=0"
-      assert output =~ "No nodes registered."
+      assert output ==
+               "Summary: total=0 healthy=0 degraded=0 unhealthy=0 unreachable=0\n\nNo nodes registered."
     end
 
     test "populated table renders inserted node fields" do
@@ -280,6 +280,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "Summary: total=1 healthy=0 degraded=0 unhealthy=0 unreachable=1"
       assert output =~ "ghost-node"
       assert output =~ "unreachable"
+    end
+
+    test "SPEC.md §11.9 list text reports inventory query failure instead of an empty list" do
+      Repo.query!("ALTER TABLE nodes RENAME TO unavailable_nodes")
+
+      assert {:error, output, 1} = NodesCmd.run(["list"])
+      assert output =~ "Error: database is unavailable:"
+      refute output =~ "Summary:"
+      refute output =~ "No nodes registered."
     end
 
     test "SPEC.md §7.3 list JSON reports inventory query failure instead of an empty list" do

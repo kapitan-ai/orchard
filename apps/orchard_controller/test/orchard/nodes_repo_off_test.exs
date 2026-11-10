@@ -25,11 +25,6 @@ defmodule Orchard.NodesRepoOffTest do
       assert Nodes.active_runtime_endpoint_targets() == {:error, :node_inventory_unavailable}
       assert Inference.runtime_endpoint_targets() == []
 
-      summary = Nodes.summary()
-      assert summary.total == 0
-      assert summary.by_state.active == 0
-      assert summary.by_health.healthy == 0
-
       assert Nodes.lookup_by_target(host: "10.0.0.1", port: 9444) == nil
 
       status = %{node_metadata: %{node_id: Ecto.UUID.generate()}, runtime_health: nil}

@@ -1257,7 +1257,8 @@ defmodule OrchardConsole.NodesLiveTest do
           last_heartbeat_at: DateTime.utc_now()
         )
 
-      page_data = NodesPageData.inventory([node], Nodes.summary())
+      summary = %{total: 1, by_state: %{registered: 1}, by_health: %{healthy: 1}}
+      page_data = NodesPageData.inventory([node], summary)
 
       assert page_data.statuses == [StatusBuilder.node_status_map(node)]
 

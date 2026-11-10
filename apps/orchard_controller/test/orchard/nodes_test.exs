@@ -605,36 +605,6 @@ defmodule Orchard.NodesTest do
     end
   end
 
-  # -- summary/0 --
-
-  describe "summary/0" do
-    test "returns zero-filled summary on empty DB" do
-      summary = Nodes.summary()
-      assert summary.total == 0
-      assert summary.by_state.active == 0
-      assert summary.by_state.provisioned == 0
-      assert summary.by_health.healthy == 0
-      assert summary.by_health.unreachable == 0
-      assert map_size(summary.by_state) == 9
-      assert map_size(summary.by_health) == 4
-    end
-
-    test "counts by state and health" do
-      insert_node!(%{state: :active, health: :healthy})
-      insert_node!(%{state: :active, health: :degraded})
-      insert_node!(%{state: :cordoned, health: :unhealthy})
-
-      summary = Nodes.summary()
-      assert summary.total == 3
-      assert summary.by_state.active == 2
-      assert summary.by_state.cordoned == 1
-      assert summary.by_state.provisioned == 0
-      assert summary.by_health.healthy == 1
-      assert summary.by_health.degraded == 1
-      assert summary.by_health.unhealthy == 1
-    end
-  end
-
   # -- lookup_by_target/1 --
 
   describe "lookup_by_target/1" do

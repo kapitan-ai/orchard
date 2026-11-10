@@ -241,7 +241,28 @@ defmodule Orchard.API.Ops.ClusterReadsControllerTest do
 
   defp assert_payload(:nodes, body, node) do
     assert body["object"] == "cluster_management.node_status_list"
-    assert body["summary"]["total"] == 1
+
+    assert body["summary"] == %{
+             "total" => 1,
+             "by_state" => %{
+               "provisioned" => 0,
+               "registered" => 1,
+               "admitted" => 0,
+               "active" => 0,
+               "cordoned" => 0,
+               "draining" => 0,
+               "maintenance" => 0,
+               "decommissioning" => 0,
+               "removed" => 0
+             },
+             "by_health" => %{
+               "healthy" => 1,
+               "degraded" => 0,
+               "unhealthy" => 0,
+               "unreachable" => 0
+             }
+           }
+
     assert [status] = body["data"]
     assert status["resource"] == %{"type" => "node", "id" => node.id}
   end

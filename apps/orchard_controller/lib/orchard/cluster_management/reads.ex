@@ -17,6 +17,11 @@ defmodule Orchard.ClusterManagement.Reads do
   alias Orchard.Nodes.Node
 
   @type node_options :: [latest_decision: :operator | :full]
+  @type summary :: %{
+          total: non_neg_integer(),
+          by_state: %{required(atom()) => non_neg_integer()},
+          by_health: %{required(atom()) => non_neg_integer()}
+        }
 
   @doc "Returns the serving Controller's read-only cluster status."
   @spec cluster_status(ControlPlaneStatus.t()) :: map()
@@ -36,12 +41,23 @@ defmodule Orchard.ClusterManagement.Reads do
   @doc "Returns registered Node statuses and the inventory summary."
   @spec nodes() :: map()
   def nodes do
-    nodes = Nodes.list_nodes!()
+    %{nodes: nodes, summary: summary} = node_inventory()
 
     %{
       object: "cluster_management.node_status_list",
       contract_version: NodeStatus.contract_version(),
       data: StatusBuilder.node_status_maps(nodes),
+      summary: summary
+    }
+  end
+
+  @doc "Returns ordered Node records and their summary, raising on inventory query failure."
+  @spec node_inventory() :: %{nodes: [Node.t()], summary: summary()}
+  def node_inventory do
+    nodes = Nodes.list_nodes!()
+
+    %{
+      nodes: nodes,
       summary: %{
         total: length(nodes),
         by_state: Enum.frequencies_by(nodes, & &1.state) |> zero_fill(Node.states()),

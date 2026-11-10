@@ -20,7 +20,7 @@ The accepted product direction for headless operation is runtime-disabled Consol
 - Show operators only the admission decision name and `decided_at`; the local CLI keeps the full admission provenance.
 - Read the Node memory budget through a Runtime Endpoint snapshot that does not observe Node status, so these reads, and `orchardctl nodes inspect`, no longer update inventory, Admission Candidates, or queue capacity.
 - Return `503 database_unavailable` for Node inventory query failures after admission.
-- Make `orchardctl nodes list --json` return `database_unavailable` with a nonzero exit status when the inventory query fails, instead of reporting an empty inventory. Text-mode `nodes list` is unchanged.
+- Make `orchardctl nodes list` report `database_unavailable` with exit status 1 in both text and JSON modes when the inventory query fails, instead of reporting an empty inventory (KAP-208). Text mode uses the existing human-readable database-unavailable message; healthy inventory output is unchanged.
 
 ## Out Of Scope
 
