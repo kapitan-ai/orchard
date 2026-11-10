@@ -358,7 +358,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute MapSet.member?(keys, key)
   end
 
-  test "SPEC.md §4.9 launch aborts before arming reaper when identity capture fails",
+  test "SPEC.md §4.9 ps identity failure aborts launch only on hosts that use ps",
        context do
     fake_bin = Path.join(context.root, "fake-bin")
     fake_ps = Path.join(fake_bin, "ps")
@@ -385,7 +385,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
           log_path: context.log_path,
           models_root: context.models_root,
           owner: self(),
-          ready_timeout_ms: 5_000,
+          ready_timeout_ms: 100,
           shutdown_timeout_ms: @shutdown_timeout_ms,
           socket_path: context.socket_path
         )
@@ -393,7 +393,12 @@ defmodule Orchard.Node.WorkerCustodyTest do
         System.put_env("PATH", previous_path)
       end
 
-    assert {:error, :identity_unavailable} = result
+    expected =
+      if :os.type() == {:unix, :linux},
+        do: {:error, :worker_ready_timeout},
+        else: {:error, :identity_unavailable}
+
+    assert result == expected
     refute File.exists?(context.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)

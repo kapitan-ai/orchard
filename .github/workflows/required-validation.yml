@@ -256,6 +256,21 @@ jobs:
           ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
 
+      - name: Run Linux unreadable proc custody regression
+        shell: bash
+        run: |
+          # Ubuntu 24.04 restricts unprivileged namespaces through AppArmor.
+          # Relax only that restriction for this step and restore it on exit.
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+            trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$userns_restriction"' EXIT
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --mount --fork env ORCHARD_TEST_PROC_NAMESPACE=1 \
+            mise exec -- mix test \
+            apps/orchard_node_agent/test/orchard/node/runtime_process_reaper_test.exs \
+            --only linux_proc_namespace
+
       - name: Test Transport private-stage publication with real TLS generation
         run: >-
           mise exec -- mix test --include integration --exclude macos

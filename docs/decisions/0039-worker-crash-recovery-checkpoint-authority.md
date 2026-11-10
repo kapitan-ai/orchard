@@ -29,6 +29,14 @@ Two OpenSpec change packages proposed how to persist that state for issue #379:
   Custody records a digest of the runtime's launch identity (owner and start time) with its PID, so a live PID whose identity no longer matches proves the recorded incarnation is gone.
   That identity is read with a fixed timezone and locale, and on Linux from start ticks since boot, so a timezone change, a different Node Agent environment, or a wall-clock step cannot make a still-running runtime look replaced.
   Custody without a digest, or a PID whose identity cannot be read, stays unresolved.
+  Current-lifetime exit and signalling checks use that same identity.
+  Linux reads the effective uid from the status `Uid:` line, matching `ps uid`; directory ownership is not process credentials and can change with dumpability.
+  New Linux custody tokens append an `euid` segment to distinguish this identity from the old directory-owner digest.
+  Old Linux tokens retain PID nonexistence and host-boot proofs but cannot prove PID reuse, and older readers treat the new segment as unknown custody rather than a mismatching digest on rollback.
+  A rolled-back reader can overwrite that unknown token with bare boot evidence during an ownerless interrupted write; rolling forward then requires a host reboot or operator cleanup to resolve that placement.
+- Reset shares one 3-second monotonic wait deadline across recovery settling and runtime custody.
+  A checkpoint outage returns unavailable within that budget, retaining pending recovery evidence for retry rather than claiming cleanup succeeded.
+  Graceful Node Agent shutdown retains its 10-second intentional-stop checkpoint allowance and a 3-second custody deadline measured from the same start, not an additional wait.
 - All-in-one source development runs the Node Agent inside the Controller's BEAM without an enrolled identity, so it calls the same compare-and-set storage in-process.
   The checkpoint table keys on the Node id without a foreign key to `nodes`, because that Node Agent has no inventory row.
   The in-process path trusts its caller by being in the same BEAM: it checks that the Node id is well formed but does not consult Node state or enrollment, so it is not equivalent to the certificate path and is configured only for all-in-one source development.
@@ -50,4 +58,4 @@ Two OpenSpec change packages proposed how to persist that state for issue #379:
 
 ## SPEC.md impact
 
-Update required in §12.2.2 for the all-in-one in-process checkpoint and operator recovery paths. The PID-reuse rule is already stated there.
+Section §12.2.2 includes the all-in-one in-process checkpoint and operator recovery paths, wall-clock-stable current-lifetime identity checks, effective-uid Linux custody and conservative legacy-token handling, and the shared reset wait deadline distinct from graceful shutdown's checkpoint allowance.

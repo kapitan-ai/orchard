@@ -54,12 +54,12 @@ defmodule Orchard.Node.WorkerRecoveryCustodyTest do
     # recorded PID after the OS hands it to an unrelated, still-running process.
     reused_pid = System.pid()
     [boot, process] = String.split(custody, "/")
-    [recorded_pid, digest] = String.split(process, ".")
+    [recorded_pid | identity] = String.split(process, ".")
     assert recorded_pid == Integer.to_string(os_pid)
 
     assert WorkerRecoveryCustody.resolve_prior_worker_ownership(
              @key,
-             "#{boot}/#{reused_pid}.#{digest}"
+             "#{boot}/#{Enum.join([reused_pid | identity], ".")}"
            ) == :resolved
 
     # Without a recorded identity a live PID cannot be told apart, so custody
@@ -70,6 +70,27 @@ defmodule Orchard.Node.WorkerRecoveryCustodyTest do
     assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, custody) == :unresolved
   end
 
+  if :os.type() == {:unix, :linux} do
+    test "SPEC §12.2.2 legacy Linux uid digests cannot prove reuse of a live PID" do
+      {port, os_pid} = CustodyTestHelpers.start_control_child!()
+      on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+      boot = WorkerRecoveryCustody.boot_identity()
+
+      for digest <- [String.duplicate("0", 32), "invalid.euid"] do
+        custody = "#{boot}/#{os_pid}.#{digest}"
+        assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, custody) == :unresolved
+      end
+
+      CustodyTestHelpers.stop_child(port, os_pid)
+
+      assert WorkerRecoveryCustody.resolve_prior_worker_ownership(
+               @key,
+               "#{boot}/#{os_pid}.#{String.duplicate("0", 32)}"
+             ) == :resolved
+    end
+  end
+
+  @tag :macos
   test "SPEC §12.2.2 a recorded launch identity survives a write that cannot confirm it" do
     {port, os_pid} = CustodyTestHelpers.start_control_child!()
     root = Path.join(System.tmp_dir!(), "custody-#{System.unique_integer([:positive])}")

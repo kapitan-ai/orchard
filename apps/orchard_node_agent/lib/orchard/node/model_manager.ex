@@ -112,13 +112,14 @@ defmodule Orchard.Node.ModelManager do
   @worker_crash_model_limit 4
   @ordinary_unload_stop_deadline_ms 10_000
   @ordinary_unload_call_timeout_ms @ordinary_unload_stop_deadline_ms + 1_000
-  # Reset first waits for every Worker recovery record to resolve, then for the
-  # reaper to confirm that the runtimes it holds have exited. Each wait is bounded.
-  @reset_recovery_wait_ms 10_000
+  # Reset shares its custody budget with checkpoint settling. Graceful shutdown
+  # retains the longer checkpoint allowance for a slow but healthy Controller.
+  @shutdown_recovery_wait_ms 10_000
   @reset_custody_wait_ms 3_000
   @reset_custody_poll_ms 25
   @reset_custody_probe_ms 250
-  @reset_call_timeout_ms max(@reset_recovery_wait_ms, @reset_custody_wait_ms) + 2_000
+  @reset_call_timeout_ms @reset_custody_wait_ms + 2_000
+  @shutdown_call_timeout_ms @shutdown_recovery_wait_ms + 2_000
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -161,7 +162,7 @@ defmodule Orchard.Node.ModelManager do
 
   @spec prepare_shutdown() :: :ok | {:error, :unavailable}
   def prepare_shutdown,
-    do: GenServer.call(__MODULE__, :prepare_shutdown, @reset_call_timeout_ms)
+    do: GenServer.call(__MODULE__, :prepare_shutdown, @shutdown_call_timeout_ms)
 
   @spec inspect_worker_recovery(String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
   def inspect_worker_recovery(model_id, version) do
@@ -299,19 +300,35 @@ defmodule Orchard.Node.ModelManager do
     {:reply, response, next_state}
   end
 
-  def handle_call(:prepare_shutdown, from, state) do
-    handle_call(:reset, from, %{state | stopping?: true})
+  def handle_call(operation, _from, %{resetting?: true} = state)
+      when operation in [:reset, :prepare_shutdown] do
+    state = %{state | stopping?: state.stopping? or operation == :prepare_shutdown}
+    {:reply, {:error, :unavailable}, state}
   end
 
-  def handle_call(:reset, _from, %{resetting?: true} = state),
-    do: {:reply, {:error, :unavailable}, state}
+  def handle_call(operation, from, state) when operation in [:reset, :prepare_shutdown] do
+    started = System.monotonic_time(:millisecond)
 
-  def handle_call(:reset, from, state) do
+    recovery_wait_ms =
+      if operation == :prepare_shutdown,
+        do: @shutdown_recovery_wait_ms,
+        else: @reset_custody_wait_ms
+
+    deadlines = %{
+      recovery: started + recovery_wait_ms,
+      custody: started + @reset_custody_wait_ms
+    }
+
     Enum.each(state.eviction_continuations, fn {_ref, continuation} ->
       GenServer.reply(continuation.from, ModelLoadFailure.to_response(:load_cancelled))
     end)
 
-    state = %{state | resetting?: true, eviction_continuations: %{}}
+    state = %{
+      state
+      | resetting?: true,
+        stopping?: state.stopping? or operation == :prepare_shutdown,
+        eviction_continuations: %{}
+    }
 
     state =
       Enum.reduce(Map.keys(state.recovery), state, fn key, acc ->
@@ -329,12 +346,10 @@ defmodule Orchard.Node.ModelManager do
     end)
 
     state = %{state | recovery_hydrations: %{}}
-    started = System.monotonic_time(:millisecond)
 
     send(
       self(),
-      {:recovery_reset_complete, state.recovery_epoch, from,
-       %{recovery: started + @reset_recovery_wait_ms, custody: started + @reset_custody_wait_ms}}
+      {:recovery_reset_complete, state.recovery_epoch, from, deadlines}
     )
 
     {:noreply, state}
@@ -862,12 +877,10 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  # Both waits run against deadlines fixed when the reset began, so time spent
-  # settling recovery entries comes out of the custody wait instead of adding to it.
+  # Deadlines start together, so custody never adds another wait after settling.
+  # Only graceful shutdown permits checkpoint settling beyond the custody budget.
   def handle_info({:recovery_reset_complete, epoch, from, deadlines}, state)
       when epoch == state.recovery_epoch do
-    deadline = deadlines.recovery
-
     resolved? =
       Enum.all?(state.recovery, fn {_key, entry} ->
         is_nil(entry.pending) and is_nil(entry.desired) and
@@ -878,14 +891,14 @@ defmodule Orchard.Node.ModelManager do
       resolved? ->
         GenServer.reply(from, await_custody_clear(deadlines.custody))
 
-      System.monotonic_time(:millisecond) >= deadline ->
+      System.monotonic_time(:millisecond) >= deadlines.recovery ->
         GenServer.reply(from, {:error, :unavailable})
 
       true ->
         Process.send_after(self(), {:recovery_reset_complete, epoch, from, deadlines}, 50)
     end
 
-    done? = resolved? or System.monotonic_time(:millisecond) >= deadline
+    done? = resolved? or System.monotonic_time(:millisecond) >= deadlines.recovery
     {:noreply, %{state | resetting?: not done?}}
   end
 

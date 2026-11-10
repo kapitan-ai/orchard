@@ -128,29 +128,22 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
 
   defp encode(boot, {:runtime_process, os_pid, os_identity}) do
     process =
-      case recordable_launch_identity(os_pid, os_identity) do
-        {:ok, launch_identity} -> "#{os_pid}.#{identity_digest(launch_identity)}"
-        :error -> Integer.to_string(os_pid)
+      case WorkerProcessLifecycle.launch_identity(os_pid) do
+        {:ok, ^os_identity} ->
+          identity = "#{os_pid}.#{identity_digest(os_identity)}"
+          if :os.type() == {:unix, :linux}, do: identity <> ".euid", else: identity
+
+        _unproven ->
+          Integer.to_string(os_pid)
       end
 
     Enum.join([boot_segment(boot), process], "/")
   end
 
-  # The reaper's snapshot proves the PID is still the launched runtime; only
-  # then may the lifetime-stable identity read now stand for that runtime.
-  defp recordable_launch_identity(os_pid, os_identity) do
-    with {:ok, ^os_identity} <- WorkerProcessLifecycle.process_identity(os_pid),
-         {:ok, launch_identity} <- WorkerProcessLifecycle.launch_identity(os_pid) do
-      {:ok, launch_identity}
-    else
-      _unproven -> :error
-    end
-  end
-
   # The checkpoint holds custody as an opaque bounded token, so the identity
-  # snapshot is recorded as a digest rather than as host process details. The
-  # digest rides in the PID segment, so a reader that predates it still finds
-  # the boot segment and resolves once the host reboots.
+  # snapshot is recorded as a digest rather than as host process details.
+  # The extra Linux segment also makes older readers fail closed instead of
+  # comparing a directory-owner digest with an effective-uid digest on rollback.
   defp identity_digest(os_identity) do
     :sha256
     |> :crypto.hash(os_identity)
@@ -174,8 +167,16 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
 
   defp process_custody(boot, [os_pid]), do: custody(boot, false, parse_os_pid(os_pid))
 
-  defp process_custody(boot, [os_pid, digest]) when digest != "",
-    do: custody(boot, false, parse_os_pid(os_pid), digest)
+  defp process_custody(boot, [os_pid, digest]) when digest != "" do
+    # Legacy Linux digests used mutable /proc directory ownership.
+    digest = if :os.type() == {:unix, :linux}, do: nil, else: digest
+    custody(boot, false, parse_os_pid(os_pid), digest)
+  end
+
+  defp process_custody(boot, [os_pid, digest, "euid"]) do
+    digest = if Regex.match?(~r/\A[0-9a-f]{32}\z/, digest), do: digest
+    custody(boot, false, parse_os_pid(os_pid), digest)
+  end
 
   defp process_custody(boot, _unrecognized), do: custody(boot, false, nil)
 
