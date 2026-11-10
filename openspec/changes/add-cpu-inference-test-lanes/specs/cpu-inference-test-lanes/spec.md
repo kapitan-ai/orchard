@@ -5,7 +5,9 @@
 Orchard MAY provide CPU inference test lanes that run real models through the
 existing local gRPC Worker service on hosts without an accelerator. Each lane
 backend SHALL be separately selected and default-off. The default Worker
-backend, the MLX-LM runtime and its locks SHALL remain unchanged.
+backend, the MLX-LM runtime and its locks SHALL remain unchanged. The
+requirements in this capability specify lane A, the `llamacpp_cpu` Worker
+backend.
 
 Lane results SHALL be implementation evidence only. They SHALL NOT establish a
 runtime-provider profile, platform, model, acceleration or agentic execution
@@ -24,106 +26,161 @@ and §1.5.
 
 ### Requirement: Lane A runs pinned GGUF models through llama.cpp on CPU
 
-The `llamacpp_cpu` lane backend SHALL supervise exactly one CPU-only
-llama.cpp server child per Worker, bound to loopback, with one slot,
-concurrency one, a pinned context length, a pinned thread count and no GPU
-offload. It SHALL use a pinned llama.cpp release whose archive digest is
-verified before use, and pinned GGUF files whose digests are verified before
-load.
+The `llamacpp_cpu` lane backend SHALL run exactly one llama.cpp server child
+per Worker instance from a pinned CPU-only llama.cpp release build whose
+archive digest is verified before use, and SHALL load pinned GGUF files whose
+digests are verified before load. The child SHALL bind to a loopback port
+owned by that Worker instance, with one slot, concurrency one, a pinned
+context length, a pinned thread count, no accelerator device, and the
+server's own chat-template rendering and tool-call parsing disabled. Before
+admission, the Worker SHALL confirm through the server that it is the child
+this Worker instance started and that it serves the pinned model file.
 
-The Worker SHALL send Orchard's authoritative prompt token IDs and SHALL NOT
-ask llama.cpp to render or retokenize prompts. Provider usage SHALL equal the
-Controller's input token count. Unload and Worker shutdown SHALL stop and reap
-the child. A child that cannot be reaped SHALL make the Worker unhealthy and
-deny admission until the Worker is replaced.
+The child SHALL stay inside the Worker's process tree and SHALL terminate when
+the Worker exits, including when the Worker crashes. Unload and Worker
+shutdown SHALL stop and reap the child. A child that cannot be reaped SHALL
+make the Worker unhealthy and deny admission until the Worker is replaced.
+
+The Worker's `Status` SHALL publish a truthful capability envelope for the
+lane, naming its provider identity and version, the `gguf` artifact format,
+CPU acceleration and concurrency one. That evidence SHALL remain
+diagnostic-only under `SPEC.md` §4.10.
 
 #### Scenario: Artifact digest differs from its pin
 
 - **WHEN** a runtime archive or GGUF file digest differs from its pinned value
 - **THEN** the Worker fails before starting the server child or loading the model
 
-#### Scenario: Provider usage disagrees
-
-- **WHEN** the provider reports an input token count different from the supplied prompt IDs
-- **THEN** the generation fails closed rather than reporting provider usage as authoritative
-
 #### Scenario: Server child survives unload
 
 - **WHEN** the Worker cannot confirm the server child exited after unload or shutdown
 - **THEN** the Worker reports itself unhealthy and refuses further admission until replacement
 
+#### Scenario: Worker crashes while its server child runs
+
+- **WHEN** the Worker process exits abnormally while its server child is running
+- **THEN** the child terminates with it, and a replacement Worker starts and verifies its own child rather than serving through the previous one
+
+#### Scenario: Loopback port answers with another server
+
+- **WHEN** the Worker's loopback port is answered by a server it did not start, or by one serving a different model file
+- **THEN** the Worker refuses admission before provider generation
+
+### Requirement: Lane A generates only from authoritative prompt token IDs
+
+The Worker SHALL send Orchard's authoritative prompt token IDs to the server's
+`/v1/completions` endpoint as a flat list and SHALL require their count to
+equal the request's input token count. It SHALL NOT send rendered prompt text
+or ask llama.cpp to render or retokenize prompts. Unlike providers that fall
+back to rendered text, lane A SHALL reject a request that carries no prompt
+token IDs before provider generation.
+
+Every lane A request SHALL disable the server's prompt cache, and the Worker
+SHALL fail the generation if the server reports reused prompt tokens.
+Provider usage SHALL equal the Controller's input token count.
+
+#### Scenario: Prompt token IDs are absent
+
+- **WHEN** a lane A request carries rendered prompt text but no prompt token IDs
+- **THEN** the Worker rejects it before provider generation and sends no prompt text to the server
+
+#### Scenario: Provider usage disagrees
+
+- **WHEN** the provider reports an input token count different from the supplied prompt IDs
+- **THEN** the generation fails closed rather than reporting provider usage as authoritative
+
+#### Scenario: Server reuses cached prompt tokens
+
+- **WHEN** the server reports that a lane A generation reused cached prompt tokens
+- **THEN** the generation fails rather than returning output produced from cached state
+
 ### Requirement: Lane A admits a model only after tokenizer parity
 
-A GGUF model SHALL enter lane A only after its embedded tokenizer produces the
-same token IDs as `orchard_tokenizer` for every entry in a fixed parity corpus.
+A GGUF model SHALL enter lane A only after parity with `orchard_tokenizer`
+loaded from a pinned upstream tokenizer source: a repository revision and the
+file digests of its tokenizer, tokenizer configuration and chat template.
+Parity SHALL require that:
+
+- the GGUF vocabulary maps every token ID to the same piece as the pinned
+  source
+- decoding each parity corpus entry's token IDs yields identical bytes under
+  both tokenizers, including special and control tokens
+- both define the same set of end-of-generation token IDs
+
 The corpus SHALL cover ASCII, non-Latin scripts, emoji, whitespace runs and
-every special or control token the model's template emits.
+every special or control token the model's template emits. The parity record
+SHALL state the special-token parse mode used to encode the corpus.
 
 #### Scenario: Embedded tokenizer disagrees
 
-- **WHEN** any parity corpus entry encodes to different IDs under the two tokenizers
+- **WHEN** any vocabulary piece, decoded corpus entry or end-of-generation ID differs between the two tokenizers
 - **THEN** that model is excluded from lane A and the mismatch is reported
 
-### Requirement: Lane B runs vLLM's CPU build through a frozen serving profile
+#### Scenario: Tokenizer source is not pinned
 
-The `vllm_poc` adapter SHALL take its model identity, served name, sampling
-controls and token limits from a frozen serving profile rather than module
-constants. The existing Qwen3.8-27B profile SHALL keep its current behaviour.
-A CPU profile SHALL pin the vLLM 0.27.1 CPU build and Qwen/Qwen3-0.6B in BF16,
-with `--max-num-seqs 1`, prefix caching disabled and greedy sampling.
+- **WHEN** a GGUF model has no pinned upstream tokenizer source with recorded digests
+- **THEN** that model is not admitted to lane A
 
-Lane B SHALL keep ADR 0037's cancellation boundary: native cessation remains
-unconfirmed, and admission resumes only after the request-owned reader
-settles within its bound.
+### Requirement: Lane A cancellation settles its reader without claiming cessation
 
-#### Scenario: Existing tuple after generalization
+On cancellation, lane A SHALL close the request-owned stream reader and wait
+for it to settle within a fixed bound before it emits exactly one cancelled
+terminal and admits the next request. It SHALL record native cessation as
+unconfirmed. Server slot or process state SHALL NOT be presented as
+confirmation of native cessation. A reader that does not settle within its
+bound SHALL latch the Worker unhealthy and deny new admission until the Worker
+is replaced, including after logical unload and reload.
 
-- **WHEN** the adapter runs with the Qwen3.8-27B profile
-- **THEN** its validation, sampling, tool parsing and cancellation behaviour match the behaviour before generalization
+#### Scenario: Cancellation mid-stream
 
-#### Scenario: Request does not match the loaded profile
+- **WHEN** a client cancels a lane A generation after its first deltas
+- **THEN** the request-owned reader settles within its bound, the Worker emits one cancelled terminal, and the next request completes without claiming confirmed native cessation
 
-- **WHEN** a request's model, sampling controls or token limits fall outside the loaded frozen profile
-- **THEN** the Worker rejects it before provider generation
+#### Scenario: Reader does not settle
 
-### Requirement: Lanes preflight their host before mutation
+- **WHEN** the request-owned reader has not settled when its bound expires
+- **THEN** the Worker latches unhealthy and denies new admission until replacement, even after unload and reload
 
-Before downloading, unpacking or starting anything, each lane SHALL check the
-host's operating system, architecture, required CPU features, free memory
-against the profile's recorded peak plus margin, and accelerator isolation.
-Lane A on x86 SHALL require AVX2. Lane B SHALL require AVX-512F.
+### Requirement: Lane A preflights its host before mutation
+
+Before downloading, unpacking or starting anything, lane A SHALL check that
+the host runs Linux on an architecture with a pinned CPU-only release build,
+that an x86 host has AVX2, that free memory covers the model's recorded peak
+plus margin, and that no accelerator is visible to the server child.
 
 A failed preflight SHALL skip the lane with a recorded reason and SHALL NOT
 report a pass.
 
-#### Scenario: Host lacks AVX-512 for lane B
+#### Scenario: Host has no pinned CPU-only build
 
-- **WHEN** lane B's preflight runs on a host without AVX-512F
-- **THEN** the lane is skipped before mutation with the missing feature recorded
+- **WHEN** lane A's preflight runs on a host whose operating system or architecture has no pinned CPU-only release build, such as macOS
+- **THEN** the lane is skipped before mutation with the reason recorded
 
 #### Scenario: Accelerator is visible
 
-- **WHEN** a lane run would make a GPU visible to the runtime
+- **WHEN** a lane A run would make an accelerator visible to the server child
 - **THEN** the lane refuses to start rather than producing CPU-labelled evidence from an accelerator
 
 ### Requirement: Lane corpus asserts protocol and semantic outcomes
 
-Both lanes SHALL share one test corpus covering load, generate, streaming
+Lane A SHALL run a shared lane corpus covering load, generate, streaming
 deltas, exactly one terminal event, terminal usage, cancellation followed by a
-successful request, unload, client tool calls and `json_object` output where
-the model and parser support them.
+successful request, unload, and client tool calls for models whose tool format
+the Worker parses. JSON output cases SHALL be prompted cases whose output the
+test validates. Lane A SHALL NOT claim `json_object` enforcement and SHALL NOT
+simulate it through an internal provider field.
 
-Every lane run SHALL disable prefix caching and pin its thread count. Tests
-SHALL assert protocol and semantic outcomes. Exact generated text MAY be
-asserted only within one runtime, host class and thread count, and SHALL NOT be
-compared across runtimes or thread counts.
+Every lane run SHALL pin its thread count. Tests SHALL assert protocol and
+semantic outcomes. Exact generated text MAY be asserted only within one
+runtime, host class and thread count, and SHALL NOT be compared across
+runtimes or thread counts.
 
 #### Scenario: Thread count changes generated prose
 
 - **WHEN** a lane runs with a different thread count than a recorded run
 - **THEN** semantic and protocol assertions still apply, and no exact-text comparison is made between the two runs
 
-#### Scenario: Cancellation mid-stream
+#### Scenario: Prompted JSON case returns invalid JSON
 
-- **WHEN** a client cancels a lane generation after its first deltas
-- **THEN** the request-owned reader settles within its bound, the Worker emits one cancelled terminal, and the next request completes without claiming confirmed native cessation
+- **WHEN** a prompted JSON case returns text that is not the expected JSON
+- **THEN** the case reports a model behaviour failure and no structured-output enforcement is claimed

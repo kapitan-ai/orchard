@@ -6,27 +6,34 @@ Linux Node qualification gates are model-free. Linux CI runners, orbs and
 contributor machines without an accelerator therefore never push real tokens
 through Orchard's Worker seam.
 
-Bounded probes on 2026-11-09 showed that two CPU runtimes cover the
-behaviours Orchard relies on:
+Bounded probes on 2026-11-09 ran two CPU runtimes against their own servers,
+not through Orchard's Worker:
 
-- **llama.cpp** runs pinned 4-bit GGUF models on ordinary x86 and ARM CPUs.
-  It starts in about a second, needs 1.2–4.2 GB for the candidate models,
-  and decodes Qwen3-0.6B at 94–150 tok/s on four to eight threads.
+- **llama.cpp** ran pinned 4-bit GGUF models on x86 CPUs and started in about
+  a second. On an 8-vCPU x86 orb it decoded Qwen3-0.6B at 78 / 48 tok/s on
+  8 / 4 threads, with peaks of 1.2–4.2 GB across the candidate models. On a
+  32-vCPU Xeon Platinum 8592+ host with AMX, pinned to 8 / 4 CPUs, it decoded
+  Qwen3-0.6B at 150 / 94 tok/s with a 1.41–1.46 GiB peak.
 - **vLLM 0.27.1's CPU build** runs the same engine as Orchard's Linux GPU path.
-  On an AVX-512/AMX host it starts in about 90 s, needs about 5.2 GB, and
-  decodes Qwen3-0.6B at 29–49 tok/s. Its docs give AVX2 hosts only basic
+  On the same Xeon host it started in about 90 s, peaked at 5.17–5.20 GiB, and
+  decoded Qwen3-0.6B at 49 / 29 tok/s. Its docs give AVX2 hosts only basic
   support.
 
-On both runtimes these passed:
+On both runtimes these passed, all on `/v1/chat/completions` unless noted:
 
 - streaming with a final usage chunk and `[DONE]`
 - cancellation followed by a successful next request
-- tool calls and `json_object` output
-- prompts supplied as token IDs on `/v1/completions`, which is how Orchard's
-  Worker adapter sends them
+- tool calls through each server's own parser, and `json_object` output
+  through each runtime's own enforcement
+- a non-streamed token-ID prompt on `/v1/completions`
 
-Greedy output was not byte-identical across thread counts on a 256-token
-prompt, and prefix caching changed output on both runtimes.
+The Worker's actual path, a streamed `/v1/completions` request with token IDs,
+a usage trailer and cancellation, was not run on either runtime. It is slice
+1's first check.
+
+Greedy output was not byte-identical across thread counts for a 200-token
+prompt with 256 generated tokens, and prefix caching changed output on both
+runtimes.
 
 SGLang was considered and rejected for this purpose: its CPU backend requires
 Intel AMX.
@@ -35,33 +42,44 @@ Intel AMX.
 
 - Define two default-off **CPU inference test lanes**. They produce
   implementation evidence only, never qualification or support evidence:
-  - **Lane A (llama.cpp, any CPU):** a separately selected `llamacpp_cpu`
-    backend behind the existing local gRPC Worker service. It supervises a
-    pinned CPU-only `llama-server` on loopback, with one slot and concurrency
-    one, and loads a pinned GGUF artifact. It is intended for frequent checks
-    on GitHub-hosted Linux runners and developer machines.
-  - **Lane B (vLLM CPU, chosen AVX-512 hosts):** the existing `vllm_poc`
-    adapter, generalized from its hard-wired Qwen3.8-27B tuple to a frozen
-    serving profile. It adds a CPU profile pinned to the vLLM 0.27.1 CPU
-    wheel and Qwen/Qwen3-0.6B in BF16. It is intended for nightly or
-    on-demand runs on self-hosted hosts that pass an AVX-512 preflight.
-- Pin each lane's runtime build, model revisions and file digests. Fail
-  before mutation on a digest mismatch or an unmet host preflight.
-- Share one lane test corpus. It asserts protocol and semantic outcomes, not
-  exact prose across hosts, thread counts or runtimes. Every lane run
-  disables prefix caching and pins its thread count.
-- Gate lane A on **tokenizer parity**: for each pinned model, the GGUF's
-  embedded tokenizer must produce the same token IDs as `orchard_tokenizer`
-  on a fixed corpus. A mismatch keeps that model out of the lane.
+  - **Lane A (llama.cpp, Linux CPU):** a separately selected `llamacpp_cpu`
+    backend behind the existing local gRPC Worker service. It runs a pinned
+    CPU-only `llama-server` child on a Worker-owned loopback port, with one
+    slot and concurrency one, and loads a pinned GGUF artifact. It is intended
+    for frequent checks on GitHub-hosted Linux runners and Linux developer
+    machines. This change specifies lane A.
+  - **Lane B (vLLM CPU, chosen AVX-512 hosts):** design direction only. A
+    later change generalizes the `vllm_poc` adapter to frozen serving
+    profiles, with a CPU profile for the vLLM 0.27.1 CPU wheel and
+    Qwen/Qwen3-0.6B in BF16, run by a lane harness on self-hosted hosts that
+    pass an AVX-512 preflight.
+- Pin lane A's runtime build, model revisions, file digests and upstream
+  tokenizer sources. Fail before mutation on a digest mismatch or an unmet
+  host preflight.
+- Keep the llama-server child inside the Worker's process tree, verify its
+  identity before admission, and stop it with the Worker.
+- Send only authoritative prompt token IDs with the server's prompt cache off,
+  and reject requests without IDs.
+- Settle cancellation through the request-owned reader with native cessation
+  unconfirmed, and latch the Worker unhealthy when the reader does not settle.
+- Run one lane test corpus. It asserts protocol and semantic outcomes, not
+  exact prose across hosts, thread counts or runtimes. JSON cases are prompted
+  and validated, not enforced.
+- Gate lane A on **tokenizer parity** between each GGUF and `orchard_tokenizer`
+  from a pinned upstream tokenizer source: identical vocabulary pieces, decode
+  parity on a fixed corpus and equal end-of-generation IDs. A mismatch keeps
+  that model out of the lane.
 - Assign model roles for lane A:
   - Qwen3-0.6B Q4\_K\_M: plumbing only.
   - MiniCPM5-2B Q4\_K\_M: exact-answer quick check.
-  - Gemma 4 E2B Q4\_K\_M: behaviour baseline, admitted only after its
-    license is confirmed.
+  - Gemma 4 E2B Q4\_K\_M: behaviour baseline.
+  Each model is admitted only after its license is confirmed from the
+  publisher.
 - Slice the work:
   1. Worker-level conformance through the gRPC Worker service, with no
      Controller, catalog or bundle-format change.
-  2. Worker-side tool-call parsing, starting with the Qwen3 family.
+  2. A provider-neutral Worker tool-call parser, starting with Qwen3's Hermes
+     JSON format.
   3. End-to-end source-dev runs through the Controller and Node. These need
      an additive `gguf` artifact format and `llama_cpp` adapter under
      `SPEC.md` §6.4's migration rules, reviewed separately before
@@ -72,12 +90,14 @@ Intel AMX.
 
 ### New Capabilities
 
-- `cpu-inference-test-lanes`: default-off CPU-only Worker test lanes, their
-  pins, preflights, shared corpus and evidence boundary.
+- `cpu-inference-test-lanes`: default-off CPU-only Worker test lanes; this
+  change specifies lane A's pins, custody, preflight, tokenizer parity,
+  cancellation, shared corpus and evidence boundary.
 
 ### Modified Capabilities
 
-None.
+None. Lane B will modify `linux-source-dev-inference-poc`, which the pending
+change `prove-bounded-linux-source-dev-inference` defines, in its own change.
 
 ## Impact
 
@@ -95,17 +115,19 @@ this package authorizes design review only.
 - §1.4 profile kinds
 - §4.10 Worker contract
 - §6.4 bundle format; slice 3's additive format change is reviewed separately
+- §7.2.4 structured output; lane JSON cases claim no enforcement
 - §7.5.3 stream-mode concurrency one
 - Milestone 9
 - ADR 0035
 
-Lane B changes ADR 0037's adapter boundary: its fixed Qwen3.8 tuple and its
-pinned sampling of temperature 1.0 become one frozen profile among several.
-That requires an ADR 0037 revision in the same pull request as the
-generalization.
+Lane B is out of this change's requirements. The `linux-source-dev-inference-poc`
+capability and ADR 0037 pin `vllm_poc` to temperature 1.0 and top-p 0.95, two
+thinking prompt suffixes, port 58080 and a supervisor that requires a GPU
+identity. A greedy CPU profile contradicts those pins, so the lane B change
+must modify that capability and revise ADR 0037 in the same pull request.
 
-Lane A adds a pinned binary download and lane B a pinned wheel. Both fall
-under the supply-chain lane when CI wiring lands.
+Lane A adds a pinned binary download, and lane B will add a pinned wheel. Both
+fall under the supply-chain lane when CI wiring lands.
 
 This change grants no live host execution, self-hosted runner registration,
 required-check promotion, model qualification, Linux Node qualification,

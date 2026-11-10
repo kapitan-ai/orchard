@@ -218,7 +218,7 @@ Each lane backend SHALL be separately selected and default-off, and SHALL leave 
 A CPU inference test lane is not a runtime-provider profile.
 Its results SHALL be implementation evidence only and SHALL NOT establish runtime-provider, platform, model, acceleration, or agentic execution qualification, production activation, or support, nor substitute for the real MLX runtime acceptance of the macOS MLX Node runtime profile.
 A lane SHALL pin its runtime build and model artifacts by digest, SHALL verify its host before mutation, and SHALL NOT make an accelerator visible to the runtime it exercises.
-The OpenSpec change `add-cpu-inference-test-lanes` and ADR 0041 define the proposed lanes.
+ADR 0041 records the proposed lanes.
 
 ### 1.6 Non-goals for v1
 
