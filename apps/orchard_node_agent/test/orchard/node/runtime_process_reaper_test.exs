@@ -14,7 +14,6 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcessLifecycle
-  alias Orchard.Node.WorkerRecoveryCustody
 
   @short_timeout_ms 200
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
@@ -604,6 +603,8 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   end
 
   if :os.type() == {:unix, :linux} do
+    alias Orchard.Node.WorkerRecoveryCustody
+
     # Run from the umbrella root in an isolated user/mount namespace:
     # unshare --user --map-root-user --mount --fork env ORCHARD_TEST_PROC_NAMESPACE=1 \
     #   mise exec -- mix test apps/orchard_node_agent/test/orchard/node/runtime_process_reaper_test.exs --only linux_proc_namespace

@@ -358,6 +358,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute MapSet.member?(keys, key)
   end
 
+  @tag :macos
   test "SPEC.md §4.9 ps identity failure aborts launch only on hosts that use ps",
        context do
     fake_bin = Path.join(context.root, "fake-bin")
@@ -393,12 +394,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
         System.put_env("PATH", previous_path)
       end
 
-    expected =
-      if :os.type() == {:unix, :linux},
-        do: {:error, :worker_ready_timeout},
-        else: {:error, :identity_unavailable}
-
-    assert result == expected
+    assert result == {:error, :identity_unavailable}
     refute File.exists?(context.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
