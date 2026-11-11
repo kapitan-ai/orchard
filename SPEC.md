@@ -3478,13 +3478,19 @@ The Node SHALL retrieve the exact Controller's authorized grant through certific
 Lost delivery responses SHALL return the same authorized generation and derived secret after identity, certificate, admission, generation, and expiry are revalidated.
 
 For both install and load, `BeamPeerGrantStore` SHALL return `{:error, :beam_peer_grant_store_busy}` when its bounded lock-acquisition attempt is confirmed to have exhausted the contention wait without acquiring the BEAM Peer Grant Store Lock.
-It SHALL return `{:error, :beam_peer_grant_lock_unavailable}` when the lock helper cannot be started or cannot establish a valid readiness exchange before the operation begins, including helper I/O failure, unexpected exit, invalid readiness output, or readiness deadline expiry without confirmed contention.
-Both errors SHALL be sanitized: returned errors, shared diagnostics, logs, and telemetry SHALL expose no paths, PIDs, lock-file contents, raw helper output, grant material, raw exception terms, or other host detail; cause attribution SHALL use only a closed sanitized category.
-The store SHALL perform no automatic retries; one bounded acquisition wait is not a retry, and callers SHALL decide whether and how to retry either error under an explicit finite attempt and elapsed-time bound.
+On a host with a supported lock backend, it SHALL return `{:error, :beam_peer_grant_lock_unavailable}` when the lock helper cannot be started or cannot establish a valid readiness exchange before the operation begins, including a missing helper executable, helper I/O failure, unexpected exit, invalid readiness output, or readiness deadline expiry without confirmed contention; missing helpers may require operator repair before retry can succeed.
+An unsupported host SHALL remain terminal `:beam_peer_grant_store_invalid` with sanitized cause `:unsupported_host`.
+Before spawning the helper, the store SHALL validate that an existing lock candidate has owner read and write permission bits; failure SHALL be terminal `:beam_peer_grant_store_invalid` with sanitized cause `:lock_file_open_failed` because the candidate is unusable, not evidence of leaked grant material.
+Helper open failures that pass this validation SHALL remain unexpected pre-readiness exits classified as lock unavailable, not terminal failures inferred from native exit codes or stderr.
+Both errors SHALL be sanitized: returned errors, shared diagnostics, logs, and telemetry SHALL expose no certificates, hashes, paths, PIDs, lock-file contents, raw helper output, grant material, raw exception terms, or other host detail; cause attribution SHALL use only a closed sanitized category.
+The store SHALL perform no automatic retries; one bounded acquisition wait is not a retry, and callers SHALL decide whether and how to retry either error through an in-process caller retry loop under an explicit finite attempt and elapsed-time bound.
+An OTP supervisor restart or service-manager restart SHALL be a new invocation outside this caller-retry rule; every invocation, including after restart, SHALL revalidate the exact authorized grant and SHALL NOT create a second durable side effect.
+Startup bootstrap SHALL retain `retrieval: :forbid`, so a restarted startup bootstrap only loads the grant rather than retrieving it.
 Neither error guarantees that retry will succeed or authorizes new grant issuance, a different generation, retrieval on a false missing result, or transport fallback; a caller retry SHALL revalidate the exact authorized grant and SHALL NOT create a second durable side effect.
 Unsafe persistent state, including invalid ownership, symlinks, unsafe modes remaining after permitted initialization narrowing, malformed grants, and tamper evidence, SHALL remain terminal and SHALL NOT be reported as either retryable error.
-Unclassified failures and loss of lock continuity after the store operation begins SHALL remain terminal `:beam_peer_grant_store_invalid`; an already established terminal custody failure SHALL NOT be replaced by a retryable helper error.
-Genuine absence SHALL remain `:beam_peer_grant_missing`, and existing credential, lifecycle, and store-conflict failures SHALL retain their distinct terminal classifications for this retry policy.
+Unclassified failures SHALL remain terminal `:beam_peer_grant_store_invalid`.
+Loss of lock continuity after the store operation begins, when observed by the post-operation continuity check, SHALL override every operation result with terminal `:beam_peer_grant_store_invalid`, including an operation error or an absence result; an already established terminal custody failure SHALL NOT be replaced by a retryable helper error.
+When no such continuity loss is observed, genuine absence SHALL remain `:beam_peer_grant_missing`, and existing credential, lifecycle, and store-conflict failures SHALL retain their distinct terminal classifications for this retry policy.
 
 Normal rotation SHALL stage the successor on both endpoints, cut over at an agreed time, deliberately disconnect the old distribution connection, and require the successor generation on reconnect.
 Revocation SHALL update Postgres authority immediately, replace the exact-name cookie mapping, exclude the Runtime Endpoint from scheduling and queue capacity, disconnect the peer, and append a sanitized cluster-scoped audit event.
@@ -3529,6 +3535,8 @@ The initial stable operator-facing production BEAM failure vocabulary SHALL incl
 * `beam_peer_grant_missing`
 * `beam_peer_grant_store_busy`
 * `beam_peer_grant_lock_unavailable`
+* `beam_peer_grant_store_invalid`
+* `beam_peer_grant_store_conflict`
 * `beam_peer_grant_not_active`
 * `beam_peer_grant_expired`
 * `beam_peer_grant_revoked`
