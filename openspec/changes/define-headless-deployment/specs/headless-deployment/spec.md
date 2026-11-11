@@ -78,6 +78,7 @@ Orchard SHALL maintain an operator-facing headless capability inventory that lis
 - `available`: served by the Public Inference, Operator, or Admin API.
 - `local_cli`: available only through Controller-host `orchardctl` under `SPEC.md` §11.9 local authority.
 - `planned`: an API equivalent is owned by a named change or a `SPEC.md` contract section.
+- `decided`: headless direction accepted, but no named implementing OpenSpec change or `SPEC.md` contract yet; not an availability claim.
 - `undecided`: blocked on a named product decision.
 - `console_only`: deliberately left to the Console.
 
