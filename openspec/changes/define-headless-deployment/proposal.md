@@ -31,15 +31,15 @@ The product owner decided on 2026-11-09:
 - Require that disabling the Console does not change the authorization, audit, leadership, or Action Preview semantics of any other surface, and does not add a new authority path.
 - Require that remote headless management uses only enabled API Client tokens with cluster-scoped `operator` or `admin` RoleBindings. Console Basic Auth, Console sessions, and Portal sessions never authorize it. First-admin bootstrap stays local, and unmigrated `orchardctl` families keep their `SPEC.md` §11.9 Controller-host authority.
 - Require that a Console-disabled Controller renders no Console route and admits no Console LiveView mount. Shared browser infrastructure (the LiveView socket, session cookie, and static assets) may stay only because the Developer Portal needs it.
-- Require a documented headless capability inventory that classifies each Console capability as `available`, `local_cli`, `planned`, `undecided`, or `console_only`. Documentation may describe a capability as remotely available headless only when the inventory marks it `available`.
+- Require a documented headless capability inventory that classifies each Console capability as `available`, `local_cli`, `planned`, `decided`, `undecided`, or `console_only`. `decided` records accepted headless direction without a named implementing contract; it does not imply availability. Documentation may describe a capability as remotely available headless only when the inventory marks it `available`.
 
 ## Out Of Scope
 
 - Removing Console code from the build, a separate OTP application, or a headless-only release or package.
-- Making source development honor `ORCHARD_CONSOLE_ENABLED`; `design.md` records it as an open question.
-- New Operator or Admin API endpoints. Each one lands in its own change under the existing `operator-command-authority` rules, one command family at a time.
+- Making source development honor `ORCHARD_CONSOLE_ENABLED`; `design.md` Q7 records the accepted follow-up and its required SPEC amendment, not an implementation here.
+- New Operator or Admin API endpoints. Each one lands in its own change under the accepted main `operator-command-authority` spec, one command family at a time.
 - Migrating `orchardctl` command families to HTTPS; ADR 0024 and the `cross-surface-authorization-contract` change own that order.
-- Any MCP server or adapter. `design.md` records the proposed direction and the decisions it needs.
+- Any MCP server or adapter. `design.md` records the accepted direction and its read-only authority prerequisite; implementation remains separate.
 - Stopping Console-only background work, such as the Model Hub download coordinator, when the Console is disabled.
 - Changes to the named Console authorization target in `SPEC.md` §10.11, including the `rollback_console_disabled` state.
 - Distribution of a Controller package, which stays paused or deferred under `SPEC.md` §§1.4 and 11.0.

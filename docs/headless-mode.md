@@ -1,6 +1,6 @@
 # Headless Deployment
 
-A **Headless Deployment** is the standard production `orchard_controller` release started with the Console disabled by boot-time runtime configuration. It is not a separate build, release, or package. `SPEC.md` §§2.3 and 7.1 define the contract; the accepted [`define-headless-deployment` change](../openspec/changes/define-headless-deployment/proposal.md) records its scope and unresolved decisions.
+A **Headless Deployment** is the standard production `orchard_controller` release started with the Console disabled by boot-time runtime configuration. It is not a separate build, release, or package. `SPEC.md` §§2.3 and 7.1 define the contract; the accepted [`define-headless-deployment` change](../openspec/changes/define-headless-deployment/proposal.md) records its scope and follow-up decisions.
 
 ## Production release only today
 
@@ -26,17 +26,20 @@ With the Console disabled, HTML or wildcard requests to `/console` routes return
 
 ## Headless capability inventory
 
-This inventory describes current implementation, not every endpoint specified as a target in `SPEC.md`. It was checked against the router, Console handlers, and CLI command implementations on main at `30a69eedb398b422d602de94894e3f9b88cef33f`.
+This inventory describes current implementation, not every endpoint specified as a target in `SPEC.md`. Its implementation baseline is main at `6b256768886260b79dac1a01f088638663ecba2a`; classifications include Najib's decisions of 2026-11-11.
+
+The accepted parity bar is a named subset of must-have operator journeys: bootstrap, admit Nodes, issue keys, import and activate a model, monitor, and contain an incident. This is a target, not a claim that every journey works headless today. `local_cli` counts only as host-assisted operation, never toward a remote API or MCP claim; unmigrated Controller-state command families are expected to migrate under `SPEC.md` §11.9 and Milestone 8. First-admin bootstrap remains host-local under ADR 0011.
 
 | Classification | Meaning |
 | --- | --- |
 | `available` | Served remotely by the Public Inference, Operator, or Admin API under that route's existing contract. |
 | `local_cli` | Available through Controller-host `orchardctl` under §11.9; requires host access, not just an API credential. |
 | `planned` | An API equivalent has a named OpenSpec or `SPEC.md` owner but is not implemented. |
+| `decided` | Headless direction accepted, but no named implementing OpenSpec change or `SPEC.md` contract yet; not an availability claim. |
 | `undecided` | A named product decision is still required. |
-| `console_only` | Deliberately left to the Console by an accepted decision. No final classification of this kind has been decided yet. |
+| `console_only` | Deliberately left to the Console by an accepted decision. |
 
-The Q references below refer to [the accepted design's open questions](../openspec/changes/define-headless-deployment/design.md#open-questions-for-the-product-owner). They are not decisions or implementation commitments.
+The Q references below refer to [the product owner's accepted answers](../openspec/changes/define-headless-deployment/design.md#product-owner-answers-q1q7). Acceptance of a direction does not implement it or replace a required SPEC amendment. `decided` keeps that distinction without weakening the named-owner requirement for `planned`.
 
 | Capability | Classification | Path today and limits | API owner or pending decision |
 | --- | --- | --- | --- |
@@ -45,26 +48,38 @@ The Q references below refer to [the accepted design's open questions](../opensp
 | Node list and inspect | `available` | `GET /ops/v1/nodes`, `GET /ops/v1/nodes/:node_id`; Active Controller required | — |
 | Node admission review, admit, reject | `available` | `/admin/v1/node-admission/candidates`, candidate detail/reject/clear-rejection, `POST /admin/v1/nodes/:node_id/admit` | — |
 | Scheduler explanation, request retry, worker recovery, circuit breakers | `available` | `/ops/v1/scheduler/explanations/:request_id`, `/ops/v1/requests/:id/retry`, `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id`, `/ops/v1/circuit-breakers/*` | — |
-| Node cordon, uncordon, drain, cancel-drain, maintenance, resume, decommission | `local_cli` | `orchardctl nodes <action>` on the Controller host; preview, confirmation, and lifecycle blockers still apply; maintenance is preview-only on both surfaces until drain completion can be verified | `SPEC.md` §§7.3.1, 7.4.1 |
+| Node cordon, uncordon, drain, cancel-drain, maintenance, resume, decommission | `local_cli` | `orchardctl nodes <action>` on the Controller host; preview, confirmation, and lifecycle blockers still apply; maintenance is preview-only on both surfaces until drain completion can be verified | `SPEC.md` §§7.3.1, 7.4.1; cancel-drain has no specified API route |
 | Node enrollment bundle issue | `local_cli` | `orchardctl nodes enrollment create` on the Controller host | `SPEC.md` §7.4.1 bootstrap tokens |
 | Request details and captured output | `planned` | Console only; `orchardctl requests inspect` shows only the persisted scheduler explanation, already available through the API | `SPEC.md` §7.3.1 `GET /ops/v1/requests/:request_id`, pending a capture-mode redaction decision |
-| Request list and browsing | `undecided` | Console only | Q1: parity bar |
+| Request list and browsing | `undecided` | Console only | Q1: a SPEC amendment must name the request-list contract before this can be `planned`; §7.3.1 specifies details only |
 | Workspace create | `local_cli` | `orchardctl tenants create` on the Controller host | `SPEC.md` §7.4.1 `POST /admin/v1/tenants` |
-| Workspace colleague handoff | `undecided` | Console only | Q1: parity bar; Q6: Portal User administration |
+| Guided Workspace colleague handoff | `console_only` | Console guided UI; its primitives are tracked separately below | Q1 and Q6: Portal User primitives get future Admin API routes |
 | API Key create | `local_cli` | `orchardctl api-keys create` on the Controller host; Portal self-service is separate and limited to the signed-in user's keys | `SPEC.md` §7.4.1 `POST /admin/v1/api-keys` |
 | Credential revoke | `local_cli` | `orchardctl api-keys revoke` on the Controller host for persisted API credentials; no named Console Session implementation yet | `cross-surface-authorization-contract`, `SPEC.md` §10.11 |
 | Credential list, inspect | `planned` | Console credential summaries only; the accepted cross-surface credential family is not implemented | `cross-surface-authorization-contract`, `SPEC.md` §10.11 |
 | API Client disable | `planned` | Console only | `SPEC.md` §7.4.1 service accounts |
-| Active model list, import; delete of previously retired models | `local_cli` | `orchardctl models list`, `models import`, `models delete` on the Controller host; list shows active models only. Delete works only for a model already retired through the Console, with no non-terminal requests; retirement has no CLI or API path | `SPEC.md` §7.4.1 |
+| Active model list, bundle import and activation at import | `local_cli` | `orchardctl models list` shows active models only; `orchardctl models import --activate` imports an Orchard Artifact Bundle from a Controller-host path, not raw weights | `SPEC.md` §§7.4.1, 7.4.5: future `POST /admin/v1/models/import` with `source_type: local_path` |
+| Delete of previously retired models | `local_cli` | `orchardctl models delete` requires a model already retired through the Console and no non-terminal requests; the complete retire-then-delete journey has no headless path today | `SPEC.md` §7.4.1 owns retirement; no delete API route specified |
 | Full model catalog (inactive, deprecated, retired) | `planned` | Console only; `/v1/models` is an authorized active-model view, not the full management catalog | `SPEC.md` §7.4.1 `GET /admin/v1/models` |
-| Model activate, deprecate, retire | `planned` | Console; `orchardctl models import --activate` can activate at import only | `SPEC.md` §7.4.1 |
+| Model activate after import, deprecate, retire | `planned` | Console only; no CLI or API path for deprecate or retire | `SPEC.md` §7.4.1 |
 | Tenant model grants, routing policy | `local_cli` | `orchardctl models access` and `models routing-policy` on the Controller host | `SPEC.md` §7.4.1 routing policies |
-| Model Hub search and download | `undecided` | Console only | Q5: API, Console-only, or local import |
-| Portal User create, invite, disable | `undecided` | Console only; no API route specified | Q6: Portal User administration |
-| Playground inference defaults | `undecided` | Console settings only; proposed `console_only`, pending a product-owner decision | Q1: parity bar |
+| Model Hub search and download | `console_only` | Console only; a Hugging Face download API is deferred, not the specified bundle-import API | Q5 |
+| Offline bundle preparation | `decided` | No supported offline CLI command; bundle building currently depends on Console Model Hub or dev scripts | Q5: implementing contract not yet named |
+| Portal User list, inspect, create, invite or reissue, disable | `decided` | Console only; no Admin API routes specified. Disable ends sessions, not minted API Keys | Q6: implementing contract and §7.4a amendments still needed, after `cross-surface-authorization-contract` implements shared fences, retained-writer ledger, and audit surface |
+| Playground inference defaults | `console_only` | Console settings only | Q1 |
 
 `available` does not bypass readiness, authorization, model access, leadership, redaction, or confirmation gates. In particular, Standby Node reads still return `503 controller_standby`; cluster status remains readable, and `/health/ready` keeps its existing readiness checks.
 
 Only `available` rows may be described in documentation or release notes as remotely available headless. Always qualify `local_cli` rows as requiring Controller-host access. An Operator or Admin API equivalent for a Console capability, or a CLI family migration, must update this inventory in the same change; see the [Review Gates](process.md#review-gates).
 
-Full Console parity and whether local CLI capabilities count toward it remain open under Q1. MCP placement and write authority (Q2–Q3), target topology (Q4), Model Hub (Q5), Portal User administration (Q6), and a source-development headless switch (Q7) remain outside this implementation.
+Model deprecate and retire (and thus the complete delete journey), API Client disable for incident containment, and credential list have no headless path today. They remain explicit gaps in the accepted journey target, even when an API contract is already `planned`.
+
+## Accepted follow-up direction, not current behavior
+
+Najib accepted Q1–Q7 on 2026-11-11. Their implementation stays outside this change; [tasks section 3](../openspec/changes/define-headless-deployment/tasks.md#3-open-items-outside-this-change) tracks the follow-ups.
+
+- **MCP (Q2–Q3):** client-side stdio first, preferably a portable `orchardctl` mode using its protected token file and pinned TLS over `reverse_proxy` or `direct_https`. A server-enforced read-only cluster role must precede any MCP work, with a §10.4 amendment; read tools omit request content by default. Later writes require an explicit allowlist, an Operator API route with Action Preview, and human approval bound to action, target, and expiry. The write-capable adapter holds `operator`, not `admin`; admin actions and invite URLs stay out without a separate reviewed change. Only `available` rows are eligible, and API availability alone does not make a tool eligible.
+- **Topology (Q4):** profile-neutral requirements, with slice priority following Milestone 8: Linux Controller, external Postgres, admitted macOS Nodes. A single-host Ubuntu appliance is not a target for now. macOS source development keeps being tested; this is not a platform support claim.
+- **Acquisition (Q5):** Controller-host Orchard Artifact Bundle import, a future offline preparation command for Hugging Face snapshots, and later implementation of the specified import API. No required network egress is added (§11.7).
+- **Portal administration (Q6):** Admin API primitives follow implementation of the shared authorization fences, retained-writer ledger, and audit surface, not merely acceptance of their docs. §7.4a must be amended before these routes ship. Until then, issue tenant keys through `orchardctl api-keys create`.
+- **Source development (Q7):** a separate change will read `ORCHARD_CONSOLE_ENABLED` in shared dev config for both launchers, using the strict parser and defaulting to on. It must amend §2.3 and the headless spec delta's always-on wording while retaining the exclusion from the Headless Deployment definition. This will test routing and API-only operation, not production credential posture; the Portal still returns 404 on the default dev transport and needs `reverse_proxy` for onboarding tests.
