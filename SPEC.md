@@ -6152,7 +6152,13 @@ checkpointed SHALL be included atomically with the next crash transition.
 Recovery state SHALL survive ordinary load/ensure/reconciliation activity and
 ordinary internal reset SHALL NOT clear it. Reset SHALL fence pending work and
 leave interrupted recovery placements requiring explicit recovery, retaining known open
-breakers and crash history. ModelManager or Node Agent state loss SHALL NOT be
+breakers and crash history. Recovery settling and runtime-custody checks during
+reset SHALL share one 3-second deadline; checkpoint unavailability SHALL NOT
+extend that deadline or permit a successful reset without cleanup proof.
+Graceful Node Agent shutdown SHALL retain a separate 10-second recovery-settling
+allowance for intentional-stop checkpoints, with its 3-second runtime-custody
+deadline measured from the same shutdown start rather than added afterward.
+ModelManager or Node Agent state loss SHALL NOT be
 implicit recovery. A bounded per-placement recovery checkpoint SHALL persist in
 Postgres through the authenticated Active Controller; the Node remains the local
 policy/admission authority and SHALL NOT use a local file journal or direct
@@ -6193,7 +6199,12 @@ PID alone is not proof. A live PID whose launch identity (owner and start time,
 recorded with custody in a form that neither the reader's timezone or locale nor
 a wall-clock step can change) no longer matches the recorded one is
 nonexistence proof for that incarnation; a missing or unreadable identity is
-not. Unknown cleanup SHALL return unavailable and require
+not. Current-lifetime custody and exit checks SHALL use the same wall-clock-stable
+identity. On Linux, the owner SHALL be the effective uid from `/proc/<pid>/status`,
+not the directory owner, and the start time SHALL be clock ticks since boot.
+An older Linux identity digest based on directory ownership SHALL NOT prove
+PID reuse; nonexistence or host-boot termination proof is still required.
+Unknown cleanup SHALL return unavailable and require
 operator cleanup through existing host/runtime controls before recovery can be
 retried; it SHALL NOT falsely mark prior ownership resolved.
 

@@ -578,7 +578,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  # A worker that dies during launch is reaped before `ps` can snapshot it, so
+  # A worker that dies during launch can be reaped before identity capture, so
   # identity capture fails for a reason the operator cannot act on. The port's
   # exit status names the actual failure and points at the worker log.
   defp launch_identity_failure_reason(port) do

@@ -96,18 +96,25 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   def kill_process_tree(_), do: {:error, :signal_failed}
 
   @doc """
-  Captures the owner uid and process start time of `os_pid`.
+  Captures the effective uid and process start time of `os_pid`.
 
   The snapshot deliberately excludes argv: the dev worker wrapper `exec`s the
-  venv entrypoint, so argv changes under a stable PID. uid and start time do
-  survive `exec`, and a recycled PID cannot reproduce them because reusing a PID
-  requires wrapping the whole PID space — far longer than the one-second
-  resolution of `lstart`. `ps` runs with a fixed timezone and locale, so a host
-  timezone change cannot make the same process read as a different one.
+  venv entrypoint, so argv changes under a stable PID. Linux uses start ticks
+  since boot, not `ps lstart`, which moves when the wall clock is stepped.
+  Other hosts keep `ps` with a fixed timezone and locale.
   """
   @spec process_identity(non_neg_integer() | nil) ::
           {:ok, custody_identity()} | {:error, :identity_unavailable}
   def process_identity(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    case :os.type() do
+      {:unix, :linux} -> proc_identity(os_pid)
+      _platform -> ps_identity(os_pid)
+    end
+  end
+
+  def process_identity(_), do: {:error, :identity_unavailable}
+
+  defp ps_identity(os_pid) do
     args = ["-o", "uid=", "-o", "lstart=", "-p", Integer.to_string(os_pid)]
 
     case System.cmd("ps", args, stderr_to_stdout: true, env: [{"TZ", "UTC0"}, {"LC_ALL", "C"}]) do
@@ -116,40 +123,44 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
     end
   end
 
-  def process_identity(_), do: {:error, :identity_unavailable}
-
   @doc """
-  Captures an identity snapshot of `os_pid` that a later Node Agent lifetime can
-  compare (SPEC §12.2.2).
-
-  Linux derives `lstart` from the boot time, which moves when the wall clock is
-  stepped, so Linux reads the start time in clock ticks since boot from `/proc`
-  instead; the host boot identity recorded beside it scopes those ticks. Other
-  hosts use `process_identity/1`, whose start time is fixed when the process
-  starts.
+  Captures `process_identity/1` for comparison across Node Agent lifetimes
+  (SPEC §12.2.2), scoped by the host boot identity recorded beside it.
   """
   @spec launch_identity(non_neg_integer() | nil) ::
           {:ok, custody_identity()} | {:error, :identity_unavailable}
-  def launch_identity(os_pid) when is_integer(os_pid) and os_pid > 0 do
-    case :os.type() do
-      {:unix, :linux} -> proc_identity(os_pid)
-      _platform -> process_identity(os_pid)
-    end
-  end
-
-  def launch_identity(_), do: {:error, :identity_unavailable}
+  def launch_identity(os_pid), do: process_identity(os_pid)
 
   # Field 22 of /proc/<pid>/stat is the start time; the command name before it is
   # parenthesized and may itself contain spaces or parentheses.
   defp proc_identity(os_pid) do
     dir = "/proc/#{os_pid}"
 
-    with {:ok, %File.Stat{uid: uid}} <- File.stat(dir),
-         {:ok, stat} <- File.read(dir <> "/stat"),
+    # Read start ticks last: recycling between reads must not combine the old
+    # process's ticks with its replacement's credentials into the old identity.
+    with {:ok, status} <- File.read(dir <> "/status"),
+         {:ok, stat} <- File.read(dir <> "/stat") do
+      parse_proc_identity(stat, status)
+    else
+      _unavailable -> {:error, :identity_unavailable}
+    end
+  end
+
+  @doc false
+  @spec parse_proc_identity(String.t(), String.t()) ::
+          {:ok, custody_identity()} | {:error, :identity_unavailable}
+  def parse_proc_identity(stat, status) do
+    # /proc directory ownership changes for non-dumpable processes. Uid lists
+    # real, effective, saved and filesystem ids; ps uid also uses the effective id.
+    with [[_real, uid, _saved, _filesystem]] <-
+           Regex.scan(~r/^Uid:[\t ]+(\d+)[\t ]+(\d+)[\t ]+(\d+)[\t ]+(\d+)[\t ]*$/m, status,
+             capture: :all_but_first
+           ),
          [_ | _] = matches <- :binary.matches(stat, ") "),
          {position, length} = List.last(matches),
          fields = binary_part(stat, position + length, byte_size(stat) - position - length),
-         {:ok, start_ticks} <- fields |> String.split(" ") |> Enum.fetch(19) do
+         {:ok, start_ticks} <- fields |> String.split(" ") |> Enum.fetch(19),
+         true <- Regex.match?(~r/\A[0-9]+\z/, start_ticks) do
       {:ok, "#{uid} #{start_ticks}"}
     else
       _unavailable -> {:error, :identity_unavailable}

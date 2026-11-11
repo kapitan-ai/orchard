@@ -9,6 +9,51 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
   @missing_pid 2_147_483_647
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
 
+  test "SPEC §12.2.2 Linux identity uses effective status uid and start ticks" do
+    stat =
+      "42 (worker (with spaces)) " <> Enum.join(["S" | Enum.to_list(1..18)] ++ ["98765"], " ")
+
+    status = "Name:\tworker\nUid:\t1001\t1002\t1003\t1004\nGid:\t2001\t2002\t2003\t2004\n"
+
+    assert WorkerProcessLifecycle.parse_proc_identity(stat, status) == {:ok, "1002 98765"}
+
+    for invalid <- ["", "Uid:\t1001\n", "Uid:\t1001\tbad\t1003\t1004\n", status <> status] do
+      assert WorkerProcessLifecycle.parse_proc_identity(stat, invalid) ==
+               {:error, :identity_unavailable}
+    end
+
+    for invalid <- ["", "42 (worker) S", String.replace(stat, "98765", "bad")] do
+      assert WorkerProcessLifecycle.parse_proc_identity(invalid, status) ==
+               {:error, :identity_unavailable}
+    end
+  end
+
+  if :os.type() == {:unix, :linux} do
+    test "SPEC §12.2.2 Linux custody ignores a stepped ps wall clock" do
+      {port, os_pid} = CustodyTestHelpers.start_control_child!()
+      root = Path.join(System.tmp_dir!(), "oc-clock-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      ps = Path.join(root, "ps")
+      File.write!(ps, "#!/bin/sh\nprintf '1000 Thu Jan 1 00:00:00 1970\\n'\n")
+      File.chmod!(ps, 0o755)
+      previous_path = System.fetch_env!("PATH")
+
+      on_exit(fn ->
+        System.put_env("PATH", previous_path)
+        CustodyTestHelpers.stop_child(port, os_pid)
+        File.rm_rf!(root)
+      end)
+
+      System.put_env("PATH", root <> ":" <> previous_path)
+      assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+      File.write!(ps, "#!/bin/sh\nprintf '1000 Thu Jan 1 01:00:00 1970\\n'\n")
+      assert WorkerProcessLifecycle.process_identity(os_pid) == {:ok, identity}
+      assert WorkerProcessLifecycle.launch_identity(os_pid) == {:ok, identity}
+      assert :ok = WorkerProcessLifecycle.signal_owned_process(os_pid, identity, "-TERM")
+      CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    end
+  end
+
   # SPEC.md §12.2: proven_exit?/1 and prior_runtime_exited?/1 resolve custody only
   # on :not_alive, so that verdict must not depend on the operating system
   # emitting an English diagnostic.

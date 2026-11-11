@@ -60,6 +60,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     def mode(mode), do: Agent.update(__MODULE__, &%{&1 | mode: mode})
     def read_delay(ms), do: Agent.update(__MODULE__, &Map.put(&1, :read_delay, ms))
+    def write_delay(ms), do: Agent.update(__MODULE__, &Map.put(&1, :write_delay, ms))
     def calls, do: Agent.get(__MODULE__, & &1.calls)
     def now, do: Agent.get(__MODULE__, &Map.get(&1, :now, System.monotonic_time(:millisecond)))
     def time(now), do: Agent.update(__MODULE__, &Map.put(&1, :now, now))
@@ -69,6 +70,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       do: Agent.update(__MODULE__, &update_in(&1.rows, fn r -> Map.delete(r, key) end))
 
     def commit(key, epoch, revision, id, record) do
+      delay = Agent.get(__MODULE__, &Map.get(&1, :write_delay, 0))
+      if delay > 0, do: Process.sleep(delay)
+
       Agent.get_and_update(__MODULE__, fn state ->
         current = Map.get(state.rows, key)
         result = commit_result(state.mode, current, epoch, revision, id, record)
@@ -1025,6 +1029,70 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
                command(ctx, current, "clear")
                |> Map.put(:command_id, "command-clear-retry")
              )
+  end
+
+  test "SPEC §12.2 reset bounds checkpoint-outage settling without discarding recovery", ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:write_unavailable)
+    started = System.monotonic_time(:millisecond)
+    assert {:error, :unavailable} = ModelManager.reset()
+    assert System.monotonic_time(:millisecond) - started < 4_000
+
+    assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+    refute record["ownership"]["phase"] == "resolved"
+    assert Map.has_key?(:sys.get_state(ModelManager).recovery, ctx.key)
+    refute :sys.get_state(ModelManager).resetting?
+
+    assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
+             "placement_recovery_required"
+
+    Checkpoints.mode(:ok)
+
+    eventually(
+      fn ->
+        {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+        record["ownership"]["phase"] == "resolved"
+      end,
+      240
+    )
+
+    assert :ok = ModelManager.reset()
+    assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+    assert record["ownership"]["phase"] == "resolved"
+  end
+
+  for {operation, expected} <- [reset: {:error, :unavailable}, prepare_shutdown: :ok] do
+    test "SPEC §12.2.2 #{operation} preserves its own bound with slow healthy checkpoints", ctx do
+      assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+               :PLACEMENT_STATE_LOADED
+
+      # Each acknowledged transition is slower than reset's entire budget. Two
+      # transitions also exceed the shortened caller timeout caught in review.
+      Checkpoints.write_delay(3_100)
+      started = System.monotonic_time(:millisecond)
+      assert unquote(Macro.escape(expected)) == apply(ModelManager, unquote(operation), [])
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      if unquote(operation) == :reset do
+        assert elapsed < 4_000
+        assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+        refute WorkerRecoveryCheckpoint.clean?(record)
+
+        Checkpoints.write_delay(0)
+
+        eventually(fn ->
+          {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+          WorkerRecoveryCheckpoint.clean?(record)
+        end)
+      else
+        assert elapsed > 5_000
+        assert elapsed < 12_000
+        assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+        assert WorkerRecoveryCheckpoint.clean?(record)
+      end
+    end
   end
 
   test "SPEC §12.2 reset waits for durable cleanup and shutdown refuses new loads", ctx do

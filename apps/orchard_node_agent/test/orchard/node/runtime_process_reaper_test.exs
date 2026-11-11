@@ -602,6 +602,113 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_reaper_empty!(5_000)
   end
 
+  if :os.type() == {:unix, :linux} do
+    alias Orchard.Node.WorkerRecoveryCustody
+
+    # Run from the umbrella root in an isolated user/mount namespace:
+    # unshare --user --map-root-user --mount --fork env ORCHARD_TEST_PROC_NAMESPACE=1 \
+    #   mise exec -- mix test apps/orchard_node_agent/test/orchard/node/runtime_process_reaper_test.exs --only linux_proc_namespace
+    @tag :linux_proc_namespace
+    @tag skip: System.get_env("ORCHARD_TEST_PROC_NAMESPACE") != "1"
+    test "SPEC §12.2.2 unreadable Linux proc identity retains custody until confirmation" do
+      # Require the single-uid user namespace created above. Its mount capability
+      # cannot modify the host/parent namespace; making / private must also succeed.
+      assert Regex.match?(~r/\A\s*0\s+\d+\s+1\s*\z/, File.read!("/proc/self/uid_map"))
+      assert {_output, 0} = System.cmd("mount", ["--make-rprivate", "/"], stderr_to_stdout: true)
+      root = unique_root("unreadable-proc")
+      File.mkdir_p!(root)
+      {port, os_pid} = CustodyTestHelpers.start_control_child!()
+      {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+      owner = spawn(fn -> Process.sleep(:infinity) end)
+      key = {"model/unreadable", "v1"}
+
+      on_exit(fn ->
+        Process.exit(owner, :kill)
+        CustodyTestHelpers.stop_child(port, os_pid)
+        File.rm_rf!(root)
+      end)
+
+      assert {:ok, _ref} =
+               RuntimeProcessReaper.watch(owner, os_pid, %{
+                 shutdown_timeout_ms: @short_timeout_ms,
+                 model_ref: %{model_id: elem(key, 0), version: elem(key, 1)},
+                 os_identity: identity,
+                 phase: :loaded
+               })
+
+      recorded = WorkerRecoveryCustody.record_runtime_custody(nil, owner)
+      proc_dir = "/proc/#{os_pid}"
+
+      assert {_output, 0} =
+               System.cmd("mount", ["--bind", root, proc_dir], stderr_to_stdout: true)
+
+      on_exit(fn -> System.cmd("umount", [proc_dir], stderr_to_stdout: true) end)
+
+      assert File.read(proc_dir <> "/status") == {:error, :enoent}
+      assert WorkerProcessLifecycle.process_identity(os_pid) == {:error, :identity_unavailable}
+      assert WorkerRecoveryCustody.record_runtime_custody(recorded, owner) == recorded
+      assert WorkerRecoveryCustody.resolve_prior_worker_ownership(key, recorded) == :unresolved
+
+      Process.exit(owner, :kill)
+      Process.sleep(600)
+      assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new([key])}
+      refute RuntimeProcessReaper.ownership_resolved?(owner)
+      assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+
+      assert {_output, 0} = System.cmd("umount", [proc_dir], stderr_to_stdout: true)
+      CustodyTestHelpers.assert_reaper_empty!(10_000)
+      refute WorkerProcessLifecycle.os_process_alive?(os_pid)
+      assert WorkerRecoveryCustody.resolve_prior_worker_ownership(key, recorded) == :resolved
+    end
+
+    test "SPEC §12.2.2 a stepped wall clock does not release a live Linux runtime" do
+      root = unique_root("stepped-clock")
+      marker_path = Path.join(root, "events.log")
+      File.mkdir_p!(root)
+      {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+      {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+      previous_path = System.fetch_env!("PATH")
+      ps = Path.join(root, "ps")
+      File.write!(ps, "#!/bin/sh\nprintf '1000 Thu Jan 1 01:00:00 1970\\n'\n")
+      File.chmod!(ps, 0o755)
+
+      on_exit(fn ->
+        System.put_env("PATH", previous_path)
+        CustodyTestHelpers.stop_child(port, os_pid)
+        File.rm_rf!(root)
+      end)
+
+      assert {:ok, ref} =
+               RuntimeProcessReaper.watch(self(), os_pid, %{
+                 shutdown_timeout_ms: 30_000,
+                 model_ref: %{model_id: "model/clock", version: "v1"},
+                 os_identity: identity,
+                 phase: :loaded
+               })
+
+      System.put_env("PATH", root <> ":" <> previous_path)
+      RuntimeProcessReaper.reap(ref, :test)
+
+      assert wait_until(
+               fn -> event_logged?(marker_path, "term_ignored mode=resistant") end,
+               1_000
+             )
+
+      Process.sleep(150)
+
+      assert RuntimeProcessReaper.custody_model_keys() ==
+               {:ok, MapSet.new([{"model/clock", "v1"}])}
+
+      refute RuntimeProcessReaper.ownership_resolved?(self())
+      assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+
+      System.put_env("PATH", previous_path)
+      CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.assert_reaper_empty!(2_000)
+    end
+  end
+
+  @tag :macos
   test "an unreadable identity keeps custody and reports the model until exit is confirmed" do
     root = unique_root("unreadable-identity")
     fake_bin = Path.join(root, "fake-bin")
@@ -649,6 +756,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert RuntimeProcessReaper.custody_model_keys() == {:ok, MapSet.new()}
   end
 
+  @tag :macos
   test "SPEC.md §4.9 a runtime still gets TERM and its grace after a transient identity failure" do
     root = unique_root("identity-recovers")
     marker_path = Path.join(root, "events.log")

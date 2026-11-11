@@ -87,4 +87,62 @@ run_case pass all-lanes-skipped \
   OPENSPEC_REQUIRED=false OPENSPEC_RESULT=skipped \
   SUPPLY_CHAIN_REQUIRED=false SUPPLY_CHAIN_RESULT=skipped
 
+TMP_ROOT="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_ROOT"' EXIT
+
+namespace_step="$(awk '
+  /^      - name: Run Linux unreadable proc custody regression$/ { step = 1; next }
+  step && /^        run: \|$/ { body = 1; next }
+  body && /^          / { sub(/^          /, ""); print; next }
+  body { exit }
+' "$REPO_ROOT/.github/workflows/required-validation.yml")"
+# Substitute only the sysctl existence check; no host namespace or sysctl is touched.
+touch "$TMP_ROOT/userns-restriction"
+namespace_step="${namespace_step//\/proc\/sys\/kernel\/apparmor_restrict_unprivileged_userns/$TMP_ROOT/userns-restriction}"
+
+unshare() {
+  printf '%s\n' "$NAMESPACE_OUTPUT"
+  return "$NAMESPACE_STATUS"
+}
+
+sysctl() {
+  if [[ "$1" == -n ]]; then
+    printf '1\n'
+  else
+    printf '%s\n' "$2" >> "$RUNNER_TEMP/sysctl-writes"
+  fi
+}
+
+sudo() { "$@"; }
+export -f unshare sysctl sudo
+
+namespace_case() {
+  local expected="$1" output="$2" status="${3:-0}" actual
+  rm -f "$TMP_ROOT/sysctl-writes"
+  if RUNNER_TEMP="$TMP_ROOT" NAMESPACE_OUTPUT="$output" NAMESPACE_STATUS="$status" \
+    bash -euo pipefail -c "$namespace_step" >/dev/null 2>&1; then
+    actual=pass
+  else
+    actual=fail
+  fi
+
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'namespace gate failed: %s (expected %s, got %s)\n' "$output" "$expected" "$actual" >&2
+    exit 1
+  fi
+
+  diff -u <(printf '%s\n' \
+    kernel.apparmor_restrict_unprivileged_userns=0 \
+    kernel.apparmor_restrict_unprivileged_userns=1) "$TMP_ROOT/sysctl-writes"
+}
+
+namespace_case pass 'Result: 1 passed, 25 excluded'
+namespace_case pass 'Result: 1 passed'
+namespace_case fail 'Result: 0 tests, 1 skipped, 25 excluded'
+namespace_case fail 'There was no test executed'
+namespace_case fail 'Result: 1 passed, 1 skipped, 24 excluded'
+namespace_case fail 'Result: 2 passed, 24 excluded'
+namespace_case fail 'Result: 1 failed, 25 excluded'
+namespace_case fail 'Result: 1 passed, 25 excluded' 1
+
 printf 'required validation aggregate-gate tests passed\n'
