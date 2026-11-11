@@ -986,7 +986,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       lockpath="$5"
       : > "$lockpath"
       chmod 600 "$lockpath"
-      head -n 1
+      IFS= read -r marker
+      printf '%s\\n' "$marker"
+      IFS= read -r release
       exit 0
       """
     )
@@ -994,6 +996,8 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     File.chmod!(wrapper, 0o700)
     identity = identity()
     delivery = delivery(identity)
+    store_root = Path.join(root, "beam-peer-grants")
+    grant_path = Path.join(store_root, "#{identity.controller_id}.json")
 
     assert {:error, :beam_peer_grant_store_invalid} =
              BeamPeerGrantStore.install(
@@ -1001,10 +1005,26 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
                identity,
                delivery,
                delivery.node_beam_name,
-               lock_command: wrapper
+               lock_command: wrapper,
+               sync_directory: fn path ->
+                 if path == store_root do
+                   assert File.exists?(grant_path)
+                   {:links, links} = Process.info(self(), :links)
+                   [lock_port] = Enum.filter(links, &is_port/1)
+                   monitor = :erlang.monitor(:port, lock_port)
+
+                   # Order helper exit after publication but before the teardown check.
+                   assert Port.command(lock_port, "release\n")
+                   assert_receive {:DOWN, ^monitor, :port, ^lock_port, :normal}, 5_000
+                   send(self(), {:lock_exit_observed, lock_port})
+                 end
+
+                 :ok
+               end
              )
 
-    grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
+    assert_received {:lock_exit_observed, lock_port}
+    assert Port.info(lock_port) == nil
     assert File.exists?(grant_path)
 
     assert {:ok, ^delivery} =
