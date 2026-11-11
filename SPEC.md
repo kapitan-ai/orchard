@@ -278,6 +278,17 @@ Team SHALL remain API Client grouping metadata, without membership, authorizatio
 The accepted Console target SHALL authenticate a named Console Identity through a revocable Console Session under §10.11.
 Console Identity, non-interactive API Client, and Workspace-scoped Portal User SHALL remain distinct principals even when descriptive metadata matches.
 
+A **Headless Deployment**, as defined by the accepted `define-headless-deployment` change, SHALL be the standard production `orchard_controller` release started with the Console disabled by boot-time runtime configuration.
+Orchard SHALL NOT require a build, release, or package other than the standard Controller release to run headless.
+In that release, the Console SHALL remain disabled unless `ORCHARD_CONSOLE_ENABLED` holds a true value; an invalid value SHALL stop boot.
+Public Inference, Operator and Admin APIs, the Developer Portal, the bootstrap API, health endpoints, and `/metrics` SHALL retain their existing contracts, including authorization, audit, leadership, and Action Preview semantics.
+With the Console disabled, `/console` routes requested with HTML or wildcard `Accept` SHALL return `404`, no Console request SHALL render Console content, and no Console LiveView SHALL mount or reconnect, including over an existing LiveView socket or with a session issued while the Console was enabled.
+The shared LiveView socket, endpoint session cookie, and static assets MAY remain mounted only to serve the Developer Portal and SHALL NOT confer Console authority.
+Source development under `bin/dev` and `bin/dev-controller` always enables the Console and SHALL NOT be described as a Headless Deployment.
+The §10.11.4 `rollback_console_disabled` recovery state SHALL NOT be treated as a Headless Deployment; its writer isolation, including Developer Portal writers, SHALL prevail.
+Headless Deployment is distinct from the §11.8 and ADR 0023 headless Linux Controller platform profile, which describes a host without desktop components.
+The operator-facing headless capability inventory in `docs/headless-mode.md` SHALL distinguish remote API availability from Controller-host CLI access and unimplemented or undecided capabilities; a Headless Deployment does not by itself satisfy the shared-operation convergence target in §§2.5, 10.11, and 11.9.
+
 The seeded Tenant `00000000-0000-0000-0000-000000000000` SHALL be the default Workspace.
 Its untouched built-in name `Legacy Single Tenant` SHALL display as `Default workspace`; a customized name SHALL be preserved and the stable default identity indicated separately.
 Default identity SHALL be determined by UUID, not by name or slug.
@@ -2450,6 +2461,12 @@ The platform SHALL expose five API surfaces:
    * admitted first-party production Controller and Node Agent services use the BEAM Runtime Endpoint adapter under the production identity and authorization contract in §7.5 and §10.6
    * the certificate-backed gRPC Compatibility Adapter remains an explicit compatibility, diagnostics, recovery, external-adapter, and operator opt-out path
    * Worker Runtime Interface remains local to the Node Agent
+
+When the Console is disabled under §2.3, the Operator and Admin APIs SHALL be the remote management surface under §§7.3 and 7.4.
+Remote management SHALL authenticate a service-account-owned API Token whose enabled API Client holds the route's required cluster-scoped `operator` or `admin` RoleBinding.
+Console Basic Auth, Console Sessions, Portal sessions, and Public Inference credentials SHALL NOT authorize Operator API or Admin API requests.
+Initial administrator provisioning SHALL remain local to the Controller host under ADR 0011, and unmigrated `orchardctl` command families SHALL retain their §11.9 local Controller-runtime authority until separately migrated.
+Disabling the Console SHALL NOT introduce a new authority path or relax any other surface's contract.
 
 ---
 

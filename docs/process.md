@@ -118,6 +118,7 @@ rewrite the durable conclusion instead of copying the stale plan.
 
 - `SPEC.md` impact is explicit.
 - Product docs do not duplicate large normative sections from `SPEC.md`.
+- Every Operator or Admin API change is checked against the headless capability inventory in [`headless-mode.md`](headless-mode.md). Adding an API equivalent for a Console capability or migrating a `local_cli` family updates the inventory in the same change. Documentation and release notes claim remote headless availability only for `available` entries and qualify `local_cli` entries as requiring Controller-host access.
 - Private local artifacts are not committed.
 - Active `goals/<slug>/` directories are not staged.
 - Non-outdated review threads that touch security, runtime startup, contract behavior, cross-platform shell behavior, or data safety are resolved or explicitly disproven against the current PR head.

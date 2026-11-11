@@ -29,6 +29,7 @@
 ## Checklist
 
 - [ ] I updated affected documentation, tests, decisions, and OpenSpec material, or explained why no update is needed.
+- [ ] For Operator or Admin API changes or CLI family migrations, I checked `docs/headless-mode.md` and updated its capability inventory in this change where coverage changed; remote availability claims use only `available` entries, and `local_cli` claims require Controller-host access.
 - [ ] I recorded the relevant validation outcomes above; the current head must pass the `Required Orchard validation gate` before merge.
 - [ ] Review findings are addressed or explicitly disproved against the current head, and review conversations are resolved before merge.
 - [ ] I did not commit active goal packages, private local artifacts, or dependencies on private workbench/session context.

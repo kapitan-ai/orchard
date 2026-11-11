@@ -16,7 +16,13 @@ defmodule Orchard.Portal.KeysLiveTest do
   @moduletag :db
   @password "sixteen-chars-ok"
 
-  setup do
+  setup context do
+    previous_console = Application.fetch_env!(:orchard_controller, :console)
+    console = Keyword.put(previous_console, :enabled, Map.get(context, :console_enabled, true))
+    Application.put_env(:orchard_controller, :console, console)
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous_console) end)
+
     enable_https_proxy!()
     Sandbox.mode(Repo, {:shared, self()})
     start_verifier!()
@@ -55,31 +61,35 @@ defmodule Orchard.Portal.KeysLiveTest do
     assert has_element?(view, "#portal-mint-button")
   end
 
-  test "mint shows the secret once and list then shows prefix only", %{conn: conn, token: token} do
-    {:ok, view, _html} = live(authed(conn, token), "/portal/portal-keys/keys")
+  for enabled <- [true, false] do
+    @tag console_enabled: enabled
+    test "SPEC.md §§2.3, 7.4a mint and list preserve one-time output with Console enabled=#{enabled}",
+         %{conn: conn, token: token} do
+      {:ok, view, _html} = live(authed(conn, token), "/portal/portal-keys/keys")
 
-    view |> element("#portal-mint-button") |> render_click()
+      view |> element("#portal-mint-button") |> render_click()
 
-    html =
+      html =
+        view
+        |> form("#portal-mint-modal form", key: %{name: "laptop"})
+        |> render_submit()
+
+      assert html =~ "Copy your key now"
+      assert html =~ "orchard_sk_"
+      assert html =~ "portal-secret-value"
+      refute html =~ "data-secret="
+      assert html =~ "this Workspace has no active authorized Model"
+      assert has_element?(view, "#portal-secret-modal form[phx-auto-recover=ignore]")
+
       view
-      |> form("#portal-mint-modal form", key: %{name: "laptop"})
-      |> render_submit()
+      |> element("#portal-secret-modal form")
+      |> render_change(%{"ack" => "true"})
 
-    assert html =~ "Copy your key now"
-    assert html =~ "orchard_sk_"
-    assert html =~ "portal-secret-value"
-    refute html =~ "data-secret="
-    assert html =~ "this Workspace has no active authorized Model"
-    assert has_element?(view, "#portal-secret-modal form[phx-auto-recover=ignore]")
-
-    view
-    |> element("#portal-secret-modal form")
-    |> render_change(%{"ack" => "true"})
-
-    html = view |> element("#portal-secret-done") |> render_click()
-    refute html =~ "orchard_sk_"
-    assert html =~ "laptop"
-    assert html =~ "orchard_kp_"
+      html = view |> element("#portal-secret-done") |> render_click()
+      refute html =~ "orchard_sk_"
+      assert html =~ "laptop"
+      assert html =~ "orchard_kp_"
+    end
   end
 
   test "mint shows an inert exact-model curl from the new key without claiming runtime success",
@@ -375,28 +385,34 @@ defmodule Orchard.Portal.KeysLiveTest do
     assert html =~ "portal-secret-value"
   end
 
-  test "revoke requires typing the key name", %{conn: conn, token: token} do
-    {:ok, minted} =
-      Governance.create_portal_api_key(token, "portal-keys", %{name: "typed-revoke"})
+  for enabled <- [true, false] do
+    @tag console_enabled: enabled
+    test "SPEC.md §§2.3, 7.4a revoke requires the key name with Console enabled=#{enabled}", %{
+      conn: conn,
+      token: token
+    } do
+      {:ok, minted} =
+        Governance.create_portal_api_key(token, "portal-keys", %{name: "typed-revoke"})
 
-    {:ok, view, _html} = live(authed(conn, token), "/portal/portal-keys/keys")
-    view |> element("#portal-revoke-#{minted.api_key.id}") |> render_click()
+      {:ok, view, _html} = live(authed(conn, token), "/portal/portal-keys/keys")
+      view |> element("#portal-revoke-#{minted.api_key.id}") |> render_click()
 
-    html =
+      html =
+        view
+        |> form("#portal-revoke-modal form", confirmation: "wrong-name")
+        |> render_change()
+
+      assert html =~ "disabled"
+      assert Repo.get!(Orchard.Governance.ApiKey, minted.api_key.id).revoked_at == nil
+
       view
-      |> form("#portal-revoke-modal form", confirmation: "wrong-name")
+      |> form("#portal-revoke-modal form", confirmation: "typed-revoke")
       |> render_change()
 
-    assert html =~ "disabled"
-    assert Repo.get!(Orchard.Governance.ApiKey, minted.api_key.id).revoked_at == nil
-
-    view
-    |> form("#portal-revoke-modal form", confirmation: "typed-revoke")
-    |> render_change()
-
-    html = view |> form("#portal-revoke-modal form") |> render_submit()
-    assert html =~ "Revoked"
-    assert Repo.get!(Orchard.Governance.ApiKey, minted.api_key.id).revoked_at
+      html = view |> form("#portal-revoke-modal form") |> render_submit()
+      assert html =~ "Revoked"
+      assert Repo.get!(Orchard.Governance.ApiKey, minted.api_key.id).revoked_at
+    end
   end
 
   test "Portal User disable fails revoke on a standing keys socket", %{
