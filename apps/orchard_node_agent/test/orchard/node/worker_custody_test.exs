@@ -406,6 +406,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
     fake_ps = Path.join(fake_bin, "ps")
     worker = Path.join(context.root, "immediate-exit-worker")
     File.mkdir_p!(fake_bin)
+    # macOS delays identity capture here. Linux reads /proc for identity; this
+    # fixture only delays its ps -p liveness fallback after a failed kill -0.
     File.write!(fake_ps, "#!/bin/sh\nsleep 0.5\nexit 1\n")
     File.chmod!(fake_ps, 0o755)
     File.write!(worker, "#!/bin/sh\nexit 42\n")
@@ -438,6 +440,138 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute File.exists?(context.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 an open launch port retains its pending spontaneous exit", context do
+    {port, _os_pid, fifo} = fifo_worker!(context)
+
+    # A different port's status must not be mistaken for this worker's exit.
+    other_port = Port.open({:spawn_executable, System.find_executable("true")}, [:exit_status])
+
+    probe = fn ->
+      assert Port.info(port)
+      File.write!(fifo, "exit\n")
+      :not_alive
+    end
+
+    assert {:worker_exited, 42} =
+             WorkerRuntimeAdapter.launch_identity_failure_reason(port, probe)
+
+    assert_receive {^other_port, {:exit_status, 0}}, 1_000
+  end
+
+  test "SPEC.md §4.9 live or unproven launch identity failures do not wait for an exit",
+       context do
+    {port, os_pid, _fifo} = fifo_worker!(context)
+
+    for status <- [:alive, :unknown] do
+      started = System.monotonic_time(:millisecond)
+
+      assert :identity_unavailable =
+               WorkerRuntimeAdapter.launch_identity_failure_reason(port, fn -> status end, 5_000)
+
+      assert System.monotonic_time(:millisecond) - started < 500
+      assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+    end
+  end
+
+  test "SPEC.md §4.9 pending exit diagnostic timeout is bounded despite port output", context do
+    {port, os_pid, fifo} = fifo_worker!(context, "while printf 'output\\n'; do :; done")
+
+    probe = fn ->
+      File.write!(fifo, "exit\n")
+      :not_alive
+    end
+
+    started = System.monotonic_time(:millisecond)
+
+    assert :identity_unavailable =
+             WorkerRuntimeAdapter.launch_identity_failure_reason(port, probe, 50)
+
+    assert System.monotonic_time(:millisecond) - started < 500
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+  end
+
+  test "SPEC.md §4.9 rejected dead-process watch preserves exit status before cleanup", context do
+    fake_bin = Path.join(context.root, "watch-probe-bin")
+    fifo = Path.join(context.root, "watch-exit.fifo")
+    rejected = Path.join(context.root, "watch-rejected")
+    signalled = Path.join(context.root, "cleanup-signalled")
+    worker = Path.join(context.root, "watch-exit-worker")
+    real_ps = System.find_executable("ps")
+    real_kill = System.find_executable("kill")
+    File.mkdir_p!(fake_bin)
+    assert {"", 0} = System.cmd("mkfifo", [fifo])
+
+    File.write!(worker, """
+    #!/bin/sh
+    : > '#{context.socket_path}'
+    read -r release < '#{fifo}'
+    exit 42
+    """)
+
+    File.chmod!(worker, 0o755)
+
+    # Identity capture sees a live FIFO-blocked child. The watch's liveness
+    # probe then releases it and reports nonexistence, without a timing delay.
+    File.write!(Path.join(fake_bin, "kill"), """
+    #!/bin/sh
+    if [ "$1" = '-0' ]; then
+      if [ ! -e '#{rejected}' ]; then
+        printf 'exit\n' > '#{fifo}'
+        : > '#{rejected}'
+      fi
+      exit 1
+    fi
+    : > '#{signalled}'
+    exec '#{real_kill}' "$@"
+    """)
+
+    File.write!(Path.join(fake_bin, "ps"), """
+    #!/bin/sh
+    if [ "$1" = '-p' ]; then exit 1; fi
+    exec '#{real_ps}' "$@"
+    """)
+
+    for command <- ["kill", "ps"], do: File.chmod!(Path.join(fake_bin, command), 0o755)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+    previous_path = System.fetch_env!("PATH")
+
+    result =
+      try do
+        System.put_env("PATH", fake_bin <> ":" <> previous_path)
+        load_runtime(context, executable: worker)
+      after
+        System.put_env("PATH", previous_path)
+      end
+
+    assert File.exists?(rejected)
+    assert result == {:error, {:worker_exited, 42}}
+    assert RuntimeProcessReaper.owner_custody(self()) == :resolved
+    refute File.exists?(signalled)
+    refute File.exists?(context.socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  defp fifo_worker!(context, after_release \\ "exit 42") do
+    fifo = Path.join(context.root, "exit.fifo")
+    assert {"", 0} = System.cmd("mkfifo", [fifo])
+
+    port =
+      Port.open({:spawn_executable, System.find_executable("sh")}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: ["-c", "printf ready; read -r release < '#{fifo}'; #{after_release}"]
+      ])
+
+    os_pid = port |> Port.info() |> Keyword.fetch!(:os_pid)
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+    assert_receive {^port, {:data, "ready"}}, 1_000
+    assert Port.info(port)
+    {port, os_pid, fifo}
   end
 
   test "SPEC.md §4.9 closed BEAM port unload spends its shutdown budget once", context do
