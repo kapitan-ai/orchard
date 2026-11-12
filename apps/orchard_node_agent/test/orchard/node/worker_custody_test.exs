@@ -447,6 +447,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
     # A different port's status must not be mistaken for this worker's exit.
     other_port = Port.open({:spawn_executable, System.find_executable("true")}, [:exit_status])
+    assert CustodyTestHelpers.wait_until(fn -> is_nil(Port.info(other_port)) end, 1_000)
 
     probe = fn ->
       assert Port.info(port)
@@ -455,8 +456,9 @@ defmodule Orchard.Node.WorkerCustodyTest do
     end
 
     assert {:worker_exited, 42} =
-             WorkerRuntimeAdapter.launch_identity_failure_reason(port, probe)
+             WorkerRuntimeAdapter.launch_identity_failure_reason(port, probe, 5_000)
 
+    refute_received {^port, _}
     assert_receive {^other_port, {:exit_status, 0}}, 1_000
   end
 
@@ -492,7 +494,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
   end
 
-  test "SPEC.md §4.9 rejected dead-process watch preserves exit status before cleanup", context do
+  test "SPEC.md §4.9 rejected watch resolves custody, removes socket, and leaves control alive without signalling",
+       context do
     fake_bin = Path.join(context.root, "watch-probe-bin")
     fifo = Path.join(context.root, "watch-exit.fifo")
     rejected = Path.join(context.root, "watch-rejected")
@@ -553,6 +556,16 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute File.exists?(context.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 launch nonexistence probe distinguishes live and reaped FIFO workers",
+       context do
+    {port, os_pid, fifo} = fifo_worker!(context)
+
+    refute WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive
+    File.write!(fifo, "exit\n")
+    assert_receive {^port, {:exit_status, 42}}, 1_000
+    assert WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive
   end
 
   defp fifo_worker!(context, after_release \\ "exit 42") do

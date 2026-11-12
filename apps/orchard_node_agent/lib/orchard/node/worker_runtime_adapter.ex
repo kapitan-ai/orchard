@@ -584,20 +584,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  @doc """
-  Resolves a launch identity failure before any cleanup can signal the child.
-
-  `process_status` must report `:not_alive` only for proven nonexistence. An open
-  port can outlive the OS process reaped by erl_child_setup; only that case waits
-  up to `timeout_ms` for its pending exit status. This diagnostic grants no
-  custody authority, and live or unproven processes return immediately.
-  """
+  # Public only for deterministic launch-exit tests without cleanup signals.
+  # Only the wait is capped: the process probe (kill/ps on macOS) runs before
+  # its deadline starts. An unreadable identity alone never justifies waiting.
+  # credo:disable-for-lines:7 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  @doc false
   @spec launch_identity_failure_reason(
           port(),
           (-> WorkerProcessLifecycle.os_process_status()),
           non_neg_integer()
         ) :: :identity_unavailable | {:worker_exited, non_neg_integer()}
-  def launch_identity_failure_reason(port, process_status, timeout_ms \\ @launch_exit_grace_ms) do
+  def launch_identity_failure_reason(port, process_status, timeout_ms) do
     cond do
       not port_open?(port) ->
         drain_port_exit_reason(port)
@@ -613,7 +610,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp launch_process_status(os_pid) do
+  # Public only to verify the platform nonexistence proof with live/reaped children.
+  # credo:disable-for-lines:4 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  @doc false
+  @spec launch_process_status(non_neg_integer() | nil) ::
+          WorkerProcessLifecycle.os_process_status()
+  def launch_process_status(os_pid) do
     case :os.type() do
       {:unix, :linux} ->
         case File.stat("/proc/#{os_pid}") do
