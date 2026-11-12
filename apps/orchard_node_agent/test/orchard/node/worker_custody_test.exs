@@ -6,6 +6,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.CustodyTestHelpers
+  alias Orchard.Node.ModelManager
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.Worker.V1.{WorkerRuntimeService, WorkerStatusResponse}
   alias Orchard.Node.WorkerManagerStub
@@ -70,12 +71,13 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
   test "SPEC.md §4.9 worker readiness honors its budget when the UDS never appears", context do
     executable = waiting_worker!(context)
+    escalation_overhead_ms = measure_escalation_overhead!(context)
     started = System.monotonic_time(:millisecond)
 
     assert {:error, :worker_ready_timeout} =
              load_runtime(context, executable: executable, ready_timeout_ms: 100)
 
-    assert System.monotonic_time(:millisecond) - started < 2_000
+    assert System.monotonic_time(:millisecond) - started < 2_000 + 2 * escalation_overhead_ms
     CustodyTestHelpers.assert_reaper_empty!(1_000)
     refute File.exists?(context.socket_path)
   end
@@ -240,7 +242,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 
-  test "SPEC.md §4.9 closed BEAM port refuses to signal a recycled PID", context do
+  test "SPEC.md §4.9 open and closed BEAM ports refuse to signal a recycled PID", context do
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
     on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
@@ -261,18 +263,21 @@ defmodule Orchard.Node.WorkerCustodyTest do
       socket_path: context.socket_path
     }
 
-    log =
-      capture_log(fn ->
-        assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
-      end)
+    for port <- [control_port, state.port] do
+      log =
+        capture_log(fn ->
+          assert :ok = WorkerRuntimeAdapter.unload_model(%{state | port: port}, skip_rpc: true)
+        end)
 
-    assert log =~ "worker custody identity mismatch"
-    assert log =~ "os_pid=#{control_pid}"
-    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+      assert log =~ "worker custody identity mismatch"
+      assert log =~ "os_pid=#{control_pid}"
+      assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    end
+
     refute File.exists?(context.socket_path)
   end
 
-  test "SPEC.md §4.9 closed Port without launch identity does not signal a recorded PID or claim it stopped",
+  test "SPEC.md §4.9 open and closed ports without launch identity do not signal a recorded PID or claim it stopped",
        context do
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
@@ -294,15 +299,18 @@ defmodule Orchard.Node.WorkerCustodyTest do
       socket_path: context.socket_path
     }
 
-    log =
-      capture_log(fn ->
-        assert {:error, :worker_custody_unconfirmed} =
-                 WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
-      end)
+    for port <- [control_port, state.port] do
+      log =
+        capture_log(fn ->
+          assert {:error, :worker_custody_unconfirmed} =
+                   WorkerRuntimeAdapter.unload_model(%{state | port: port}, skip_rpc: true)
+        end)
 
-    assert log =~ "worker custody identity unavailable"
-    assert log =~ "os_pid=#{control_pid}"
-    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+      assert log =~ "worker custody identity unavailable"
+      assert log =~ "os_pid=#{control_pid}"
+      assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    end
+
     refute File.exists?(context.socket_path)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
@@ -340,17 +348,20 @@ defmodule Orchard.Node.WorkerCustodyTest do
       socket_path: context.socket_path
     }
 
-    capture_log(fn ->
-      assert {:error, :worker_custody_unconfirmed} =
-               WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
-    end)
-
-    # The stop could not confirm exit, so the lease stays and the model stays
-    # pending; a replacement for it must not start yet.
     key = {context.model_ref.model_id, context.model_ref.version}
-    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
-    assert MapSet.member?(keys, key)
-    assert Map.has_key?(:sys.get_state(RuntimeProcessReaper).leases, reaper_ref)
+
+    for port <- [control_port, state.port] do
+      capture_log(fn ->
+        assert {:error, :worker_custody_unconfirmed} =
+                 WorkerRuntimeAdapter.unload_model(%{state | port: port}, skip_rpc: true)
+      end)
+
+      # The stop could not confirm exit, so the lease stays and the model stays
+      # pending; a replacement for it must not start yet.
+      assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+      assert MapSet.member?(keys, key)
+      assert Map.has_key?(:sys.get_state(RuntimeProcessReaper).leases, reaper_ref)
+    end
 
     CustodyTestHelpers.stop_child(control_port, control_pid)
     CustodyTestHelpers.assert_reaper_empty!(10_000)
@@ -359,21 +370,49 @@ defmodule Orchard.Node.WorkerCustodyTest do
   end
 
   @tag :macos
-  test "SPEC.md §4.9 ps identity failure aborts launch only on hosts that use ps",
+  test "SPEC.md §4.9 failed launch identity retains custody and blocks replacement without signalling",
        context do
+    assert :ok = ModelManager.reset()
     fake_bin = Path.join(context.root, "fake-bin")
     fake_ps = Path.join(fake_bin, "ps")
     worker = Path.join(context.root, "identity-unavailable-worker")
+    worker_pid_file = Path.join(context.root, "unconfirmed-worker.pid")
+    signals = Path.join(context.root, "signals")
+    real_kill = System.find_executable("kill")
+    owner = spawn(fn -> Process.sleep(:infinity) end)
     File.mkdir_p!(fake_bin)
-    File.write!(fake_ps, "#!/bin/sh\nexit 1\n")
+
+    File.write!(fake_ps, """
+    #!/bin/sh
+    if [ "$1" = '-o' ]; then echo "$6" > '#{worker_pid_file}'; fi
+    exit 1
+    """)
+
     File.chmod!(fake_ps, 0o755)
+
+    File.write!(Path.join(fake_bin, "kill"), """
+    #!/bin/sh
+    if [ "$1" != '-0' ]; then printf '%s %s\n' "$1" "$2" >> '#{signals}'; fi
+    exec '#{real_kill}' "$@"
+    """)
+
+    File.chmod!(Path.join(fake_bin, "kill"), 0o755)
     File.write!(worker, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n")
     File.chmod!(worker, 0o755)
     File.write!(context.socket_path, "owned runtime artifact")
     {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
     previous_path = System.fetch_env!("PATH")
 
-    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+    on_exit(fn ->
+      Process.exit(owner, :kill)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+
+      with {:ok, pid} <- File.read(worker_pid_file) do
+        WorkerProcessLifecycle.kill_process_tree(pid |> String.trim() |> String.to_integer())
+      end
+
+      CustodyTestHelpers.assert_reaper_empty!(10_000)
+    end)
 
     result =
       try do
@@ -385,7 +424,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
           load_timeout_ms: 5_000,
           log_path: context.log_path,
           models_root: context.models_root,
-          owner: self(),
+          owner: owner,
           ready_timeout_ms: 100,
           shutdown_timeout_ms: @shutdown_timeout_ms,
           socket_path: context.socket_path
@@ -397,7 +436,33 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert result == {:error, :identity_unavailable}
     refute File.exists?(context.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
-    CustodyTestHelpers.assert_reaper_empty!(1_000)
+    os_pid = worker_pid_file |> File.read!() |> String.trim() |> String.to_integer()
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+
+    assert [%{os_identity: nil, phase: :loading, os_pid: ^os_pid}] =
+             Map.values(:sys.get_state(RuntimeProcessReaper).leases)
+
+    Process.exit(owner, :kill)
+    key = {context.model_ref.model_id, context.model_ref.version}
+    assert {:ok, keys} = RuntimeProcessReaper.custody_model_keys()
+    assert MapSet.member?(keys, key)
+
+    assert %{failure_code: "model_capacity_exhausted"} =
+             ModelManager.ensure_model_loaded(%EnsureModelLoadedRequest{
+               node_id: "node-local",
+               model_id: context.model_ref.model_id,
+               version: context.model_ref.version,
+               artifact_sha256: String.duplicate("0", 64),
+               preload: true,
+               deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+               artifact_source_uri: "file:///nonexistent"
+             })
+
+    assert :sys.get_state(ModelManager).inflight_loads == %{}
+    refute File.exists?(signals)
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+    WorkerProcessLifecycle.kill_process_tree(os_pid)
+    CustodyTestHelpers.assert_reaper_empty!(10_000)
   end
 
   test "SPEC.md §4.9 launch identity failure retains a deterministic worker exit status",
@@ -568,6 +633,209 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive
   end
 
+  for phase <- [:launch, :term] do
+    @tag cleanup_phase: phase
+    test "SPEC.md §4.9 #{phase} timeout never signals a reaped PID with an open port", context do
+      %{cleanup_phase: phase} = context
+      fake_bin = Path.join(context.root, "cleanup-bin")
+      exit_fifo = Path.join(context.root, "parent-exit.fifo")
+      hold_fifo = Path.join(context.root, "hold-output.fifo")
+      holder_file = Path.join(context.root, "holder.pid")
+      recorded_file = Path.join(context.root, "recorded.pid")
+      signals = Path.join(context.root, "signals")
+      worker = Path.join(context.root, "reaped-worker")
+      real_kill = System.find_executable("kill")
+      real_ps = System.find_executable("ps")
+      File.mkdir_p!(fake_bin)
+      for fifo <- [exit_fifo, hold_fifo], do: assert({"", 0} = System.cmd("mkfifo", [fifo]))
+      {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+      ports_before = Port.list()
+
+      # The child keeps stdout open after its parent is reaped, withholding the
+      # port's exit_status without relying on scheduler timing or PID recycling.
+      File.write!(worker, """
+      #!/bin/sh
+      sh -c 'echo $$ > "#{holder_file}"; read -r release < "#{hold_fifo}"' &
+      read -r release < '#{exit_fifo}'
+      exit 42
+      """)
+
+      File.write!(Path.join(fake_bin, "kill"), """
+      #!/bin/sh
+      if [ "$1" = '-0' ]; then
+        if [ -f '#{recorded_file}' ]; then exec '#{real_kill}' "$@"; fi
+        if [ '#{phase}' = 'term' ]; then exec '#{real_kill}' "$@"; fi
+        echo "$2" > '#{recorded_file}'
+        while [ ! -f '#{holder_file}' ]; do sleep 0.01; done
+        printf 'exit\n' > '#{exit_fifo}'
+        while '#{real_kill}' -0 "$2" 2>/dev/null; do sleep 0.01; done
+        exit 1
+      fi
+      if [ '#{phase}' = 'term' ] && [ "$1" = '-TERM' ]; then
+        exec '#{real_kill}' "$@"
+      fi
+      printf '%s %s\n' "$1" "$2" >> '#{signals}'
+      # Stand in for PID reuse: any unsafe signal hits the unrelated control.
+      exec '#{real_kill}' "$1" '#{control_pid}'
+      """)
+
+      File.write!(Path.join(fake_bin, "ps"), """
+      #!/bin/sh
+      if [ "$1" = '-p' ]; then exit 1; fi
+      exec '#{real_ps}' "$@"
+      """)
+
+      for path <- [worker, Path.join(fake_bin, "kill"), Path.join(fake_bin, "ps")],
+          do: File.chmod!(path, 0o755)
+
+      on_exit(fn ->
+        CustodyTestHelpers.stop_child(control_port, control_pid)
+
+        case File.read(holder_file) do
+          {:ok, pid} -> System.cmd(real_kill, ["-KILL", String.trim(pid)], stderr_to_stdout: true)
+          _missing -> :ok
+        end
+      end)
+
+      previous_path = System.fetch_env!("PATH")
+
+      result =
+        try do
+          System.put_env("PATH", fake_bin <> ":" <> previous_path)
+
+          case phase do
+            :launch ->
+              load_runtime(context, executable: worker)
+
+            :term ->
+              port = Port.open({:spawn_executable, worker}, [:exit_status])
+              os_pid = port |> Port.info() |> Keyword.fetch!(:os_pid)
+              File.write!(recorded_file, Integer.to_string(os_pid))
+              assert CustodyTestHelpers.wait_until(fn -> File.exists?(holder_file) end, 1_000)
+              assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+              state = %{
+                backend: "stub",
+                channel: nil,
+                executable: worker,
+                generations: %{},
+                model_ref: context.model_ref,
+                os_identity: identity,
+                os_pid: os_pid,
+                port: port,
+                reaper_ref: nil,
+                shutdown_timeout_ms: @shutdown_timeout_ms,
+                socket_path: context.socket_path
+              }
+
+              WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+          end
+        after
+          System.put_env("PATH", previous_path)
+        end
+
+      os_pid = recorded_file |> File.read!() |> String.trim() |> String.to_integer()
+      assert WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive
+
+      assert Enum.any?(
+               Port.list() -- ports_before,
+               &(Port.info(&1, :os_pid) == {:os_pid, os_pid})
+             )
+
+      assert {File.read(signals), WorkerProcessLifecycle.os_process_alive?(control_pid)} ==
+               {{:error, :enoent}, true}
+
+      expected_reason =
+        if phase == :launch, do: :identity_unavailable, else: :worker_custody_unconfirmed
+
+      assert result == {:error, expected_reason}
+      if phase == :launch, do: assert(RuntimeProcessReaper.owner_custody(self()) == :resolved)
+      CustodyTestHelpers.assert_reaper_empty!(1_000)
+    end
+  end
+
+  for phase <- [:term, :kill] do
+    @tag exit_proof: phase
+    test "SPEC.md §4.9 port exit confirms shutdown when identity disappears before #{phase}",
+         context do
+      %{exit_proof: phase} = context
+      exit_fifo = Path.join(context.root, "exit.fifo")
+      hold_fifo = Path.join(context.root, "hold.fifo")
+      holder_file = Path.join(context.root, "holder.pid")
+      for fifo <- [exit_fifo, hold_fifo], do: assert({"", 0} = System.cmd("mkfifo", [fifo]))
+
+      port =
+        Port.open({:spawn_executable, System.find_executable("sh")}, [
+          :binary,
+          :exit_status,
+          args: [
+            "-c",
+            """
+            sh -c 'echo $$ > "#{holder_file}"; read -r release < "#{hold_fifo}"' &
+            printf ready
+            read -r release < '#{exit_fifo}'
+            exit 42
+            """
+          ]
+        ])
+
+      os_pid = port |> Port.info() |> Keyword.fetch!(:os_pid)
+
+      on_exit(fn ->
+        CustodyTestHelpers.stop_child(port, os_pid)
+
+        with {:ok, pid} <- File.read(holder_file) do
+          WorkerProcessLifecycle.kill_process_tree(pid |> String.trim() |> String.to_integer())
+        end
+      end)
+
+      assert_receive {^port, {:data, "ready"}}, 1_000
+      assert CustodyTestHelpers.wait_until(fn -> File.exists?(holder_file) end, 1_000)
+      assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+      if phase == :term do
+        File.write!(exit_fifo, "exit\n")
+
+        assert CustodyTestHelpers.wait_until(
+                 fn -> WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive end,
+                 2_000
+               )
+
+        assert Port.info(port)
+      end
+
+      release =
+        Task.async(fn ->
+          assert CustodyTestHelpers.wait_until(
+                   fn -> WorkerRuntimeAdapter.launch_process_status(os_pid) == :not_alive end,
+                   2_000
+                 )
+
+          Process.sleep(if phase == :term, do: 350, else: 750)
+          File.write!(hold_fifo, "exit\n")
+        end)
+
+      state = %{
+        backend: "stub",
+        channel: nil,
+        executable: "sh",
+        generations: %{},
+        model_ref: context.model_ref,
+        os_identity: identity,
+        os_pid: os_pid,
+        port: port,
+        reaper_ref: nil,
+        shutdown_timeout_ms: if(phase == :term, do: 1_000, else: 500),
+        socket_path: nil
+      }
+
+      result = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+      Task.await(release, 5_000)
+      assert result == :ok
+      assert is_nil(Port.info(port))
+    end
+  end
+
   defp fifo_worker!(context, after_release \\ "exit 42") do
     fifo = Path.join(context.root, "exit.fifo")
     assert {"", 0} = System.cmd("mkfifo", [fifo])
@@ -641,6 +909,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
   end
 
   test "SPEC.md §4.9 noisy TERM-resistant shutdown reaches bounded KILL", context do
+    escalation_overhead_ms = measure_escalation_overhead!(context)
     marker_path = Path.join(context.root, "events.log")
 
     {port, os_pid} =
@@ -689,7 +958,9 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert true = Port.connect(port, task.pid)
     send(task.pid, :unload)
 
-    result = Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
+    result =
+      Task.yield(task, 2_000 + 2 * escalation_overhead_ms) || Task.shutdown(task, :brutal_kill)
+
     assert {:ok, :ok} = result
 
     assert CustodyTestHelpers.wait_until(
