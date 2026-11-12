@@ -31,12 +31,20 @@ per Worker instance from a pinned CPU-only llama.cpp release build whose
 archive digest is verified before use, and SHALL load pinned GGUF files whose
 digests are verified before load.
 
-The Worker SHALL launch the child with an explicit argument list that sets
-one slot, a pinned context length, a pinned thread count and no offload
-device, and that disables the server's chat-template renderer, its prompt
-cache and its host-memory prompt cache. The child SHALL start from an
-environment with no llama.cpp argument, ggml or accelerator variables, in a
-working directory that contains no runtime libraries.
+The Worker SHALL launch the child with an explicit argument list that names
+the digest-verified GGUF file as its one local model, sets one slot, a pinned
+context length, a pinned thread count and no offload device, renders special
+tokens in output, and disables Jinja template rendering, the prompt cache and
+the host-memory prompt cache. The argument list SHALL NOT download models,
+name remote models or start router mode.
+
+The child SHALL start from an allowlisted environment, with its home and
+configuration directories pointing at an empty per-launch directory, so that
+no llama.cpp configuration file, llama.cpp or ggml variable, credential
+variable or accelerator variable reaches it. The working directory SHALL
+contain no runtime libraries. Preflight SHALL fail when a system-wide
+llama.cpp configuration file exists, and the Worker SHALL refuse admission
+when the child's startup log reports that a configuration file was used.
 
 #### Scenario: Artifact digest differs from its pin
 
@@ -45,8 +53,13 @@ working directory that contains no runtime libraries.
 
 #### Scenario: Launch environment would override the pinned arguments
 
-- **WHEN** the Worker's environment carries a llama.cpp argument, ggml or accelerator variable
-- **THEN** the child starts without it, and its effective settings match the pinned argument list
+- **WHEN** the Worker's environment carries a llama.cpp argument, ggml, credential or accelerator variable, or the user's configuration directory holds a llama.cpp configuration file
+- **THEN** the child starts without any of them, accepts only the per-launch credential, and its effective settings match the pinned argument list
+
+#### Scenario: System-wide configuration file exists
+
+- **WHEN** lane A's preflight finds a system-wide llama.cpp configuration file
+- **THEN** the lane is skipped before mutation with the file recorded
 
 ### Requirement: Lane A owns and verifies its server child
 
@@ -54,8 +67,15 @@ The child SHALL bind to a loopback port owned by that Worker instance and
 SHALL require a per-launch credential on every request. Its slot inspection
 endpoint SHALL be disabled. Before admission, the Worker SHALL confirm through
 the server's properties that it serves the per-launch identity this Worker
-instance assigned, the pinned model file and exactly one slot, and SHALL
-confirm that only the CPU backend loaded.
+instance assigned, the pinned model file, exactly one slot and the pinned
+context length. Unauthenticated health and static endpoints are exempt from
+the credential, and the credential file SHALL be readable only by the
+Worker's user.
+
+Before admission, the Worker SHALL also confirm from the child's process
+memory map that CPU is its only compute backend: no ggml library other than
+the base, CPU-variant and RPC libraries of the pinned archive is mapped. The
+mapped CPU variant SHALL be recorded as part of the host class.
 
 The child SHALL stay inside the Worker's process tree and SHALL terminate when
 the Worker exits, including when the Worker crashes. Unload and Worker
@@ -76,7 +96,7 @@ process tree under `SPEC.md` §4.10.
 
 #### Scenario: Loopback port answers with another server
 
-- **WHEN** the Worker's loopback port is answered by a server without this launch's identity, or by one serving a different model file, more than one slot or a non-CPU backend
+- **WHEN** the Worker's loopback port is answered by a server without this launch's identity, or by one serving a different model file, slot count or context length, or the child maps a non-CPU compute backend
 - **THEN** the Worker refuses admission before provider generation
 
 ### Requirement: Lane A publishes a diagnostic capability envelope
@@ -103,16 +123,24 @@ or ask llama.cpp to render or retokenize prompts. Unlike providers that fall
 back to rendered text, lane A SHALL reject a request that carries no prompt
 token IDs before provider generation.
 
-Every request SHALL carry a complete sampler: temperature and top-p from the
-request, top-k, min-p and repetition penalties set to neutral values, and a
-pinned seed. The Worker SHALL map stop sequences, SHALL bound output tokens by
-the pinned context, and SHALL reject token-ID output, logprobs and any other
-control it does not map before provider generation.
+Every request SHALL carry a complete sampler: the request's temperature,
+where 0 means greedy; the request's top-p when it lies strictly between 0 and
+1, and 1 otherwise, matching the MLX provider's treatment of an unset proto3
+value; top-k, min-p, repetition penalties and every other sampler the server
+supports set to neutral values; and a pinned seed. Before admission, the
+Worker SHALL confirm that the server's default generation settings carry no
+model-supplied sampler beyond those the request overrides.
+
+The Worker SHALL map stop sequences and SHALL set the output limit to the
+request's maximum output tokens. It SHALL reject, before provider generation,
+a request whose maximum output tokens is zero or whose input plus maximum
+output exceeds the pinned context, and a request for token-ID output, logprobs
+or any other control it does not map.
 
 Every request SHALL also disable the prompt cache and request per-token
-timings. The Worker SHALL fail the generation before emitting its first delta
-when the first chunk reports reused prompt tokens or omits the cached-token
-count. Provider usage SHALL equal the Controller's input token count.
+timings. The Worker SHALL read the first chunk's per-chunk cached-token count
+before forwarding any of that chunk's text, and SHALL fail the generation
+without emitting a delta when that count is above zero or absent. Provider usage SHALL equal the Controller's input token count.
 
 #### Scenario: Prompt token IDs are absent
 
@@ -124,6 +152,16 @@ count. Provider usage SHALL equal the Controller's input token count.
 - **WHEN** a lane A request asks for token-ID output, logprobs or another control the Worker does not map
 - **THEN** the Worker rejects it before provider generation
 
+#### Scenario: Request leaves top-p unset
+
+- **WHEN** a lane A request has a temperature above zero and a top-p of zero
+- **THEN** the Worker sends top-p 1 and samples, rather than generating greedily
+
+#### Scenario: Output budget exceeds the context
+
+- **WHEN** a lane A request's maximum output tokens is zero, or its input plus maximum output exceeds the pinned context
+- **THEN** the Worker rejects it before provider generation
+
 #### Scenario: Provider usage disagrees
 
 - **WHEN** the provider reports an input token count different from the supplied prompt IDs
@@ -131,8 +169,8 @@ count. Provider usage SHALL equal the Controller's input token count.
 
 #### Scenario: Server reuses cached prompt tokens
 
-- **WHEN** the first chunk of a lane A generation reports reused prompt tokens or carries no cached-token count
-- **THEN** the Worker fails the generation before emitting any delta
+- **WHEN** the first chunk of a lane A generation reports reused prompt tokens or carries no per-chunk cached-token count
+- **THEN** the Worker fails the generation without forwarding that chunk's text or emitting any delta
 
 ### Requirement: Lane A serves thinking-disabled prompts only
 
@@ -162,7 +200,10 @@ require that:
 - decoding each parity corpus entry's token IDs yields identical bytes under
   both tokenizers, including special and control tokens
 - the reference end-of-generation set is contained in the GGUF's
-  end-of-generation set, and the parity record lists any extra GGUF IDs
+  end-of-generation set
+- every extra GGUF end-of-generation ID is classified by its class in the
+  reference tokenizer; an extra ID that is ordinary text there is a recorded
+  divergence, and no corpus case may depend on generating it
 
 The corpus SHALL cover ASCII, non-Latin scripts, emoji, whitespace runs and
 every special or control token the model's template emits. The parity record
@@ -172,6 +213,11 @@ SHALL state the special-token parse mode used to encode the corpus.
 
 - **WHEN** a reference-range piece or decoded corpus entry differs, a GGUF ID above the reference range is a used token, or a reference end-of-generation ID is missing from the GGUF
 - **THEN** that model is excluded from lane A and the mismatch is reported
+
+#### Scenario: GGUF stops on an ordinary-text token
+
+- **WHEN** the GGUF's end-of-generation set contains an ID that the reference tokenizer treats as ordinary text
+- **THEN** the parity record lists it as a divergence, and any corpus case whose expected output contains that token is removed or the model is excluded
 
 #### Scenario: Tokenizer source is not pinned
 
@@ -202,8 +248,11 @@ is replaced, including after logical unload and reload.
 
 Before downloading, unpacking or starting anything, lane A SHALL check that
 the host runs Linux on an architecture with a pinned CPU-only release build,
-that an x86 host has AVX2, that free memory covers the model's recorded peak
-plus margin, and that no accelerator is visible to the server child.
+that an x86 host has AVX2, and that free memory covers the model's recorded
+peak plus margin. Accelerator isolation SHALL be defined by backend
+availability, not by device nodes: the verified archive ships no accelerator
+backend, no backend search path is set, the working directory holds no
+runtime libraries, and the child is launched with no offload device.
 
 A failed preflight SHALL skip the lane with a recorded reason and SHALL NOT
 report a pass.
@@ -215,7 +264,7 @@ report a pass.
 
 #### Scenario: Accelerator is visible
 
-- **WHEN** a lane A run would make an accelerator visible to the server child
+- **WHEN** a lane A run would let the server child load an accelerator backend, through the archive contents, a backend search path or the working directory
 - **THEN** the lane refuses to start rather than producing CPU-labelled evidence from an accelerator
 
 ### Requirement: Lane corpus asserts protocol and semantic outcomes
@@ -228,7 +277,7 @@ test validates. Lane A SHALL NOT claim `json_object` enforcement and SHALL NOT
 simulate it through an internal provider field.
 
 Every lane run SHALL pin its thread count and record the CPU backend variant
-the runtime loaded as part of its host class. Tests SHALL assert protocol and
+mapped by the runtime as part of its host class. Tests SHALL assert protocol and
 semantic outcomes. Exact-answer and exact-text cases SHALL use temperature 0
 with the pinned seed. Exact generated text MAY be asserted only within one
 runtime, host class and thread count, and SHALL NOT be compared across

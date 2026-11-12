@@ -38,7 +38,8 @@ Qwen3-0.6B on the Xeon AMX host, 8 / 4 threads:
 Summed RSS may count shared pages twice. The idle times come from watching
 host CPU use outside the runtime. They are probe observations, not evidence
 of native cessation, which stays unconfirmed. The token-ID check's summary
-script did not assert `prompt_tokens == 24` in 4 of its 8 configurations.
+script asserted `prompt_tokens == 24` in none of its 8 configurations; the
+count was printed and checked by hand in 4 of them.
 
 The Worker's actual path combines a streamed `/v1/completions` request with
 token IDs, a usage trailer and cancellation. That combination was not run on
@@ -133,22 +134,46 @@ rely on it:
 
 At b12211, `llama-server` enables its Jinja renderer by default, keeps an
 8192 MiB host-memory prompt cache that saves and restores independently of
-the per-request `cache_prompt` flag, and lets `LLAMA_ARG_*` variables
-override flags. ggml also loads backends from the executable directory, the
-working directory and `GGML_BACKEND_PATH`. The Worker therefore launches the
-pinned CPU-only archive with an explicit argument list:
+the per-request `cache_prompt` flag, and starts in router mode when given no
+model. Before the environment and argv, it applies `/etc/llama.cpp/config.ini`
+and `${XDG_CONFIG_HOME:-~/.config}/llama.cpp/config.ini`, with no opt-out, and
+it reads `LLAMA_ARG_*`, `LLAMA_API_KEY` and `HF_TOKEN` from the environment.
+ggml loads backends from the executable directory, the working directory and
+`GGML_BACKEND_PATH`. The Worker therefore launches the pinned CPU-only archive
+with an explicit argument list:
 
 ```text
---no-jinja -np 1 --no-cache-prompt --cache-ram 0 --no-slots
+-m <digest-verified GGUF path>
+--no-jinja --special -np 1 --no-cache-prompt --cache-ram 0 --no-slots
 --device none -ngl 0 -c <pinned context> -t <pinned threads>
 --host 127.0.0.1 --port <per-instance port>
 --alias <launch nonce> --api-key-file <per-launch key file>
 ```
 
-The Worker scrubs the child's environment of `LLAMA_ARG_*`, `GGML_*` and
-CUDA, HIP and Vulkan variables, and starts it in a working directory with no
-ggml libraries. It confirms from the startup output that only the CPU backend
-loaded.
+The list never carries `-hf`, `-mu` or `-dr`. `--no-jinja` disables Jinja
+rendering only; the legacy template path behind `/v1/chat/completions` is
+unused because lane A calls only `/v1/completions`. `--special` makes the
+server emit control-type pieces such as MiniCPM5's `<tool_call>`, matching
+`orchard_tokenizer` and MLX, which decode with `skip_special_tokens=False`.
+
+The child's environment is an allowlist: `PATH`, `LANG=C`, and `HOME` and
+`XDG_CONFIG_HOME` pointing at an empty per-launch directory. It runs in a
+working directory with no ggml libraries. Preflight fails when
+`/etc/llama.cpp/config.ini` exists, and the Worker refuses admission when the
+startup log contains a "using config file" line. The API key file is
+owner-only. `/health`, `/v1/health` and static UI assets skip the API key at
+b12211, so the identity and admission checks never rely on them.
+
+Before admission, the Worker reads `/props` and checks `model_alias`,
+`model_path`, `total_slots == 1`, `default_generation_settings.n_ctx` against
+the pinned context, and that the default sampler carries nothing a GGUF's
+`general.sampling.*` keys could add beyond what each request overrides.
+`/props` names no backend, and backend loading is silent in release builds,
+so the Worker reads the child's `/proc/<pid>/maps`. CPU-only means no ggml
+library is mapped other than `libggml-base`, `libggml`, one
+`libggml-cpu-<variant>` and `libggml-rpc`, which both pinned archives ship
+and ggml loads from the executable directory. The mapped CPU variant is
+recorded in the host class.
 
 Embedding llama.cpp through Python bindings was rejected. It would add a
 native build to the Worker environment, and the bindings lag upstream
@@ -167,21 +192,30 @@ llama-server fills every omitted sampler field with its own defaults, which
 include top-k 40, min-p 0.05, temperature 0.8 and a random seed. Each request
 therefore carries a complete sampler:
 
-- `temperature` and `top_p` from `GenerationParams`
-- `top_k` 0, `min_p` 0, and neutral repetition, presence and frequency
-  penalties
+- `temperature` from `GenerationParams`, where 0 means greedy
+- `top_p` from `GenerationParams` when it lies strictly between 0 and 1, and
+  1 otherwise. `GenerationParams` uses proto3 doubles, so 0 means unset, and
+  the MLX sampler applies top-p only inside that range. llama-server accepts
+  top-p 0 and keeps a single token, so passing it through would make an unset
+  value greedy.
+- `top_k` 0, `min_p` 0, neutral repetition, presence and frequency
+  penalties, and every other sampler at its neutral value
 - a pinned `seed`
-- `stop` from `stop_sequences`, and `n_predict` bounded by the pinned context
+- `stop` from `stop_sequences`, and `n_predict` set to `max_output_tokens`
 
-Token-ID output, logprobs and any control the Worker does not map are rejected
-before generation, as `vllm_poc` does.
+A request whose `max_output_tokens` is 0, or whose input plus
+`max_output_tokens` exceeds the pinned context, is rejected before
+generation, as `vllm_poc` checks its own limit. Token-ID output, logprobs and
+any control the Worker does not map are also rejected before generation.
 
 Prompt caching is disabled at launch (`--no-cache-prompt`, `--cache-ram 0`)
 and again per request (`cache_prompt: false`). On a streamed
-`/v1/completions` request, `cache_n` and `cached_tokens` arrive only in the
-final chunk unless `timings_per_token` is set. Each request therefore sets
-it, and the Worker fails the generation before emitting its first delta when
-the first chunk reports reused prompt tokens or omits the count. In the
+`/v1/completions` request, `usage.prompt_tokens_details.cached_tokens`
+arrives only in the final chunk. With `timings_per_token` set, every chunk
+carries `timings.cache_n`, and the first chunk also carries the first
+generated text. The Worker therefore reads `timings.cache_n` from that chunk
+before forwarding its text, and fails the generation without emitting a delta
+when the count is above zero or absent. In the
 probes, cache-on runs both reused tokens and changed output.
 
 ### Lane A serves thinking-disabled prompts only
@@ -208,7 +242,9 @@ therefore requires:
 - identical decoded bytes for every corpus entry, including special and
   control tokens
 - the pinned `generation_config.json` end-of-sequence IDs contained in the
-  GGUF's end-of-generation set, with any extra GGUF IDs recorded
+  GGUF's end-of-generation set
+- each extra GGUF end-of-generation ID classified by its class in the pinned
+  tokenizer
 
 Exact-set and full-range comparisons would reject every candidate. llama.cpp
 pads the GGUF vocabulary beyond the IDs `tokenizer.json` defines, and it adds
@@ -216,6 +252,14 @@ fill-in-the-middle and text-matched tokens to the GGUF's end-of-generation
 set. `orchard_tokenizer` has no end-of-generation concept, and the tokenizer
 configuration names only one end-of-sequence token, so the generation
 configuration is the reference.
+
+Containment alone is not enough. llama.cpp adds any token whose text is
+`</s>` to the end-of-generation set and forces it to control type. The pinned
+Qwen3 GGUF's set includes 128247 (`</s>`), an ordinary vocabulary entry in
+the pinned `tokenizer.json`, and the Gemma 4 GGUF's set includes `</s>` (ID
+212, normal type). Lane A would stop where MLX continues if the model wrote
+that text. The parity record therefore lists an ordinary-text extra as a
+divergence, and no corpus case may depend on generating it.
 
 `orchard_tokenizer` needs `tokenizer.json`, its configuration and the chat
 template, which the GGUF repositories do not ship. Each model therefore pins
@@ -257,15 +301,20 @@ Lane A checks before downloading or starting anything:
   macOS is out, because the macOS release build includes Metal
 - AVX2 on x86
 - free memory against the model's recorded peak plus margin
-- no accelerator visible to the child
+- accelerator isolation defined by backend availability, not device nodes:
+  the verified archive ships no accelerator backend, `GGML_BACKEND_PATH` is
+  unset, the working directory is empty and the child gets `--device none`.
+  A `/dev/dri` node on a developer laptop does not by itself skip the lane.
+- no `/etc/llama.cpp/config.ini`
 
 A failed preflight skips the lane with a recorded reason. It is never a
 silent pass.
 
 The AVX2 floor is a lane policy, not a requirement of the build. The x64
 archive ships CPU backend variants from SSE4.2 to Sapphire Rapids and picks
-one per host. The variant actually loaded is recorded as part of the host
-class, because it can change generated text.
+one per host. The variant mapped by the child, read from its
+`/proc/<pid>/maps`, is recorded as part of the host class, because it can
+change generated text.
 
 ### The corpus asserts outcomes, not prose
 
@@ -278,7 +327,7 @@ gets only loose semantic checks.
 
 Exact-answer and golden-text cases run at temperature 0 with the pinned seed.
 Golden text is allowed only within one runtime, one pinned host class
-(including the loaded CPU variant) and one thread count, with prefix caching
+(including the mapped CPU variant) and one thread count, with prefix caching
 off. It is never compared across runtimes
 or thread counts.
 

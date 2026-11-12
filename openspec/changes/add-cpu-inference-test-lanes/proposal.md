@@ -56,13 +56,16 @@ Intel AMX.
 - Pin lane A's runtime build, model revisions, file digests and upstream
   tokenizer sources. Fail before mutation on a digest mismatch or an unmet
   host preflight.
-- Launch the llama-server child with an explicit argument list (no template
-  renderer, no prompt or host-memory cache, one slot, no offload device) from
-  a scrubbed environment. Keep it inside the Worker's process tree, give each
+- Launch the llama-server child with an explicit argument list (the verified
+  GGUF as its one local model, Jinja rendering off, special tokens rendered,
+  no prompt or host-memory cache, one slot, no offload device) from an
+  allowlisted environment that no llama.cpp configuration file can reach.
+  Confirm a CPU-only backend set from the child's memory map. Keep it inside the Worker's process tree, give each
   launch its own alias nonce and API key, verify both before admission, and
   stop it with the Worker.
-- Send only authoritative prompt token IDs with a complete sampler and the
-  prompt cache off. Reject requests without IDs and unmapped controls, and
+- Send only authoritative prompt token IDs with a complete sampler, top-p
+  normalized as the MLX provider treats an unset value, the output limit set
+  from the request, and the prompt cache off. Reject requests without IDs and unmapped controls, and
   fail before the first delta if the server reports reused prompt tokens.
 - Serve thinking-disabled prompts only, with no reasoning evidence.
 - Settle cancellation through the request-owned reader with native cessation
@@ -73,8 +76,9 @@ Intel AMX.
 - Gate lane A on **tokenizer parity** between each GGUF and `orchard_tokenizer`
   from a pinned upstream tokenizer source: identical pieces over the pinned
   tokenizer's ID range, decode parity on a fixed corpus, and the generation
-  configuration's end-of-sequence IDs contained in the GGUF's set. A mismatch
-  keeps that model out of the lane.
+  configuration's end-of-sequence IDs contained in the GGUF's set, with any
+  ordinary-text extra recorded as a divergence. A mismatch keeps that model
+  out of the lane.
 - Assign model roles for lane A:
   - Qwen3-0.6B Q4\_K\_M: plumbing only.
   - MiniCPM5-2B Q4\_K\_M: exact-answer quick check.

@@ -25,7 +25,7 @@ Bounded probes on 2026-11-09, run against each runtime's own server rather than 
 
 Use two default-off CPU test lanes:
 
-- **Lane A, llama.cpp:** a separately selected `llamacpp_cpu` Worker backend for Linux on x86-64 with AVX2 or on arm64, run frequently. The Worker owns one pinned `llama-server` child launched with an explicit argument list from a scrubbed environment, sends only authoritative token IDs with a complete sampler and the prompt cache off, serves thinking-disabled prompts only, and checks tokenizer parity per model.
+- **Lane A, llama.cpp:** a separately selected `llamacpp_cpu` Worker backend for Linux on x86-64 with AVX2 or on arm64, run frequently. The Worker owns one pinned `llama-server` child launched with an explicit argument list from an allowlisted environment that no llama.cpp configuration file reaches, sends only authoritative token IDs with a complete sampler and the prompt cache off, serves thinking-disabled prompts only, and checks tokenizer parity per model.
 - **Lane B, vLLM CPU:** the `vllm_poc` adapter generalized to frozen serving profiles, with a CPU profile for chosen AVX-512 hosts launched by a lane harness, run nightly or on demand. It is specified in its own change, which modifies `linux-source-dev-inference-poc` and revises ADR 0037.
 
 Do not use SGLang for CPU lanes.
