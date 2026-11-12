@@ -4,7 +4,7 @@
 - [x] 1.2 Move the `cluster_management.node_status_list` and inspected Node payload builders into Controller-owned code and make `orchardctl nodes list --json` and `orchardctl nodes inspect --json` call them.
 - [x] 1.3 Add an explicit `latest_decision` projection option: operator projection (`object`, `decision`, `decided_at`) for the Operator API and the existing full projection for the local CLI.
 - [x] 1.4 Add a non-observing Runtime Endpoint snapshot option that skips `Orchard.Nodes.observe_status/3` and queue-capacity refresh, and use it for the shared memory budget.
-- [x] 1.5 Share the strict inventory read and summary between text and JSON modes of `orchardctl nodes list`, reporting `database_unavailable` with exit status 1 in both modes while preserving healthy output (KAP-208).
+- [x] 1.5 Share the strict inventory read and summary between text and JSON modes of `orchardctl nodes list`, reporting `database_unavailable` with exit status 1 in both modes while preserving healthy output.
 
 ## 2. Operator API Routes
 
@@ -26,3 +26,8 @@
 
 - [x] 4.1 Run strict validation for this change and all OpenSpec changes.
 - [x] 4.2 Run the applicable full Elixir quality and coverage workflow.
+
+## 5. Accepted reader contract amendment
+
+- [x] 5.1 Record Najib's 2026-11-12 acceptance and reconcile admission, shared-builder versions, Standby authority and omitted probes with `add-read-only-cluster-role`, preserving the implemented operator/admin and CLI contracts.
+- [ ] 5.2 Implement and verify reader support under `add-read-only-cluster-role` only after its shared-authorization activation prerequisites. The completed baseline tasks above do not constitute reader implementation or verification.

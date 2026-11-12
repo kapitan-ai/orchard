@@ -14,6 +14,17 @@ so authenticated `GET /ops/v1/health` no longer reports them. The Context and
 Decision sections stay as authored to record the state that motivated the
 decision.
 
+### Amendment 2026-11-12
+
+Najib accepted [ADR 0042](0042-read-only-cluster-role.md)'s bounded reader health
+exception, reconciled in `SPEC.md` §§3.1 and 4.6.1. After its activation gates,
+`cluster_reader` may use the same route only for separately versioned,
+non-observing health without `runtime.diagnostics`, runtime messages or remediation.
+Full operator/admin diagnostics, public status-only health and the staged readiness
+predicate below remain unchanged. Fenced serving-Controller health on Standby still
+requires authoritative Postgres and current caller authority (§10.11.2).
+The role remains inactive; this amendment does not implement it.
+
 ## Context
 
 `SPEC.md` §3.1 requires Controller readiness to include Postgres reachability,

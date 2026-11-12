@@ -330,6 +330,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 * Worker runtimes SHALL be subprocesses supervised by node agent, not permanent launchd services.
 * Tokenization/rendering helper MAY be a bundled native or Python helper, but the controller API layer remains Elixir/OTP.
 * Controller-owned durable operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited domain operations.
+* The accepted, inactive cluster-reader contract (§10.4) permits only fenced serving-Controller health/cluster observation and caller self-authority on Standby under §10.11.2; all other reader target operations remain active-only and no write authority is granted.
 * Portable CLI code SHALL own client interaction and presentation, not direct Repo authority or host lifecycle mechanics.
 * Platform-specific host lifecycle behavior SHALL remain isolated behind host adapters and SHALL NOT become a portable Orchard control-plane core dependency.
 
@@ -372,6 +373,11 @@ Prometheus metrics are served on the public/admin/operator API listener above; t
   boundary. The response SHALL include `Cache-Control: no-store`, identify its
   readiness contract, and may include sanitized checks, reasons, remediation,
   build, transport, Console, and runtime observations.
+* Subject to §10.4 activation, the same route SHALL admit `cluster_reader` only to
+  a separately versioned, non-observing bounded health representation, omitting
+  diagnostics, runtime messages and remediation. It SHALL retain readiness-derived
+  HTTP 200/503 and `Cache-Control: no-store`; public health and the staged predicate
+  remain unchanged. The serving-Controller exception requires §10.11.2 fences.
 * Until authoritative cache-loaded and conditional leadership sources exist, the
   implementation MAY temporarily use the unchanged M0-era predicate identified as
   `orchard.readiness.legacy_m0.v1`. This staged predicate does not satisfy or claim
@@ -1287,6 +1293,7 @@ Redacted diagnostic projection:
 
 Existing runtime-target status snapshots SHALL expose an additive `diagnostics` block through the shared `orchard.cluster_management.status.v1` NodeStatus contract. Missing blocks SHALL normalize to null, and older readers MAY ignore the additive field. Registered-node CLI list/inspect and admission-candidate status SHALL retain null diagnostics: volatile host inventory is not persisted Node inventory and SHALL NOT be attached through hostname or display-name matching.
 The retained authenticated `GET /ops/v1/health` response SHALL expose this block as nullable `runtime.diagnostics`, re-normalized from its single existing runtime snapshot read under the same allowlist and freshness bounds. Missing/legacy blocks, unknown diagnostic schemas and failed runtime snapshots SHALL yield null; failed snapshots SHALL NOT surface injected positive diagnostic evidence. This additive field SHALL NOT alter the health response status, readiness predicate, cluster-scoped Operator-or-admin authorization or `Cache-Control: no-store`. Public `/health/ready` SHALL remain status-only.
+This mandatory nullable field governs full operator/admin health. The accepted, inactive reader representation (§§3.1, 10.4) SHALL omit `runtime.diagnostics` entirely and use non-observing authenticated evidence on both BEAM and mTLS paths, including failures; it SHALL NOT persist observations or refresh/clear capacity to answer health.
 The block SHALL use schema version `1` and `authority = "observation_only"`, with a closed allowlist of evidence states, source categories, original valid timestamps, derived ages, CPU logical-processor count, network-interface count, distinct NVIDIA/AMD observed-device counts, and runtime readiness/worker-state categories. Counts SHALL NOT represent free resources or capacity. Raw health messages/codes, network addresses and identity, device identifiers, paths, credentials, environment, tenant data, prompts/responses, unknown fields and raw protobuf payloads SHALL be excluded. Existing status fields remain compatible; this redaction contract applies to the new block, not the complete legacy status payload.
 The projection SHALL perform no I/O and SHALL reuse only observations from existing status reads. Inventory SHALL first satisfy the existing schema/size bounds and a diagnostic traversal cap of 4096 values, depth 12 and 131072 aggregate string bytes. Projection and re-normalization SHALL use source timestamps without manufacturing freshness, with diagnostic maximum ages of 195000 ms for inventory and each section and 15000 ms for Controller-timestamped runtime health/lifecycle observations. Missing/disabled inventory SHALL be absent; malformed, unknown-schema, oversized, future or invalid-timestamp evidence SHALL be absent or invalid; stale evidence SHALL NOT expose positive counts or current runtime health/lifecycle categories. Missing counts SHALL be null, never inferred zero capacity.
 NVIDIA/AMD device counts, including zero, SHALL require matching vendor enums and fresh observed evidence from the vendor-specific source on the provider and every contributing device: `nvidia-smi` for NVIDIA and `rocm-smi` for AMD. Re-normalization SHALL admit a vendor count only with its matching source category (`nvidia_probe` or `amd_probe`, respectively). Missing, unknown, opposite-vendor, non-vendor or inconsistent sources SHALL yield null counts. Valid matching empty-device observations SHALL retain zero counts; existing freshness and oldest-contributing-timestamp rules remain unchanged.
@@ -1460,6 +1467,7 @@ The migration SHALL NOT assign existing Nodes a ceiling of `1`, infer a ceiling 
 
 Operator diagnostics SHALL expose durable enforcement phase, policy state, normalized target management class, authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, decision-specific available slots, eligibility, the relevant observation time, and stable reason codes.
 While the decision is `legacy_pre_cutover`, diagnostics SHALL additionally expose `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state as temporary non-authoritative migration evidence and SHALL keep Effective Dispatch Limit and Dispatch Headroom at `0`.
+Only the accepted, inactive reader Node list/detail serialization (§10.4) is excepted from the complete diagnostic representation: its [closed capacity subset](openspec/changes/add-read-only-cluster-role/design.md#closed-reader-projections) SHALL retain numeric values with validated counterfactual, phase, policy, management-class, authority-decision, eligibility, observation-time and freshness/reason labels, omitting placement maps and arbitrary evidence/prose. Counterfactual labels retain their meaning even in enforcing phase; missing snapshot/time remains null, fresh heartbeat does not prove fresh capacity, and invalid interpretation labels fail closed. Canonical pre-cutover enforcing values stay zero and temporary legacy evidence stays separate. The evaluator, full operator/admin diagnostics and dispatch authority remain unchanged.
 Stable capacity reason codes SHALL include `node_health_degraded`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_not_yet_enforcing`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_pre_cutover_legacy`, `dispatch_capacity_phase_policy_mismatch`, `dispatch_capacity_cutover_quiescing`, `dispatch_capacity_cutover_occupancy_not_zero`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
 A consumer that cannot assemble the Controller-owned facts required for the shared evaluation from current authenticated evidence SHALL fail closed and expose the scheduler rejection reason code `dispatch_capacity_facts_unavailable` rather than falling back to telemetry or a permissive default.
 Serialized per-Node capacity policy mutation that cannot acquire the Node acceptance gate SHALL fail fast with `dispatch_capacity_acceptance_gate_busy` rather than block behind an in-flight dispatch.
@@ -2442,6 +2450,7 @@ The platform SHALL expose five API surfaces:
    * HTTPS JSON for public/operator traffic in `reverse_proxy` and `direct_https` transport modes
    * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * enabled API Client with cluster-scoped `operator` or `admin` RoleBinding
+   * accepted but inactive: cluster-scoped API Client `cluster_reader` for only the eight bounded reads in §7.3.1, subject to §10.4 activation
 
 3. **Admin API**
 
@@ -2466,7 +2475,8 @@ The platform SHALL expose five API surfaces:
 
 When the Console is disabled under §2.3, the Operator and Admin APIs SHALL be the remote management surface under §§7.3 and 7.4.
 Remote management SHALL authenticate a service-account-owned API Token whose enabled API Client holds the route's required cluster-scoped `operator` or `admin` RoleBinding.
-Console Basic Auth, Console Sessions, Portal sessions, and Public Inference credentials SHALL NOT authorize Operator API or Admin API requests.
+The sole accepted extension is the activation-gated `cluster_reader` admission for enumerated Operator reads (§§7.3.1, 10.4); it grants no Admin or Console access.
+Console Basic Auth, Console Sessions, Portal sessions, and inference-only credentials SHALL NOT authorize Operator API or Admin API requests.
 Initial administrator provisioning SHALL remain local to the Controller host under ADR 0011, and unmigrated `orchardctl` command families SHALL retain their §11.9 local Controller-runtime authority until separately migrated.
 Disabling the Console SHALL NOT introduce a new authority path or relax any other surface's contract.
 
@@ -2981,6 +2991,7 @@ A separately selected, default-off embedded TensorFold source experiment MAY use
 Base path: `/ops/v1`
 
 Operator API admission SHALL require an enabled API Client with cluster-scoped `operator` or `admin` authority.
+Subject to §10.4 activation, an enabled API Client's cluster-scoped `cluster_reader` grant SHALL additionally admit only the explicit method/route/actions and closed representations in §7.3.1, not the whole Operator pipeline or every GET.
 For migrated operation families, transport admission SHALL be followed by the shared action-time authorization contract in §10.11; it SHALL NOT replace that contract or admit a Console cookie.
 
 #### 7.3.1 Endpoints
@@ -3006,12 +3017,25 @@ POST   /ops/v1/requests/:request_id/retry
 GET    /ops/v1/worker-recovery/nodes/:node_id/models/:model_id
 POST   /ops/v1/worker-recovery/nodes/:node_id/models/:model_id
 GET    /ops/v1/scheduler/explanations/:request_id
+GET    /ops/v1/circuit-breakers/nodes/:node_id
+POST   /ops/v1/circuit-breakers/nodes/:node_id/clear
+GET    /ops/v1/circuit-breakers/placements/:node_id/:model_id
+POST   /ops/v1/circuit-breakers/placements/:node_id/:model_id/clear
 POST   /ops/v1/nodes/:node_id/diagnostics
 ```
 
 Operator API requests SHALL authenticate with a service-account-owned API Token whose owning API Client is enabled and holds a cluster-scoped `operator` or `admin` RoleBinding.
-Tenant-direct API Keys, tenant-scoped Access Levels, and public inference credentials SHALL NOT authorize Operator API access and SHALL fail closed.
-Missing or invalid credentials SHALL return `401 invalid_api_key`; authenticated non-operator principals SHALL return `403 operator_required`.
+The accepted reader exception below is subject to §10.4 activation. Tenant-direct API Keys, tenant-scoped Access Levels, and inference-only credentials SHALL NOT authorize Operator API access and SHALL fail closed.
+Missing or invalid credentials SHALL return `401 invalid_api_key`; authenticated principals lacking the route's required authority, including disabled API Clients, SHALL return `403 operator_required`.
+
+The reader path SHALL admit exactly eight GETs: health, cluster, Node list, Node detail, exact-version worker-recovery status, scheduler explanation, Node breaker inspection, and placement breaker inspection at the paths above.
+For a reader-bearing principal, that path SHALL apply whenever independently sufficient existing cluster operator/admin authority for the action is absent, including when inference grants remain; independently sufficient existing authority keeps its behavior, subject to reader-bearing delivery re-selection (§10.11.2).
+Reader data SHALL be recursively validated closed subsets of the same route's shared Controller builder facts, with top-level `projection: "cluster_reader.v1"` and distinct root/nested reader `contract_version` values; full operator/admin and CLI representations and versions SHALL remain unchanged.
+The accepted [route matrix and closed projections](openspec/changes/add-read-only-cluster-role/design.md#current-route-admission) define the detailed field/value, error, version and future-read contracts under this SPEC; links SHALL be updated on sync/archive, and SPEC prevails in a conflict.
+Reader successes and role refusals SHALL be `no-store`. Reader-path mutations and Action Previews SHALL return the existing `403 operator_required` before target lookup or leadership checks, even with `dry_run` or confirmation; malformed/missing/expired/revoked authentication retains `401 invalid_api_key`.
+Every unclassified route defaults to denied. Specified Controller/capacity-policy reads require separately reviewed reader contracts before admission; request details remain excluded. Model UUIDs/exact versions and incident Request IDs for the initial inspection set must be supplied externally; no catalog or request discovery is granted.
+Reader health/cluster SHALL use only the serving-Controller exception in §10.11.2. Other reader reads require Active/proven leadership and retain `503 controller_standby` / `503 controller_leadership_unproven`; reader scheduler admission adds that gate without changing the operator/admin baseline.
+Reader Node detail SHALL skip the omitted memory-budget probe. Reader breaker inspection SHALL be a non-locking committed-state read without dispatch-target advisory or row write locks; caller-authority fences remain mandatory, and inspection does not reserve dispatch eligibility. Breaker clear authority and §5.10 generation semantics remain unchanged.
 
 Eligibility-changing or destructive Operator and Admin node actions SHALL provide an Action Preview before execution.
 Action Previews SHALL be side-effect-free and SHALL NOT create domain rows, audit events, or Node Admission Decisions unless a future preview-audit contract explicitly says otherwise.
@@ -3155,6 +3179,8 @@ Scheduler explanation generation, validation, and persistence are observational.
 An invalid or unbuildable explanation SHALL NOT fail, block, or alter the user's inference request.
 Invalid explanation payloads SHALL NOT be persisted; the controller SHALL drop them with a logged error while still recording the underlying scheduler decision.
 
+These full explanation requirements remain binding for internal/persisted evidence and operator/admin output. Subject to §10.4 activation, the separately versioned reader serialization SHALL retain only validated Request/Node IDs, tier, eligibility, numeric score and stable reason codes in the closed candidate arrays; it SHALL omit diagnostics/source maps, components, target references and supplemental prose. Invalid reader evidence SHALL fail closed without raw error details. Reader admission requires Active leadership and current transmission authority (§10.11.2), not a change to the existing scheduler or full explanation.
+
 ---
 
 ### 7.4 Admin API
@@ -3162,11 +3188,13 @@ Invalid explanation payloads SHALL NOT be persisted; the controller SHALL drop t
 Base path: `/admin/v1`
 
 Admin API admission SHALL require an enabled API Client with cluster-scoped `admin` authority.
+`cluster_reader` SHALL confer no Admin admission, including read or preview; a reader-path request SHALL retain `403 admin_required` before target lookup.
 The accepted credential-management target in §10.11 SHALL retain this admission boundary and add shared action-time authorization without introducing Tenant-admin machine admission or accepting Console cookies.
 
 #### 7.4.1 Endpoints
 
 Accepted target credential-management and Console Identity provisioning routes are specified in §10.11; those additions remain pending implementation.
+Every current and specified Admin read, including those additions, remains excluded from cluster-reader authority.
 
 ```text
 GET    /admin/v1/tenants
@@ -3278,6 +3306,8 @@ Key Rotation mode SHALL create a replacement API Token and revoke previous activ
 Repeated provisioning SHALL preserve omitted optional API Client metadata columns, clear present blank optional scalar metadata columns, and replace metadata when `metadata_json` is present.
 Bulk provisioning SHALL reject rows targeting disabled API Clients.
 JSON mode SHALL emit a machine-readable summary without plaintext API Tokens in stdout.
+
+The accepted, inactive reader extension (§10.4) SHALL add `--access-level inference_client|cluster_reader`, defaulting to the existing inference mode. Reader mode SHALL ensure only the cluster-reader grant instead of inference access, reject any incompatible retained owner-plus-token grant (including inactive tokens), and revalidate the complete union inside Apply/rotation transactions under shared writer fences with whole-batch rollback on conflict. Default mode SHALL reject an existing reader-only client rather than silently broaden it. Summaries SHALL include the selected access level and cluster scope for reader mode and state that tokens inherit current owner grants. CSV, identity matching, rotation and protected one-time output contracts remain unchanged; no grant is silently stripped or converted.
 
 #### 7.4.5 Model import example
 
@@ -5001,6 +5031,7 @@ The current pre-cutover key foreign-key behavior that permits `ON DELETE SET NUL
 
 The `console_identity` RoleBinding subject below is an accepted target extension under §10.11 and remains pending implementation with Console Identity and Session storage.
 The extension SHALL preserve existing machine/inference subjects and SHALL NOT convert their descriptive metadata into human grants.
+The fifth role `cluster_reader` is likewise an accepted, inactive target (§10.4), restricted to `service_account` with null Tenant scope. Its new migration SHALL preserve existing unique-assignment and inference-scope constraints; no backfill or implicit grant is authorized.
 
 ```sql
 create table role_bindings (
@@ -5008,8 +5039,9 @@ create table role_bindings (
   -- console_identity is an accepted target subject (§10.11), pending migration.
   principal_type text not null check (principal_type in ('tenant', 'service_account', 'api_key', 'console_identity')),
   principal_id uuid not null,
-  role text not null check (role in ('admin', 'operator', 'tenant_admin', 'inference_client')),
+  role text not null check (role in ('admin', 'operator', 'tenant_admin', 'inference_client', 'cluster_reader')),
   tenant_scope_id uuid references tenants(id) on delete cascade,
+  check (role <> 'cluster_reader' or (principal_type = 'service_account' and tenant_scope_id is null)),
   inserted_at timestamptz not null default now(),
   unique(principal_type, principal_id, role, tenant_scope_id)
 );
@@ -5239,6 +5271,8 @@ OpenTelemetry Erlang/Elixir currently documents traces as stable while metrics/l
 
 The Controller SHALL serve `GET /metrics` on its existing HTTP listener and SHALL NOT create a separate metrics listener. The route SHALL require the cluster-scoped operator-or-admin service-account bearer boundary defined for the Operator API. Metrics initialization, collection, aggregation, and rendering are non-authoritative: their failure SHALL NOT prevent Controller boot or alter inference, admission, quota, scheduling, dispatch, recovery, or persistence outcomes. An authorized scrape MAY return `503` when valid exposition cannot be produced.
 
+The accepted `cluster_reader` role SHALL NOT authorize `/metrics`; without independently sufficient operator/admin authority, the request SHALL return `403 operator_required` before scraping. The bounded Operator-read exception does not widen this metrics boundary.
+
 The protected site-local endpoint MAY expose the canonical stable Tenant identifier as the raw `tenant` label. Orchard SHALL NOT hash, alias, truncate, or substitute that identifier for the pilot, and SHALL NOT include a user identifier as a metric label. Any later external metrics egress SHALL remove tenant and user dimensions before transmission.
 
 Required metric families:
@@ -5464,6 +5498,7 @@ Roles:
 * `operator`
 * `tenant_admin`
 * `inference_client`
+* `cluster_reader` (accepted target; inactive pending the prerequisites below)
 
 Permissions:
 
@@ -5471,10 +5506,16 @@ Permissions:
 * `operator`: runtime operations, diagnostics, request cancel/retry, no tenant/key mutation unless also admin
 * `tenant_admin`: tenant-scoped key/quota/model-access management only
 * `inference_client`: public inference only
+* `cluster_reader`: API-Client-only cluster scope; only the eight bounded Operator GETs enumerated in §7.3.1, with no mutations, Action Previews, Admin reads, `/metrics`, request content, inference or Console authority
 
 Bulk-provisioned API Clients SHALL receive tenant-scoped `inference_client` access by default.
+The explicit, activation-gated `--access-level cluster_reader` mode (§7.4.4) SHALL provision a dedicated cluster-reader client without an inference grant; no existing client is promoted automatically.
 Public inference requests authenticated by service-account-owned API Tokens SHALL require `inference_client` access for the effective Tenant.
 No implicit cross-tenant access.
+
+Najib, product owner, accepted the [cluster-reader target contract](openspec/changes/add-read-only-cluster-role/design.md) on 2026-11-12 ([ADR 0042](docs/decisions/0042-read-only-cluster-role.md)). The role is not implemented or active. Contract reconciliation SHALL precede integration of the shared-authorization implementation; reader activation SHALL remain blocked on completion and proof of [cross-surface tasks 3.1–3.2](openspec/changes/cross-surface-authorization-contract/tasks.md#3-shared-authorization-and-safe-console-admission), including shared trusted contexts/policy, operation/transmission fences and all retained authority writers including absent-grant insertion, plus compatible role readers/writers and the reader's own implementation/verification gates. Full named-Console cutover is not required; no COMPLETE-family or MCP claim follows.
+Grants SHALL remain additive. A reader grant SHALL NOT attenuate independently sufficient operator/admin/inference authority. Read-only describes the complete current grant set, not the token: dedicated provisioning and Console Access summaries SHALL show mixed authority as Not read-only. The reader cluster response SHALL expose only `authority.roles` and `authority.read_only` for current caller authority under transmission fences; unknown grants fail closed, and self-inspection is not lasting attenuation.
+The accepted disclosure includes cross-tenant operational IDs, existence, scores, reason codes and changing counts; it promises neither traffic-analysis protection nor comprehensive autonomous discovery. Externally supplied model/version inventory and incident Request IDs remain required. No tenant content or external-egress permission follows.
 
 These role summaries SHALL NOT themselves widen a transport's admission or complete a command-family migration.
 For the accepted credential family, §10.11 defines the authoritative action/resource/scope policy, exact-Tenant privilege classification, own-session access, and action-time revalidation.
@@ -5637,6 +5678,8 @@ Audit payloads SHALL exclude plaintext API Token secrets, API Key secret hashes,
 Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 Observed target references and admission-candidate metadata in audit payloads SHALL be sanitized and MUST NOT include secrets.
 
+Reader-path requests (§10.4) SHALL create no successful-read or valid-credential denial audit and mutate no domain, observation, capacity, recovery or breaker state. The sole durable bookkeeping exception is API Token `last_used_at` after authentication, including role refusals and Standby; it SHALL NOT extend expiry or advance revocation-relevant revisions. Existing authentication-failure audits and secret-safe aggregate HTTP telemetry remain unchanged. Provisioning/grant writes retain their existing atomic audit schemas and authority; no reader grant authorizes them.
+
 ### 10.10 Data governance
 
 Tenant setting `request_body_capture_mode`:
@@ -5692,6 +5735,8 @@ Existing `none` and `metadata` rows that contain forbidden content SHALL be purg
 When legacy nested event or scheduler values cannot be proven safe by the migration, Orchard SHALL discard the entire nested payload rather than copy key-allowlisted values forward; the migration MAY retain only a syntactically valid cache-affinity HMAC and its closed typed operational fields.
 The purge verification SHALL explicitly enumerate every content-bearing Request column and `request_events.payload`, and schema-drift coverage SHALL fail when a new text, JSON, or binary Request column is not classified.
 
+Capture policy governs retention, not reader authorization. The accepted reader contract (§10.4) SHALL exclude request details, captured output/previews, tools, credentials and arbitrary diagnostic/error strings regardless of capture mode or caller redaction flags; closed fields require value validation even when derived from shared builders. Bounded scheduler serialization does not authorize request-content inspection.
+
 ---
 
 ### 10.11 Named Console and shared management authorization target
@@ -5740,6 +5785,7 @@ Each migrated Console/API/CLI adapter SHALL construct trusted caller context fro
 Unknown actions, missing grants, stale credentials/sessions, disabled principals, epoch mismatch, and scope mismatch SHALL deny by default.
 Admission at an HTTP plug, page, socket, tool, or command SHALL NOT authorize a later operation; every protected read, preview, mutation, and data delivery SHALL resolve current authority.
 The active Controller and authoritative Postgres SHALL be required for family reads, previews, and writes; Standby or unavailable authority SHALL return stable refusal without cached success or local Repo fallback.
+The sole reader exception (§10.4) SHALL permit bounded serving-Controller health/cluster observation, including only the caller's self-authority summary, on Standby under the same current caller/credential/grant fences and authoritative Postgres. Missing authority SHALL return `503 authority_unavailable`; no replica, cached-authority success, local Repo fallback, leadership acquisition or reconciliation is permitted. This exception grants no credential-family inspection, other target read, preview or write authority.
 Normal API transport admission SHALL remain API Client-only under §§7.3 and 7.4, even when Console permits narrower named-human authority.
 
 Authority-changing writers and protected operations SHALL share transaction-scoped fences in deterministic typed-principal UUID order, followed by credential/session and resource rows in deterministic typed-ID order.
@@ -5749,6 +5795,7 @@ The writer closure SHALL include Console/API/CLI revoke, Portal self-service and
 Larger families MAY remain unmigrated, but their authority-changing writes SHALL NOT bypass these fences or the applicable atomic audit contract.
 If a restrictive authority change commits first, the operation SHALL fail from current authority; if the operation commits first, later revocation SHALL NOT undo that effect.
 Protected reads SHALL linearize at admission to the server transmission queue under current authority, not at earlier database fetch; stale fetched data SHALL be revalidated before admission, while already admitted bytes cannot be recalled.
+Every request that entered with a reader grant SHALL reselect both execution path and projection under these fences at transmission admission, even when stronger operator/admin authority initially selected full output. If that authority disappears while the reader grant survives, discard the full payload and rebuild under current reader projection, non-observing execution and leadership rules, then repeat transmission admission, or refuse without data. Read permission surviving a downgrade SHALL NOT permit stale wider disclosure. Existing operator-only paths retain their baseline until separately migrated.
 One bounded acknowledgement of an already committed mutation, including self-revocation, MAY be delivered under that transaction's authorization without becoming a fresh protected read.
 Already admitted Public Inference work SHALL retain its existing lifecycle; credential revocation blocks subsequent authentication and SHALL NOT silently cancel in-flight inference.
 
@@ -5757,6 +5804,7 @@ Cluster admins SHALL manage every target; an exact-Tenant Console `tenant_admin`
 For tenant-direct keys, classification SHALL examine the union of Tenant-principal and key-specific grants; for API Tokens, it SHALL examine API Client-principal and key-specific grants.
 Every retained grant in that union SHALL be `inference_client` within the same authoritative Tenant for Tenant-admin eligibility; zero grants remain eligible when ownership matches.
 Cluster, foreign-Tenant, or non-inference grants SHALL exclude the target even when the owner is disabled or the credential is expired/revoked.
+Reader-bearing API Clients SHALL therefore remain cluster-privileged targets across the complete retained owner-plus-key grant union, including disabled owners or inactive tokens; Tenant-admin credential inspection/revocation SHALL remain denied and cluster-admin management remains available.
 Multiple Tenant-admin grants SHALL NOT combine into permission over a privileged or cross-Tenant target.
 `operator` alone SHALL convey no API-credential management permission; every valid Console Identity MAY inspect/revoke its own sessions, and only cluster admins MAY manage another identity's sessions.
 Missing, out-of-scope, or wrong supported-kind targets SHALL yield indistinguishable `not_found` before revision comparison; lists SHALL filter before pagination without leaking excluded counts or records.
@@ -6023,6 +6071,7 @@ Tray app SHALL provide:
 
 The target portable CLI SHALL own argument parsing, client authentication, confirmation presentation, and output formatting.
 Normal Controller-state operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited Controller-owned domain operations shared with Console clients.
+Only the accepted, inactive reader's fenced serving-Controller health/cluster observation and caller self-authority are excepted under §10.11.2; all other reader target reads and all writes retain active authority.
 The portable CLI MUST NOT require direct Ecto Repo access, Controller application modules, launchd, Darwin native helpers, or local Controller release evaluation for normal operator operations after their command-family migrations are accepted.
 
 Host-local service management, process fencing, environment materialization, local trust-store mutation, terminal custody, and support collection SHALL belong to platform host tooling.
@@ -6030,6 +6079,7 @@ Mixed commands SHALL separate Controller-owned and host-local operations.
 A narrow locally authenticated Controller bootstrap or recovery channel MAY remain only for operations that cannot yet use ordinary administrator credentials, and it SHALL invoke the same Controller-owned domain operations rather than become a general direct-Repo fallback.
 
 The existing local Controller-runtime CLI authority below remains the implemented migration baseline.
+The accepted `api-clients bulk-provision --access-level cluster_reader` extension (§7.4.4) belongs to that Controller-host baseline, remains inactive under §10.4, and SHALL NOT be described as a portable provisioning family or COMPLETE migration.
 It SHALL be replaced command family by command family only through separately reviewed security-led changes with explicit authentication, authorization, audit, leader, idempotency, confirmation, secret-output, and degraded-Controller contracts.
 The accepted first family in §10.11 covers credential list, inspect, revoke preview, and revoke, but remains unimplemented and MUST NOT be marked COMPLETE until its implementation and closure gates pass.
 That family SHALL use portable `orchardctl credentials list`, `credentials inspect <kind> <id>`, and `credentials revoke <kind> <id>` commands with an explicit HTTPS Controller and protected API Token file.
@@ -6301,6 +6351,8 @@ projected recovery evidence SHALL remain represented as invalid rather than be
 dropped into false absence, and an invalid projected model reference SHALL make
 the projection incomplete. Other placements and Node
 health SHALL NOT be suppressed solely by this placement's recovery state.
+
+The accepted, inactive cluster-reader status path (§10.4) is the sole exception to targeted-query hydration: it SHALL return only already-hydrated, identity/freshness-validated evidence or `503 worker_recovery_unavailable`, without hydrating a cold key, claiming an epoch, mutating checkpoints or inferring clean state from absence. Existing operator/admin and scheduler hydration, checkpoint safety and recovery command authority remain unchanged.
 
 Structured admission refusals SHALL distinguish `worker_restart_backoff`,
 `worker_restart_in_progress`, `placement_crash_breaker_open`, and

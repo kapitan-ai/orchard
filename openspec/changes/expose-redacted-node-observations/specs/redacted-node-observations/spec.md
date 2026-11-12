@@ -26,7 +26,7 @@ Under SPEC.md §4.6.1 and Milestone 9, existing runtime snapshots and shared Nod
 
 ### Requirement: Operator Health Exposes The Retained Diagnostic Block
 
-Authenticated `GET /ops/v1/health` SHALL include nullable `runtime.diagnostics`, re-normalized with the shared closed allowlist and source-timestamp freshness bounds from its single existing runtime snapshot read. Failed snapshots SHALL yield null regardless of injected diagnostics. Missing/legacy blocks and unknown diagnostic schemas SHALL yield null. The additive field SHALL NOT change health status, readiness, no-store caching or authorization.
+Full operator/admin `GET /ops/v1/health` SHALL include nullable `runtime.diagnostics`, re-normalized with the shared closed allowlist and source-timestamp freshness bounds from its single existing runtime snapshot read. On that full representation, failed snapshots SHALL yield null regardless of injected diagnostics. Missing/legacy blocks and unknown diagnostic schemas SHALL yield null. The additive field SHALL NOT change health status, readiness, no-store caching or existing operator/admin authorization; the accepted reader exception under SPEC.md §§3.1, 4.6.1 and 10.4 SHALL use a separately versioned representation without diagnostics only after its activation prerequisites are proven.
 
 #### Scenario: Authorized operator reads observations
 
@@ -37,14 +37,21 @@ Authenticated `GET /ops/v1/health` SHALL include nullable `runtime.diagnostics`,
 
 #### Scenario: Failed or legacy snapshot
 
-- **WHEN** the runtime snapshot fails, omits diagnostics or carries an invalid/unknown diagnostic schema
+- **WHEN** a full operator/admin health response's runtime snapshot fails, omits diagnostics or carries an invalid/unknown diagnostic schema
 - **THEN** runtime diagnostics are null without changing the readiness-derived HTTP status
 
 #### Scenario: Unauthorized or public health request
 
-- **WHEN** an unauthenticated, tenant-only or non-operator caller requests operator health
+- **WHEN** a caller requests operator health without either existing operator/admin authority or activated, valid cluster-reader authority
 - **THEN** authorization rejects the request before runtime diagnostics are read
 - **AND** public `/health/ready` continues to return only status without runtime diagnostics or a runtime read
+
+#### Scenario: Activated reader receives bounded non-observing health
+
+- **WHEN** the SPEC.md §10.4 reader activation prerequisites are proven and a valid reader-path request passes current caller/credential/grant admission under the shared fences against authoritative Postgres
+- **THEN** health returns the separately versioned, non-observing reader representation without `runtime.diagnostics`, preserving readiness-derived HTTP 200/503 and no-store caching
+- **AND** on Standby it reports only bounded serving-Controller evidence under the narrow §10.11.2 exception, with the same caller fences and no observation or capacity mutation
+- **AND** transmission admission revalidates current authority and reselects the execution path/projection; unavailable authority returns `503 authority_unavailable` without cached success or local Repo fallback
 
 ### Requirement: Diagnostic Evidence Fails Closed And Remains Bounded
 
@@ -62,7 +69,7 @@ Projection SHALL reject unknown schemas, malformed and oversized inventory befor
 
 ### Requirement: Retained Surfaces Do Not Restore Support Bundles
 
-Diagnostics SHALL reuse existing status reads and SHALL NOT add OS/vendor probes, unrestricted runtime calls, support commands, archives, exports, staging or manifests. Public readiness SHALL remain status-only and existing authorization boundaries SHALL remain unchanged.
+Diagnostics SHALL reuse existing status reads and SHALL NOT add OS/vendor probes, unrestricted runtime calls, support commands, archives, exports, staging or manifests. Public readiness SHALL remain status-only and existing operator/admin authorization SHALL remain unchanged; only the accepted, activation-gated reader-health exception above extends admission, without exposing diagnostics or restoring support bundles.
 
 #### Scenario: Former support command
 

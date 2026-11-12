@@ -11,6 +11,8 @@ ADR 0024 and `SPEC.md` §11.9 make Controller-owned operations the authority tha
 
 The accepted product direction for headless operation is runtime-disabled Console with the Developer Portal retained, and Operator API reads started in parallel with the credential family in the `cross-surface-authorization-contract` change.
 
+Acceptance amendment, 2026-11-12: Najib accepted the [cluster-reader target](../add-read-only-cluster-role/design.md). This package retains its implemented operator/admin baseline below and adds inactive reader admission, separately versioned shared-builder subsets, and fenced serving-Controller cluster observation. Reader implementation belongs to `add-read-only-cluster-role` and remains blocked on its activation prerequisites; existing operator/admin and local CLI output is unchanged.
+
 ## What Changes
 
 - Add `GET /ops/v1/cluster`, returning the `cluster_management.cluster_status` object (`orchard.cluster_management.cluster_status.v1`) that `orchardctl cluster status --json` returns, evaluated by the serving Controller. Any Controller serves it.
@@ -20,7 +22,7 @@ The accepted product direction for headless operation is runtime-disabled Consol
 - Show operators only the admission decision name and `decided_at`; the local CLI keeps the full admission provenance.
 - Read the Node memory budget through a Runtime Endpoint snapshot that does not observe Node status, so these reads, and `orchardctl nodes inspect`, no longer update inventory, Admission Candidates, or queue capacity.
 - Return `503 database_unavailable` for Node inventory query failures after admission.
-- Make `orchardctl nodes list` report `database_unavailable` with exit status 1 in both text and JSON modes when the inventory query fails, instead of reporting an empty inventory (KAP-208). Text mode uses the existing human-readable database-unavailable message; healthy inventory output is unchanged.
+- Make `orchardctl nodes list` report `database_unavailable` with exit status 1 in both text and JSON modes when the inventory query fails, instead of reporting an empty inventory. Text mode uses the existing human-readable database-unavailable message; healthy inventory output is unchanged.
 
 ## Out Of Scope
 
@@ -34,7 +36,7 @@ The accepted product direction for headless operation is runtime-disabled Consol
 ## SPEC.md Impact
 
 This change implements endpoints `SPEC.md` §7.3.1 already lists, under the §7.3 admission boundary, the §§2.5, 3.3, and 11.9 active-Controller rule, and ADR 0005's shared-structure rule.
-It defines their response objects by reference to the existing shared cluster-management contracts and does not modify `SPEC.md`.
+Its original implementation defined their response objects by reference to the existing shared cluster-management contracts without modifying `SPEC.md`. The accepted reader amendment reconciles this package with `SPEC.md` §§7.3, 10.4 and 10.11.2, preserving full representations and the rule requiring new versions for removed fields.
 The operator projection of admission provenance is a product-owner decision recorded on 2026-11-09 within the §7.3 grant of Node reads to cluster `operator`.
 
 ## Impact

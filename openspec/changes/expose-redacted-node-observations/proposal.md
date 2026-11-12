@@ -5,7 +5,7 @@ Runtime Endpoint status already carries volatile host inventory, but generic run
 ## What Changes
 
 - Add a pure allowlist projection to existing runtime-target snapshots and the shared NodeStatus contract.
-- Expose re-normalized nullable `runtime.diagnostics` in the existing authenticated `GET /ops/v1/health` response, using its single existing snapshot read and unchanged authorization/readiness behavior.
+- Expose re-normalized nullable `runtime.diagnostics` in full operator/admin `GET /ops/v1/health`, using its single existing snapshot read and unchanged operator/admin authorization/readiness behavior; the accepted, inactive reader exception under SPEC.md §§3.1, 4.6.1 and 10.4 uses separately versioned, non-observing health without diagnostics after its activation prerequisites are proven.
 - Expose evidence states, source categories, original timestamps and ages, CPU/network/vendor device counts, and runtime health and worker-state categories.
 - Keep registered Node and admission-candidate diagnostics null; no new probes or identity bindings.
 - Keep broader logs and metrics work deferred and support bundles retired.
