@@ -3,10 +3,11 @@
 ### Requirement: Operator API Serves Cluster And Node Reads
 
 Orchard SHALL expose `GET /ops/v1/cluster`, `GET /ops/v1/nodes`, and `GET /ops/v1/nodes/:node_id` to an enabled API Client holding a cluster-scoped `operator` or `admin` RoleBinding.
+The accepted, inactive `cluster_reader` target in `SPEC.md` §10.4 SHALL additionally admit those routes only through the [reader contract](../../../add-read-only-cluster-role/specs/read-only-cluster-role/spec.md), after its activation prerequisites. A reader-bearing principal without independently sufficient operator/admin authority for the action SHALL use the reader path regardless of other grants; existing sufficient grants remain additive.
 Missing, malformed, invalid, expired, or revoked credentials SHALL return `401 invalid_api_key`.
-Authenticated principals without that authority, including tenant-direct API Keys, tenant-scoped RoleBindings, API Clients with no cluster role, and tokens owned by a disabled API Client, SHALL return `403 operator_required`.
+Authenticated principals without either sufficient operator/admin authority or activated reader authority, including tenant-direct API Keys, tenant-scoped RoleBindings, API Clients with no cluster role, and tokens owned by a disabled API Client, SHALL return `403 operator_required`.
 Responses SHALL be marked `no-store`.
-This requirement implements the corresponding `SPEC.md` §7.3.1 endpoints under the §7.3 admission boundary and does not change that boundary.
+The original operator/admin admission remains implemented; the accepted reader extension under `SPEC.md` §§7.3 and 10.4 remains pending implementation and verification in `add-read-only-cluster-role`.
 
 #### Scenario: Tenant-direct key is refused
 
@@ -25,6 +26,7 @@ This requirement implements the corresponding `SPEC.md` §7.3.1 endpoints under 
 `GET /ops/v1/nodes` and `GET /ops/v1/nodes/:node_id` read Controller-owned durable state and SHALL execute only in the active Controller, as `SPEC.md` §§2.5, 3.3, and 11.9 require.
 They SHALL use the same write-path leadership check as Operator API breaker inspection: a Standby Controller SHALL return `503 controller_standby`, and a Controller whose leadership is configured but unproven SHALL return `503 controller_leadership_unproven`.
 `GET /ops/v1/cluster` reports only the serving Controller's own control-plane evidence, like `GET /ops/v1/health`, and SHALL be served by any Controller, reporting its role under the `ControlPlaneStatus` rules.
+For the reader path, the narrow `SPEC.md` §10.11.2 exception SHALL retain authoritative Postgres and common current caller/credential/grant fences even on Standby, and SHALL expose only bounded serving-Controller evidence and caller self-authority. Unavailable authority SHALL return `503 authority_unavailable` without cached success, replica or local Repo fallback; the exception does not extend to Node reads or credential-family inspection.
 
 #### Scenario: Standby Controller refuses a Node read
 
@@ -41,6 +43,7 @@ They SHALL use the same write-path leadership check as Operator API breaker insp
 ### Requirement: Operator API Reads Use Shared Controller-Owned Builders
 
 Each route and its local CLI command SHALL obtain its payload from the same Controller-owned builder, consistent with ADR 0005's shared cluster-management structures.
+The following full field/version contracts govern existing operator/admin HTTP and local CLI representations. The accepted reader serialization SHALL instead be the recursively validated subset in [the closed reader projections](../../../add-read-only-cluster-role/design.md#closed-reader-projections), with `projection: "cluster_reader.v1"`, reader-specific root/nested `contract_version` values and the cluster `authority.roles/read_only` summary. Shared builder facts SHALL include the declared metadata, while full wire presenters retain their existing bodies and versions. Removing fields for a reader representation requires those new versions, not a waiver of the version rule below; unversioned nested maps inherit the reader schema. Reader path/projection selection SHALL be revalidated at transmission under shared fences, rebuilding after an authority downgrade or refusing without stale wider data.
 `GET /ops/v1/cluster` and `orchardctl cluster status --json` SHALL return `object` `cluster_management.cluster_status` with `contract_version` `orchard.cluster_management.cluster_status.v1`, a `summary`, and a `control_plane` `ControlPlaneStatus` map.
 `GET /ops/v1/nodes` and `orchardctl nodes list --json` SHALL return `object` `cluster_management.node_status_list` with the `NodeStatus` `contract_version`, a `data` list of Node status maps, and a `summary`.
 `GET /ops/v1/nodes/:node_id` and `orchardctl nodes inspect <node-id> --json` SHALL return the Node object with `object` `node`, a `status` Node status map, `latest_decision`, and `memory_budget` when one is available.
@@ -74,6 +77,7 @@ The local `orchardctl nodes inspect` command runs under the local Controller-run
 An admitted read on these routes SHALL NOT create or update audit events, Node rows, Node Admission Candidates, Node Admission Decisions, queue-capacity sources, or other domain rows.
 This excludes the shared Operator API authentication bookkeeping, which updates API Token `last_used_at` on admission and records authentication-failure audit events on refusal.
 The Node memory budget SHALL be read through a Runtime Endpoint snapshot that does not perform Node status observation, so a successful probe SHALL NOT invoke `Orchard.Nodes.observe_status/3`; `orchardctl nodes inspect` SHALL use the same non-observing path.
+The reader path SHALL omit memory-budget detail and skip that unused probe, rather than fetch excluded evidence to redact it. Its only durable bookkeeping remains API Token `last_used_at`, including role refusals and Standby, without extending expiry or advancing revocation-relevant revisions; valid-credential denials SHALL NOT invent an audit event.
 Authenticated BEAM and mTLS compatibility clients SHALL retain peer verification on this path, rejecting status unless the target and reported Node identity match the certificate-bound peer and its valid enrollment and certificate binding, including the current BEAM grant when applicable.
 Neither successful verification nor rejection SHALL persist lifecycle observations or refresh or clear queue-capacity sources.
 When the Node inventory query fails after admission, the Node routes SHALL return `503 database_unavailable` in the shared `{"error": {"code", "message"}}` envelope.

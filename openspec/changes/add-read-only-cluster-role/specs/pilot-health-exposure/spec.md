@@ -4,7 +4,7 @@
 
 The Controller SHALL expose full diagnostic health only at `GET /ops/v1/health` through the existing cluster-scoped Operator-or-admin authorization boundary. The same route SHALL additionally admit an enabled API Client's valid cluster `cluster_reader` grant only to the non-observing, closed reader representation in [the reader contract](../read-only-cluster-role/spec.md), including mixed reader-plus-inference clients without sufficient Operator/admin authority. The route SHALL set `Cache-Control: no-store` before authentication so every response is non-cacheable.
 
-The reader body SHALL carry top-level `projection: "cluster_reader.v1"` and `contract_version: "orchard.cluster_reader.health.v1"`; it SHALL omit `runtime.diagnostics`, runtime messages, remediation and all other excluded content. Full Operator/admin health SHALL retain its existing readiness/status, diagnostics and response fields. The proposed amendments to `SPEC.md` §§3.1 and 4.6.1 and ADR 0016 SHALL distinguish these representations; neither public health nor the staged readiness predicate changes.
+The reader body SHALL carry top-level `projection: "cluster_reader.v1"` and `contract_version: "orchard.cluster_reader.health.v1"`; it SHALL omit `runtime.diagnostics`, runtime messages, remediation and all other excluded content. Full Operator/admin health SHALL retain its existing readiness/status, diagnostics and response fields. The accepted amendments to `SPEC.md` §§3.1 and 4.6.1 and ADR 0016 distinguish these representations, subject to §10.4 activation; neither public health nor the staged readiness predicate changes.
 
 #### Scenario: Credential is missing or invalid
 

@@ -2,6 +2,8 @@
 
 Accepted.
 
+Amendment accepted by Najib on 2026-11-12: [ADR 0042](0042-read-only-cluster-role.md) and `SPEC.md` §§7.3 and 10.4 add an accepted but inactive API-Client-only `cluster_reader` exception for exactly eight bounded GETs. It does not admit the whole Operator pipeline or writes/previews. Activation requires the shared-authority prerequisites and reader verification; the operator/admin boundary below and existing behavior remain unchanged. Public inference authority alone remains insufficient, while additive mixed grants follow ADR 0042's action-specific path and transmission re-selection rules.
+
 Operator API requests are cluster runtime-operations calls and require a service-account-owned API Token whose owning API Client is enabled and holds a cluster-scoped `operator` or `admin` RoleBinding with `tenant_scope_id = nil`.
 Tenant-direct API Keys and tenant-scoped Access Levels such as `inference_client` and `tenant_admin` do not authorize Operator API access.
 Public inference credentials do not authorize Operator API access.
