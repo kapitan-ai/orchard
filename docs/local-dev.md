@@ -123,6 +123,36 @@ the full `orchardctl models access` and `orchardctl models routing-policy`
 surface, and `decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
 for the decision record.
 
+## Console switch
+
+Both `bin/dev` and `bin/dev-controller` honor `ORCHARD_CONSOLE_ENABLED` in
+shared dev runtime configuration. The default is on, retaining the no-auth
+Console (`auth: :none`); neither setting requires `ORCHARD_CONSOLE_USERNAME`
+or `ORCHARD_CONSOLE_PASSWORD`, and those variables do not enable dev Basic Auth.
+
+```bash
+ORCHARD_CONSOLE_ENABLED=false mise exec -- bin/dev
+# Or, for the split-role Controller:
+ORCHARD_CONSOLE_ENABLED=false mise exec -- bin/dev-controller
+```
+
+The production release's strict boolean parser accepts `1`, `true`, `TRUE`,
+`yes`, `YES`, `on`, `ON` and `0`, `false`, `FALSE`, `no`, `NO`, `off`, `OFF`.
+Any other value, including an empty string, stops boot. Changing the setting
+requires restarting the dev process.
+
+When off, HTML or wildcard requests to Console routes return `404`, and Console
+LiveView mounts and reconnects are refused. Public Inference, Operator and Admin
+APIs retain their authentication and authorization requirements; disabling the
+Console neither creates API credentials nor grants access. Use Controller-host
+`orchardctl` for currently supported credential provisioning, as above.
+
+This exercises Console-disabled routing and API-only operation, not production
+credential posture. Source development SHALL NOT be described as a Headless
+Deployment (`SPEC.md` §2.3). The Developer Portal still returns `404` on default
+`plain_http_localhost` dev transport, whether the Console is on or off; Portal
+flows need [`reverse_proxy`](#transport-modes) with trusted HTTPS forwarding.
+
 ## Phase 0 observability acceptance probe
 
 The probe posts to `/v1/responses` with a Tenant token, so the probe Model must

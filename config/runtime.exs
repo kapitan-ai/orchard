@@ -1734,6 +1734,8 @@ if config_env() == :dev do
   end
 
   if source_dev_role in [:controller, :all_in_one] do
+    config :orchard_controller, :console, enabled: env_bool.("ORCHARD_CONSOLE_ENABLED", true)
+
     transport_mode = source_dev_transport_mode!.(System.get_env("ORCHARD_TRANSPORT_MODE"))
 
     case transport_mode do

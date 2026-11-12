@@ -1,11 +1,14 @@
 Code.require_file(Path.expand("../../../config/source_dev_beam.exs", __DIR__))
 
 defmodule Orchard.RuntimeTransportTest do
-  use ExUnit.Case, async: false
+  use Orchard.ConnCase, async: false
 
   import ExUnit.CaptureIO
+  import Orchard.TestSupport.ModelRequestFixtures
+  import Phoenix.LiveViewTest
 
   alias Orchard.API.Transport
+  alias Orchard.Governance
 
   @runtime_config Path.expand("../../../config/runtime.exs", __DIR__)
 
@@ -814,6 +817,118 @@ defmodule Orchard.RuntimeTransportTest do
     end
   end
 
+  test "SPEC.md §2.3 source-dev Console defaults on without credentials for both launchers", %{
+    support_root: support_root
+  } do
+    for role <- ~w(all_in_one controller),
+        value <- [nil, "1", "true", "TRUE", "yes", "YES", "on", "ON"] do
+      config =
+        read_source_dev_config!(support_root, %{
+          "ORCHARD_SOURCE_DEV_ROLE" => role,
+          "ORCHARD_CONSOLE_ENABLED" => value
+        })
+
+      assert config[:console][:enabled] == true
+      assert config[:console][:auth] == :none
+      assert config[:console][:username] == nil
+      assert config[:console][:password] == nil
+    end
+  end
+
+  test "SPEC.md §2.3 source-dev Console accepts strict false values without credentials", %{
+    support_root: support_root
+  } do
+    for role <- ~w(all_in_one controller), value <- ~w(0 false FALSE no NO off OFF) do
+      config =
+        read_source_dev_config!(support_root, %{
+          "ORCHARD_SOURCE_DEV_ROLE" => role,
+          "ORCHARD_CONSOLE_ENABLED" => value
+        })
+
+      assert config[:console][:enabled] == false
+      assert config[:console][:auth] == :none
+      assert config[:console][:username] == nil
+      assert config[:console][:password] == nil
+    end
+  end
+
+  test "SPEC.md §2.3 source-dev Console refuses invalid booleans before boot", %{
+    support_root: support_root
+  } do
+    for role <- ~w(all_in_one controller),
+        value <- ["", " ", "True", " false ", "2", "enabled"] do
+      assert_raise RuntimeError, ~r/ORCHARD_CONSOLE_ENABLED must be a boolean/, fn ->
+        read_source_dev_config!(support_root, %{
+          "ORCHARD_SOURCE_DEV_ROLE" => role,
+          "ORCHARD_CONSOLE_ENABLED" => value
+        })
+      end
+    end
+  end
+
+  @tag :db
+  @tag :live
+  test "SPEC.md §2.3 source-dev flag denies Console routes and reconnects but preserves API access",
+       %{
+         support_root: support_root
+       } do
+    previous_console = Application.fetch_env!(:orchard_controller, :console)
+    previous_transport = Application.get_env(:orchard_controller, :transport_mode)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous_console)
+      Application.put_env(:orchard_controller, :transport_mode, previous_transport)
+    end)
+
+    {:ok, tenant} =
+      Governance.create_tenant(%{slug: "dev-console", name: "Private dev workspace"})
+
+    {:ok, %{token: token}} = Governance.create_api_key(tenant.id, %{name: "Dev API"})
+    model = create_model!(%{state: :active})
+    grant_model_access!(tenant, model)
+
+    for role <- ~w(all_in_one controller) do
+      enabled = read_source_dev_config!(support_root, %{"ORCHARD_SOURCE_DEV_ROLE" => role})
+      Application.put_env(:orchard_controller, :console, enabled[:console])
+
+      page = get(build_conn(), "/console/tenants")
+      {:ok, view, html} = live(page)
+      assert html =~ tenant.name
+      GenServer.stop(view.pid)
+
+      disabled =
+        read_source_dev_config!(support_root, %{
+          "ORCHARD_SOURCE_DEV_ROLE" => role,
+          "ORCHARD_CONSOLE_ENABLED" => "false"
+        })
+
+      Application.put_env(:orchard_controller, :console, disabled[:console])
+      Application.put_env(:orchard_controller, :transport_mode, disabled[:transport_mode])
+
+      # Reuse the LiveView session so denial must happen at connected mount,
+      # not just in the HTTP route guard (as in the Console auth regressions).
+      assert {:error, {:redirect, %{to: "/console"}}} = live(page)
+
+      for path <- ["/console", "/console/nodes", "/console/tenants", "/console/playground"] do
+        assert build_conn() |> get(path) |> response(404) == "Not Found"
+      end
+
+      assert build_conn() |> get("/portal/#{tenant.slug}") |> response(404) == "Not Found"
+
+      unauthenticated = build_conn() |> get("/v1/models") |> json_response(401)
+      assert unauthenticated["error"]["type"] == "authentication_error"
+
+      models =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> get("/v1/models")
+        |> json_response(200)
+
+      assert %{"object" => "list", "data" => [%{"id" => model_ref}]} = models
+      assert model_ref == "#{model.model_id}@#{model.version}"
+    end
+  end
+
   test "source-dev transport defaults to degraded plain HTTP", %{support_root: support_root} do
     config = read_dev_config!(support_root, %{})
 
@@ -1006,6 +1121,28 @@ defmodule Orchard.RuntimeTransportTest do
 
     assert repo[:url] == database_url
     refute Keyword.has_key?(repo, :port)
+  end
+
+  defp read_source_dev_config!(support_root, overrides) do
+    defaults =
+      if overrides["ORCHARD_SOURCE_DEV_ROLE"] == "controller" do
+        %{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11"
+        }
+      else
+        %{"ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc"}
+      end
+
+    runtime = read_dev_config!(support_root, Map.merge(defaults, overrides))
+
+    @runtime_config
+    |> Path.dirname()
+    |> Path.join("dev.exs")
+    |> Config.Reader.read!(env: :dev)
+    |> Config.Reader.merge(orchard_controller: runtime)
+    |> Keyword.fetch!(:orchard_controller)
   end
 
   defp read_dev_config!(support_root, overrides) do
