@@ -570,15 +570,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
             min(@launch_exit_grace_ms, ready_timeout_ms)
           )
 
-        cleanup_failed_runtime(%{
-          channel: nil,
-          os_identity: nil,
-          os_pid: os_pid,
-          port: port,
-          reaper_ref: nil,
-          shutdown_timeout_ms: shutdown_timeout_ms,
-          socket_path: socket_path
-        })
+        params = Map.put(runtime_params, :os_identity, nil)
+        reaper_ref = failed_launch_reaper_ref(params, reason)
+        cleanup_failed_runtime(runtime_cleanup_state(params, reaper_ref))
 
         {:error, reason}
     end
@@ -637,15 +631,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp start_watched_runtime(params) do
-    reaper_meta = %{
-      shutdown_timeout_ms: params.shutdown_timeout_ms,
-      model_ref: params.model_ref,
-      os_identity: params.os_identity,
-      socket_path: params.socket_path,
-      phase: :loading
-    }
-
-    case RuntimeProcessReaper.watch(params.owner_pid, params.os_pid, reaper_meta) do
+    case watch_runtime(params) do
       {:ok, reaper_ref} ->
         case acknowledge_runtime_custody(params) do
           :ok -> start_ready_runtime(params, reaper_ref)
@@ -679,6 +665,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   catch
     :exit, reason -> {:error, reason}
+  end
+
+  defp failed_launch_reaper_ref(params, :identity_unavailable) do
+    case watch_runtime(params) do
+      {:ok, ref} -> ref
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp failed_launch_reaper_ref(_params, {:worker_exited, _status}), do: nil
+
+  defp watch_runtime(params) do
+    RuntimeProcessReaper.watch(params.owner_pid, params.os_pid, %{
+      shutdown_timeout_ms: params.shutdown_timeout_ms,
+      model_ref: params.model_ref,
+      os_identity: params.os_identity,
+      socket_path: params.socket_path,
+      phase: :loading
+    })
   end
 
   defp start_ready_runtime(params, reaper_ref) do
@@ -1282,10 +1287,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   defp stop_runtime(port, nil, _os_identity, timeout_ms) do
     if port_open?(port) do
-      case wait_for_port_exit(port, timeout_ms) do
-        {:ok, _status} -> :ok
-        {:error, :timeout} -> {:error, :worker_shutdown_timeout}
-      end
+      confirm_port_exit(port, timeout_ms)
     else
       :ok
     end
@@ -1293,7 +1295,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   defp stop_runtime(port, os_pid, os_identity, timeout_ms) do
     if port_open?(port) do
-      stop_runtime_with_escalation(port, os_pid, timeout_ms)
+      stop_runtime_with_escalation(port, os_pid, os_identity, timeout_ms)
     else
       stop_closed_port_runtime(os_pid, os_identity, timeout_ms)
     end
@@ -1343,20 +1345,44 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # Attempt graceful SIGTERM, then escalate to tree-wide SIGKILL.
   # The tree-kill is defense-in-depth against intermediate launchers
   # (e.g. `uv run`) that swallow signals without forwarding to children.
-  defp stop_runtime_with_escalation(port, os_pid, timeout_ms) do
-    _ = WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
+  # An open port may outlive its reaped child while a descendant holds stdout;
+  # neither TERM nor KILL may rely on the port as proof of PID ownership.
+  defp stop_runtime_with_escalation(port, os_pid, os_identity, timeout_ms) do
+    case WorkerProcessLifecycle.signal_owned_process(os_pid, os_identity, "-TERM") do
+      {:error, :identity_mismatch} ->
+        :ok
 
+      {:error, :identity_unavailable} ->
+        confirm_port_exit(port, timeout_ms, :worker_custody_unconfirmed)
+
+      _sent ->
+        await_runtime_or_kill(port, os_pid, os_identity, timeout_ms)
+    end
+  end
+
+  defp await_runtime_or_kill(port, os_pid, os_identity, timeout_ms) do
     case wait_for_port_exit(port, timeout_ms) do
       {:ok, _status} ->
         :ok
 
       {:error, :timeout} ->
-        _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
+        case WorkerProcessLifecycle.kill_owned_process_tree(os_pid, os_identity) do
+          {:error, :identity_mismatch} ->
+            :ok
 
-        case wait_for_port_exit(port, timeout_ms) do
-          {:ok, _status} -> :ok
-          {:error, :timeout} -> {:error, :worker_shutdown_timeout}
+          {:error, :identity_unavailable} ->
+            confirm_port_exit(port, timeout_ms, :worker_custody_unconfirmed)
+
+          _sent ->
+            confirm_port_exit(port, timeout_ms)
         end
+    end
+  end
+
+  defp confirm_port_exit(port, timeout_ms, timeout_reason \\ :worker_shutdown_timeout) do
+    case wait_for_port_exit(port, timeout_ms) do
+      {:ok, _status} -> :ok
+      {:error, :timeout} -> {:error, timeout_reason}
     end
   end
 
