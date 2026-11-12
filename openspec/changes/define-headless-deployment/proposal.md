@@ -11,7 +11,7 @@ Parts of this already exist or are already contracted:
 
 Two limits apply today:
 
-- Source development, the active installation path under `SPEC.md` §11.0, always enables the Console without authentication. Only a production `orchard_controller` release can run headless, and that release has no supported distribution yet.
+- Source development, the active installation path under `SPEC.md` §11.0, defaults to the Console without authentication. Q7 adds an opt-out for routing and API-only testing, not production credential posture. Only a production `orchard_controller` release qualifies as a Headless Deployment, and that release has no supported distribution yet.
 - Many management operations work without the Console only through `orchardctl` on the Controller host, because their Operator or Admin API routes are specified but not built.
 
 `SPEC.md` does not yet say what a headless deployment is, what it keeps, what credentials manage it, or how Orchard may describe which capabilities it covers.
@@ -27,6 +27,7 @@ The product owner decided on 2026-11-09:
 
 ## What Changes
 
+- Implement accepted Q7 in shared dev runtime configuration: both source-dev launchers honor `ORCHARD_CONSOLE_ENABLED`, default on, using the production strict parser. Enabled retains no-auth access; disabled requires no Console credentials and changes no API authorization or transport requirements.
 - Define a **headless deployment** as the standard production Controller release with the Console disabled by boot-time runtime configuration, managed through the Public Inference, Operator, and Admin APIs and `orchardctl`. No separate build or package is introduced. Source development and the `SPEC.md` §10.11.4 `rollback_console_disabled` recovery state are explicitly not headless deployments.
 - Require that disabling the Console does not change the authorization, audit, leadership, or Action Preview semantics of any other surface, and does not add a new authority path.
 - Require that remote headless management uses only enabled API Client tokens with cluster-scoped `operator` or `admin` RoleBindings. Console Basic Auth, Console sessions, and Portal sessions never authorize it. First-admin bootstrap stays local, and unmigrated `orchardctl` families keep their `SPEC.md` §11.9 Controller-host authority.
@@ -36,7 +37,6 @@ The product owner decided on 2026-11-09:
 ## Out Of Scope
 
 - Removing Console code from the build, a separate OTP application, or a headless-only release or package.
-- Making source development honor `ORCHARD_CONSOLE_ENABLED`; `design.md` Q7 records the accepted follow-up and its required SPEC amendment, not an implementation here.
 - New Operator or Admin API endpoints. Each one lands in its own change under the accepted main `operator-command-authority` spec, one command family at a time.
 - Migrating `orchardctl` command families to HTTPS; ADR 0024 and the `cross-surface-authorization-contract` change own that order.
 - Any MCP server or adapter. `design.md` records the accepted direction and its read-only authority prerequisite; implementation remains separate.
@@ -47,6 +47,7 @@ The product owner decided on 2026-11-09:
 ## SPEC.md Impact
 
 This change adds a short headless-deployment definition to `SPEC.md` §2.3, distinct from the §11.8 headless platform profile.
+The Q7 amendment replaces §2.3's always-on source-dev wording with a default-on strict switch and retains the exclusion from Headless Deployment. It amends this unarchived change's existing ADDED requirement, rather than trying to MODIFY a requirement not yet present in main specs.
 It adds a §7.1 note that, when the Console is disabled, the Operator and Admin APIs are the remote management surface, and Controller-host `orchardctl` keeps its §11.9 local authority for unmigrated families.
 It does not change the §7.3 or §7.4 admission boundaries, the §10.11 Console target, the §11.9 migration rule, or ADR 0011's local bootstrap.
 The `cross-surface-authorization-contract` change also edits §§2.3 and 7.1; whichever change lands second rebases its `SPEC.md` text onto the first.
@@ -57,4 +58,4 @@ The Console-disabled route, mount, and credential-refusal behavior it requires a
 - `SPEC.md` §§2.3 and 7.1, and a Headless Deployment entry in `docs/glossary/CONTEXT.md`.
 - A new `headless-deployment` capability spec.
 - A new operator document holding the headless capability inventory.
-- Regression tests for Console-disabled behavior across Console, Developer Portal, and API routes. No production code change is expected.
+- Shared dev runtime configuration and regression tests for parsing and Console-disabled behavior across Console, Developer Portal, and API routes. Production release behavior is unchanged.

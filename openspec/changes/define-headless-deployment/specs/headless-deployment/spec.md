@@ -6,7 +6,9 @@ A headless deployment SHALL be a Controller started as the standard production `
 That release SHALL disable the Console unless `ORCHARD_CONSOLE_ENABLED` holds a true value, so disabled remains its default; an invalid value SHALL stop boot.
 A headless deployment SHALL keep serving the Public Inference API, the Operator API, the Admin API, the Developer Portal, the bootstrap API, the health endpoints, and `/metrics` under their existing contracts.
 Orchard MUST NOT require a build, release, or package other than the standard Controller release to run headless.
-Source development under `bin/dev` and `bin/dev-controller` always enables the Console and SHALL NOT be described as a headless deployment.
+Source development under `bin/dev` and `bin/dev-controller` SHALL honor `ORCHARD_CONSOLE_ENABLED` through shared dev configuration using the production release's strict boolean parser, defaulting to enabled; an invalid value SHALL stop boot.
+Honoring `ORCHARD_CONSOLE_ENABLED` SHALL NOT change existing source-dev Console authentication, API authorization, or transport requirements.
+Source development exercises Console-disabled routing and API-only operation, not the production credential posture, and SHALL NOT be described as a Headless Deployment.
 A Controller in the `SPEC.md` §10.11.4 `rollback_console_disabled` recovery state SHALL NOT be treated as a headless deployment; its §10.11.4 writer isolation, including for Developer Portal writers, SHALL prevail.
 This requirement adds the headless deployment definition to `SPEC.md` §§2.3 and 7.1.
 It is distinct from the headless Linux Controller platform profile of `SPEC.md` §11.8 and ADR 0023, which describes a host without desktop components.
@@ -21,6 +23,24 @@ It is distinct from the headless Linux Controller platform profile of `SPEC.md` 
 
 - **WHEN** an invited Portal User signs in to `/portal/:organization_slug` over TLS on a Controller with the Console disabled
 - **THEN** the Developer Portal serves its key list, mint, and revoke flows under `SPEC.md` §7.4a
+
+#### Scenario: Source development defaults to an enabled Console
+
+- **WHEN** either source-dev launcher starts without `ORCHARD_CONSOLE_ENABLED` or with a true value
+- **THEN** the Console is enabled under existing source-dev authentication requirements
+
+#### Scenario: Source development disables only Console access
+
+- **WHEN** either source-dev launcher starts with `ORCHARD_CONSOLE_ENABLED=false` and no Console credentials
+- **THEN** HTML Console routes return `404` and Console LiveView mounts and reconnects are refused
+- **AND** API routes retain their existing authentication and behavior
+- **AND** Developer Portal routes still return `404` on default `plain_http_localhost` transport; Portal flows require source-dev `reverse_proxy`
+- **AND** this source-dev operation is not a Headless Deployment
+
+#### Scenario: Source development refuses an invalid Console flag
+
+- **WHEN** either source-dev launcher starts with an invalid `ORCHARD_CONSOLE_ENABLED` value
+- **THEN** boot stops with the strict boolean parser's configuration error
 
 ### Requirement: Disabling The Console Adds No Authority Path
 

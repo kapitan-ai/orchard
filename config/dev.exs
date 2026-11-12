@@ -804,7 +804,7 @@ config :orchard_node_agent,
       worker_backend: worker_backend
     )
 
-# Console: enabled with no auth for frictionless local development.
+# Console: no auth for local development; runtime.exs applies the default-on flag.
 config :orchard_controller, :console,
   enabled: true,
   auth: :none,

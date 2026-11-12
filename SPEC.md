@@ -284,7 +284,9 @@ In that release, the Console SHALL remain disabled unless `ORCHARD_CONSOLE_ENABL
 Public Inference, Operator and Admin APIs, the Developer Portal, the bootstrap API, health endpoints, and `/metrics` SHALL retain their existing contracts, including authorization, audit, leadership, and Action Preview semantics.
 With the Console disabled, `/console` routes requested with HTML or wildcard `Accept` SHALL return `404`, no Console request SHALL render Console content, and no Console LiveView SHALL mount or reconnect, including over an existing LiveView socket or with a session issued while the Console was enabled.
 The shared LiveView socket, endpoint session cookie, and static assets MAY remain mounted only to serve the Developer Portal and SHALL NOT confer Console authority.
-Source development under `bin/dev` and `bin/dev-controller` always enables the Console and SHALL NOT be described as a Headless Deployment.
+Source development under `bin/dev` and `bin/dev-controller` SHALL honor `ORCHARD_CONSOLE_ENABLED` through shared dev configuration using the production release's strict boolean parser, defaulting to enabled; an invalid value SHALL stop boot.
+Honoring `ORCHARD_CONSOLE_ENABLED` SHALL NOT change existing source-dev Console authentication, API authorization, or transport requirements.
+Source development exercises Console-disabled routing and API-only operation, not the production credential posture, and SHALL NOT be described as a Headless Deployment.
 The §10.11.4 `rollback_console_disabled` recovery state SHALL NOT be treated as a Headless Deployment; its writer isolation, including Developer Portal writers, SHALL prevail.
 Headless Deployment is distinct from the §11.8 and ADR 0023 headless Linux Controller platform profile, which describes a host without desktop components.
 The operator-facing headless capability inventory in `docs/headless-mode.md` SHALL distinguish remote API availability from Controller-host CLI access and unimplemented or undecided capabilities; a Headless Deployment does not by itself satisfy the shared-operation convergence target in §§2.5, 10.11, and 11.9.

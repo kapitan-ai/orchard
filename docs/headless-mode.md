@@ -4,7 +4,9 @@ A **Headless Deployment** is the standard production `orchard_controller` releas
 
 ## Production release only today
 
-The production Controller defaults to Console disabled. `ORCHARD_CONSOLE_ENABLED` must hold a true value to enable it, with Console credentials configured; an invalid boolean value stops boot. Source development through `bin/dev` and `bin/dev-controller` always enables the Console without authentication and does not honor this flag as a headless switch.
+The production Controller defaults to Console disabled. `ORCHARD_CONSOLE_ENABLED` must hold a true value to enable it, with Console credentials configured; an invalid boolean value stops boot.
+
+Source development through `bin/dev` and `bin/dev-controller` honors the same flag through the same strict parser, but defaults to enabled. True retains the no-auth dev Console; false requires no Console credentials and leaves API authentication unchanged. An invalid value stops boot. This exercises Console-disabled routing and API-only operation, not production credential posture; source development SHALL NOT be described as a Headless Deployment. See [the source-dev switch](local-dev.md#console-switch) for usage. The Developer Portal still returns `404` on default `plain_http_localhost` dev transport; Portal flows need `reverse_proxy`.
 
 Source development remains the active installation path under `SPEC.md` §11.0. The production Controller release has no supported distribution today, and native `Orchard.app` and DMG distribution remains paused. This document is not an installation or support claim and does not lift any distribution gate.
 
@@ -76,10 +78,9 @@ Model deprecate and retire (and thus the complete delete journey), API Client di
 
 ## Accepted follow-up direction, not current behavior
 
-Najib accepted Q1–Q7 on 2026-11-11. Their implementation stays outside this change; [tasks section 3](../openspec/changes/define-headless-deployment/tasks.md#3-open-items-outside-this-change) tracks the follow-ups.
+Najib accepted Q1–Q7 on 2026-11-11. Q7's source-dev switch is implemented as described above; [tasks section 3](../openspec/changes/define-headless-deployment/tasks.md#3-open-items-outside-this-change) tracks the remaining follow-ups.
 
 - **MCP (Q2–Q3):** client-side stdio first, preferably a portable `orchardctl` mode using its protected token file and pinned TLS over `reverse_proxy` or `direct_https`. A server-enforced read-only cluster role must precede any MCP work, with a §10.4 amendment; read tools omit request content by default. Later writes require an explicit allowlist, an Operator API route with Action Preview, and human approval bound to action, target, and expiry. The write-capable adapter holds `operator`, not `admin`; admin actions and invite URLs stay out without a separate reviewed change. Only `available` rows are eligible, and API availability alone does not make a tool eligible.
 - **Topology (Q4):** profile-neutral requirements, with slice priority following Milestone 8: Linux Controller, external Postgres, admitted macOS Nodes. A single-host Ubuntu appliance is not a target for now. macOS source development keeps being tested; this is not a platform support claim.
 - **Acquisition (Q5):** Controller-host Orchard Artifact Bundle import, a future offline preparation command for Hugging Face snapshots, and later implementation of the specified import API. No required network egress is added (§11.7).
 - **Portal administration (Q6):** Admin API primitives follow implementation of the shared authorization fences, retained-writer ledger, and audit surface, not merely acceptance of their docs. §7.4a must be amended before these routes ship. Until then, issue tenant keys through `orchardctl api-keys create`.
-- **Source development (Q7):** a separate change will read `ORCHARD_CONSOLE_ENABLED` in shared dev config for both launchers, using the strict parser and defaulting to on. It must amend §2.3 and the headless spec delta's always-on wording while retaining the exclusion from the Headless Deployment definition. This will test routing and API-only operation, not production credential posture; the Portal still returns 404 on the default dev transport and needs `reverse_proxy` for onboarding tests.
