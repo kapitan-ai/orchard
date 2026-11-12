@@ -42,6 +42,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
+  @launch_exit_grace_ms 100
   # sockaddr_un reserves 104 bytes on macOS and 108 on Linux, including the NUL.
   @max_worker_socket_path_bytes if(:os.type() == {:unix, :linux}, do: 107, else: 103)
   # Slice of the shutdown budget reserved to confirm an uncatchable SIGKILL.
@@ -562,7 +563,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         start_watched_runtime(Map.put(runtime_params, :os_identity, os_identity))
 
       {:error, :identity_unavailable} ->
-        reason = launch_identity_failure_reason(port)
+        reason =
+          launch_identity_failure_reason(
+            port,
+            fn -> launch_process_status(os_pid) end,
+            min(@launch_exit_grace_ms, ready_timeout_ms)
+          )
 
         cleanup_failed_runtime(%{
           channel: nil,
@@ -578,14 +584,47 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  # A worker that dies during launch can be reaped before identity capture, so
-  # identity capture fails for a reason the operator cannot act on. The port's
-  # exit status names the actual failure and points at the worker log.
-  defp launch_identity_failure_reason(port) do
-    if port_open?(port) do
-      :identity_unavailable
-    else
-      drain_port_exit_reason(port)
+  # Public only for deterministic launch-exit tests without cleanup signals.
+  # Only the wait is capped: the process probe (kill/ps on macOS) runs before
+  # its deadline starts. An unreadable identity alone never justifies waiting.
+  # credo:disable-for-lines:7 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  @doc false
+  @spec launch_identity_failure_reason(
+          port(),
+          (-> WorkerProcessLifecycle.os_process_status()),
+          non_neg_integer()
+        ) :: :identity_unavailable | {:worker_exited, non_neg_integer()}
+  def launch_identity_failure_reason(port, process_status, timeout_ms) do
+    cond do
+      not port_open?(port) ->
+        drain_port_exit_reason(port)
+
+      process_status.() == :not_alive ->
+        case wait_for_port_exit(port, timeout_ms) do
+          {:ok, status} -> {:worker_exited, status}
+          {:error, :timeout} -> :identity_unavailable
+        end
+
+      true ->
+        :identity_unavailable
+    end
+  end
+
+  # Public only to verify the platform nonexistence proof with live/reaped children.
+  # credo:disable-for-lines:4 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  @doc false
+  @spec launch_process_status(non_neg_integer() | nil) ::
+          WorkerProcessLifecycle.os_process_status()
+  def launch_process_status(os_pid) do
+    case :os.type() do
+      {:unix, :linux} ->
+        case File.stat("/proc/#{os_pid}") do
+          {:error, :enoent} -> :not_alive
+          _present_or_unreadable -> :unknown
+        end
+
+      _platform ->
+        WorkerProcessLifecycle.os_process_status(os_pid)
     end
   end
 
@@ -614,9 +653,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         end
 
       {:error, :process_not_alive} ->
+        reason =
+          launch_identity_failure_reason(
+            params.port,
+            fn -> :not_alive end,
+            min(@launch_exit_grace_ms, params.ready_timeout_ms)
+          )
+
         cleanup_failed_runtime(runtime_cleanup_state(params, nil))
 
-        {:error, launch_identity_failure_reason(params.port)}
+        {:error, reason}
 
       {:error, reason} ->
         cleanup_failed_runtime(runtime_cleanup_state(params, nil))
