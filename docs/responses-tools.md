@@ -63,4 +63,4 @@ unless they observed the required terminal event.
 
 Controller, Node, Worker and provider do not execute these tools. Direct-client
 conformance is not model, coding-agent, provider, or platform qualification.
-See [the boundary decision](decisions/0034-responses-tool-boundary.md).
+See [the boundary decision](decisions/0040-responses-tool-boundary.md).
