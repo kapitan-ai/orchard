@@ -7,10 +7,7 @@ upstream renderer alone would not change Orchard's renderer.
 The dictionary facade returns ordinary dictionaries and supports `fromkeys`;
 it is not a Python type. The Namespace subclass validates constructor inputs
 and item assignment, which is how Jinja compiles namespace attribute writes.
-It keeps Jinja's namespace identity and permits ordinary names, including `self`
-when supplied in a mapping. The existing sandbox call signature still prevents
-constructor keyword arguments named `self`, `context`, or `obj`; changing that
-signature is outside this hardening.
+It keeps Jinja's namespace identity and permits ordinary names, including `self`.
 Existing Jinja attribute-read restrictions remain in force. Validation errors
 do not echo template-controlled names.
 
