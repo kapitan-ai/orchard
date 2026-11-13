@@ -170,7 +170,7 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 
 Native PKG is not a governed current artifact.
 Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
-GitHub Releases act as the release record under `AGENTS.md` "Tracking and publication", and a separately selected delivery surface is the customer-facing distribution surface.
+GitHub Releases act as the release record under `docs/process.md` "Tracking and Publication", and a separately selected delivery surface is the customer-facing distribution surface.
 Under the proposed ADR 0043 amendment, §11.3 names no vendor for that delivery role and no delivery surface is selected.
 The two roles retain separate observations and authorization boundaries even if one provider supplies both.
 The release workflow publishes through the delivery surface first, verifies its live state and digest, and publishes the GitHub Release last.
@@ -245,7 +245,9 @@ Signing, delivery-surface publication, and GitHub publication credentials do not
 
 Distribution approval binds the Candidate Manifest or Internal Build Manifest digest, channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
 Distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
-Each surface State Attestation records its target identifier, and reduction considers only attestations whose target matches the identifiers bound by the current approval.
+Each surface State Attestation records its target identifier.
+Only attestations for the targets bound by the approval that authorized the transition satisfy partial or complete delivery or publication.
+Attestations for any other target still apply the staging, withdrawal, invalid-candidate, and fail-closed observation rules, and an observed live state on an unbound target fails closed.
 Any changed digest, channel, artifact requirement, or compatibility declaration revokes approval automatically.
 The GitHub Release becomes non-draft only after delivery-surface live verification succeeds for the exact approved candidate.
 
