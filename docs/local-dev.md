@@ -812,6 +812,7 @@ ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
 The local node-agent still binds to `127.0.0.1:50071`.
 The controller targets both local and remote gRPC nodes.
 The scheduler auto-selects `MultiNode` whenever at least one target is configured.
+In this flow the Controller can read SPEC §12.2 worker recovery state only for its in-process node-agent, because all-in-one has no Controller certificate for the recovery query, so cold loads on the remote node-agent fail closed with `worker_recovery_evidence_unavailable`; use the split-role flows for cold loads on remote Nodes.
 Use an RFC1918 IPv4 literal such as `192.168.1.20` in the BEAM target list.
 IPv6 addresses are not supported in the gRPC compatibility target list.
 
