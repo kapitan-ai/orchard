@@ -27,8 +27,8 @@ channel contracts, DMG artifact treatment, and conjunctive completion across the
 release record and one customer delivery surface. Keep task 1.4 checked as the
 approval history, with this proposed amendment recorded in place.
 
-GitHub remains the named release record under `AGENTS.md` "Tracking and
-publication". The §11.3 neutrality rule governs outer DMG tooling and the customer
+GitHub remains the named release record under `docs/process.md` "Tracking and
+Publication". The §11.3 neutrality rule governs outer DMG tooling and the customer
 delivery surface, not that release-record role. This proposal does not abstract
 GitHub or authorize a new publication target. A future proposal may replace the
 GitHub release-record implementation with a neutral release-registry role while
