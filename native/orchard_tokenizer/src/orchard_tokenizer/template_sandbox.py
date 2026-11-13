@@ -6,6 +6,7 @@ from functools import wraps
 from typing import Any
 
 from jinja2 import Undefined, nodes
+from jinja2.exceptions import SecurityError
 from jinja2.runtime import LoopContext, Macro, Namespace
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 from jinja2.visitor import NodeTransformer
@@ -64,6 +65,35 @@ _STRUCTURAL_FILTERS = frozenset(
 _OBSERVATION_FILTERS = frozenset({"length", "count"})
 _SERIALIZING_FILTERS = frozenset({"tojson", "string", "safe"})
 _LITERAL_REPLACEMENTS = frozenset({("-", "_"), (" ", "_"), ("$", "")})
+
+
+class _TemplateDict:
+    """Expose dictionary builders without exposing the Python type."""
+
+    def __call__(self, /, *args: Any, **kwargs: Any) -> dict:
+        return dict(*args, **kwargs)
+
+    def fromkeys(self, /, *args: Any, **kwargs: Any) -> dict:
+        return dict.fromkeys(*args, **kwargs)
+
+
+class _TemplateNamespace(Namespace):
+    """Limit template namespace state to public names."""
+
+    def __init__(self, /, *args: Any, **kwargs: Any) -> None:
+        attrs = dict(*args, **kwargs)
+        for name in attrs:
+            _TemplateNamespace._check_name(name)
+        super().__init__(attrs)
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        _TemplateNamespace._check_name(name)
+        super().__setitem__(name, value)
+
+    @staticmethod
+    def _check_name(name: Any) -> None:
+        if isinstance(name, str) and name.startswith("_"):
+            raise SecurityError("Chat template namespace names must not start with an underscore")
 
 
 class MarkerPolicy:
@@ -190,6 +220,8 @@ class ProvenanceSandbox(ImmutableSandboxedEnvironment):
     def __init__(self, *args: Any, marker_pairs: Sequence[MarkerPair] = (), **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.marker_policy = MarkerPolicy(marker_pairs)
+        self.globals["dict"] = _TemplateDict()
+        self.globals["namespace"] = _TemplateNamespace
 
     def guard_filters(self) -> None:
         self.filters = {
@@ -289,7 +321,11 @@ class ProvenanceSandbox(ImmutableSandboxedEnvironment):
                 "copy",
             }:
                 pass
-            elif isinstance(obj, (Macro, LoopContext)) or obj in (dict, Namespace):
+            elif (
+                isinstance(obj, (Macro, LoopContext, _TemplateDict))
+                or obj is _TemplateNamespace
+                or (isinstance(receiver, _TemplateDict) and name == "fromkeys")
+            ):
                 pass
             else:
                 reject_marker_transform("callable")
