@@ -33,7 +33,7 @@ No new app or DMG distribution set is produced while the pause holds, and source
 The packaged journey below describes the approved app-primary design and existing rehearsal installations; it is not a currently available release.
 
 For operation without the Console, see [Headless Deployment](headless-mode.md), including its production-release-only limit, credential rules, and capability inventory.
-Source development always enables the Console; the headless contract does not create a supported distribution or imply remote Console parity.
+Source development under `bin/dev` and `bin/dev-controller` honors `ORCHARD_CONSOLE_ENABLED`, defaulting to enabled. It exercises Console-disabled routing and API-only operation, not the production credential posture, and is not a Headless Deployment. The headless contract does not create a supported distribution or imply remote Console parity.
 
 The app-primary DMG design provides a verified `Orchard.app` and an app-owned root-authorized service lifecycle.
 The app lifecycle supports `all`, `controller`, and `node-agent` Install Roles and preserves operator-owned state during update and default uninstall.
