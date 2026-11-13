@@ -1,13 +1,14 @@
 ## Context
 
 Orchard currently reports product version `0.5.0-dev` from first-party OTP application metadata and records Git SHA, build date, and build channel separately through `Orchard.BuildInfo`.
-The same product-version literal is repeated in the umbrella and four first-party Mix projects.
+The umbrella and four first-party Mix projects now derive Product Version from root `VERSION`; the remaining governance tasks are still pending.
 The app builder receives independent marketing and build values, and no current gate proves that those values agree with the staged payload identity.
 The two bundled Python helpers each use an independent `0.1.0` package version, which is component provenance rather than Orchard product identity.
 
-The live repository state was reverified on 2026-07-23 from commit `b564f90e858820ccfbfaffbe432feb601ae24d67`.
-The only live tag is the annotated but unsigned `v0.4.0`, and GitHub has no Release objects.
-The private repository's current required CI runs on pull requests and pushes to `main`, validates Elixir and OpenSpec, and has read-only repository permissions.
+The repository is public.
+Its tags are the annotated but unsigned `v0.4.0` plus the unsigned source-development pins `pilot/2026-08-10`, `pilot/2026-08-11`, `pilot/2026-08-21`, and `pilot/2026-09-09`; GitHub has no Release objects.
+Every non-draft GitHub Release in this repository is public; the prerelease flag does not restrict its audience.
+The repository's current required CI runs on pull requests and pushes to `main`, validates Elixir and OpenSpec, and has read-only repository permissions.
 It does not run on tags, build a governed release set, or manage GitHub Release state.
 
 `SPEC.md` §13.1 requires controller version `N` to support node-agent versions `N` and `N-1`, but it does not define how those symbols map to product SemVer.
@@ -24,7 +25,17 @@ Primary-source research constrains the proposal without replacing Orchard policy
 SemVer permits prerelease identifiers and treats build metadata as non-precedence provenance.
 Apple requires a three-integer `CFBundleShortVersionString` and a numeric `CFBundleVersion` with one to three integer components.
 GitHub recommends completing a draft's asset set before publishing an immutable Release and recommends least-privilege workflow permissions.
-GitHub protected-environment approvals, immutable Releases, and artifact attestations remain capability gates because availability for this private repository has not been proved.
+GitHub protected-environment approvals, immutable Releases, and artifact attestations remain capability gates because availability for the repository's current visibility and plan has not been proved.
+
+### Follow-up: Public Release Records
+
+ADR 0044 amends decision 1.4 and ADR 0043's channel references: the channels are now `internal`, `trial`, and `release`; GitHub records carry no installable bytes.
+This follow-up amends the still-active change in place, preserving its task numbering and approval history.
+No `SPEC.md` change is made now. The following §11.3 sentence is held for task 2.1:
+
+> A GitHub release record for an audience-restricted Release Channel SHALL NOT carry installable bytes.
+
+The delivery-surface selection change (task 1.11) will address record-projection digest approval, the unsafe-record rule, prerelease and Latest validation, the audited inter-job byte store, capability re-reads at transition time, and deferred tasks 5.3.1, 5.6.1, 5.7.1, 5.8.1, 5.9.1 and 5.9.2.
 
 ## Goals / Non-Goals
 
@@ -44,12 +55,12 @@ GitHub protected-environment approvals, immutable Releases, and artifact attesta
 
 - Bump the current Orchard product version.
 - Create or rewrite tags, GitHub Releases, packages, apps, DMGs, checksums, manifests, SBOMs, or release notes.
-- Implement build scripts, CI workflows, signing, notarization, or publication.
-- Change app lifecycle, generic artifact secrecy, or existing signing-order requirements.
+- Implement governed construction, CI workflows, signing, notarization, or publication; the existing payload channel allow-list is only narrowed to the retained channels.
+- Change app lifecycle or existing signing-order requirements.
 - Force internal Python package versions to match the Orchard product version.
 - Backfill a GitHub Release for `v0.4.0` or rewrite historical release evidence.
 - Store credentials, keychain names, DSNs, local paths, or workflow session identifiers in release metadata.
-- Assume that a private-repository GitHub feature or a delivery-surface capability exists before a live implementation check proves it.
+- Assume that a GitHub feature for the repository's current visibility and plan or a delivery-surface capability exists before a live implementation check proves it.
 
 ## Decisions
 
@@ -95,7 +106,7 @@ Validation will require exact agreement between the record and version diff, an 
 
 A submitter-authored `approved_by` string is not authorization.
 The preferred authorization proof is approval after the latest push from an approved Release Owner identity or group, verified read-only against the exact reviewed head revision.
-If private-repository review protection is unavailable, a canonical detached approval envelope must bind the transition-record digest, exact head commit, target version, signer key identifier, issued time, expiry, nonce, and single-use purpose.
+If review protection for the repository's current visibility and plan is unavailable, a canonical detached approval envelope must bind the transition-record digest, exact head commit, target version, signer key identifier, issued time, expiry, nonce, and single-use purpose.
 The fallback envelope must use deterministic canonical serialization, a detached signature verified against a versioned repository key registry, and revocation data checked at validation time.
 The signed envelope must reside in a proved append-only evidence store outside the approved head commit, and the chosen store remains an implementation capability gate.
 Validation must resolve the signer against a key-registry revision already trusted before the transition pull request began.
@@ -110,7 +121,7 @@ Development tags, unsigned tags, invalid counters, moved tags, deleted tags, and
 The tag is created only after the transition pull request merges and required validation passes for the exact committed version.
 The tag starts candidate construction but does not prove that artifacts, a draft, or a Published Release exist.
 Candidate identity is the exact signed tag, full source commit, and one Release Channel declared by the transition record.
-One tag produces at most one Candidate Manifest for that fixed channel, and advancing from trial to pilot or from pilot to release requires a new Product Version and tag.
+One tag produces at most one Candidate Manifest for that fixed channel, and advancing from trial to release requires a new Product Version and tag.
 
 Infrastructure failures before manifest sealing may rebuild from the same exact tag and must record abandoned attempts.
 After sealing, retries may only reuse preserved exact bytes.
@@ -130,7 +141,6 @@ Delivery surface states are `absent`, `staged`, `restricted_live`, `general_live
 Internal recipient-delivery states are `absent`, `staged`, `delivered`, and `withdrawn`.
 Internal allows only recipient delivery through `absent -> staged -> delivered -> withdrawn`.
 Trial allows GitHub `absent -> draft -> withdrawn` and the delivery surface `absent -> staged -> restricted_live -> withdrawn`, and it prohibits a trial GitHub draft from becoming non-draft.
-Pilot allows GitHub `absent -> draft -> non_draft -> withdrawn` and the delivery surface `absent -> staged -> restricted_live -> withdrawn`.
 Release allows GitHub `absent -> draft -> non_draft -> withdrawn` and the delivery surface `absent -> staged -> general_live -> withdrawn`.
 Failed attempts and unavailable observations produce signed attestations without advancing surface state.
 Each transition requires the actor authorized for that surface and an atomic compare-and-swap append against the unique current attestation-chain head, so stale or concurrent forks fail closed.
@@ -147,9 +157,8 @@ Revocation after a completed reduction does not regress it; it blocks further ap
 If those prerequisites are absent, pre-live `draft` or `staged` surfaces reduce only to `staged`, while any observed live target state fails closed without changing the governed state.
 Internal reduces to `delivered` when its recipient surface is `delivered`.
 Trial reduces to `delivered` only for GitHub `draft` plus delivery-surface `restricted_live`.
-Pilot reduces to `published` only for GitHub `non_draft` plus delivery-surface `restricted_live`.
 Release reduces to `published` only for GitHub `non_draft` plus delivery-surface `general_live`.
-Trial reduces to `partially_delivered` when exactly one required surface has reached its channel target, while pilot and release reduce to `partially_published` under the same target-state rule.
+Trial reduces to `partially_delivered` when exactly one required surface has reached its channel target, while release reduces to `partially_published` under the same target-state rule.
 Any remaining verified combination with valid digest-bound approval reduces to `approved`.
 Any remaining verified combination with at least one required surface in `draft` or `staged` reduces to `staged`.
 All remaining combinations in which required surfaces are `absent` reduce to `not_started`.
@@ -166,9 +175,8 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 | Channel | Audience | Eligible version | Required distribution | Required surfaces and completion |
 | --- | --- | --- | --- | --- |
 | `internal` | Orchard collaborators | Development, RC, or final | Selected installable artifact, checksum, build manifest, validation summary, and component inventory, plus all apex-required sidecars for any DMG | No GitHub Release or delivery-surface publication is required, and completion is Delivered when exact intended recipients can retrieve the recorded bytes. |
-| `trial` | One named time-bounded evaluator engagement | RC | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | A private GitHub draft record and an access-restricted delivery surface must contain the same candidate, and successful completion is Delivered rather than Published. |
-| `pilot` | Named design partners or a controlled production-like rollout | RC | The same required set as `trial` | A non-draft private GitHub Release and access-restricted delivery through the delivery surface must contain the exact approved bytes. |
-| `release` | Generally available Orchard customers | Final | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | General delivery through the delivery surface must be live and the private GitHub Release must be non-draft for the same approved candidate. |
+| `trial` | One named time-bounded evaluator engagement | RC | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | A record-only GitHub draft must reference the same candidate as the access-restricted delivery surface, and successful completion is Delivered rather than Published. |
+| `release` | Generally available Orchard customers | Final | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | General delivery through the delivery surface must be live and the public record-only GitHub Release must be non-draft for the same approved candidate. |
 
 Native PKG is not a governed current artifact.
 Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
@@ -176,8 +184,9 @@ GitHub Releases act as the release record under `docs/process.md` "Tracking and 
 Under the decision accepted in ADR 0043, §11.3 names no vendor for that delivery role and no delivery surface is selected.
 The two roles retain separate observations and authorization boundaries even if one provider supplies both.
 The release workflow publishes through the delivery surface first, verifies its live state and digest, and publishes the GitHub Release last.
+No GitHub release record of any channel may carry installable bytes until an accepted OpenSpec change amends the single-delivery-surface rule; bytes on a `release` record additionally require the explicit `SPEC.md` §11 public-binary decision.
 
-Trial delivery and pilot and release publication remain disabled until a delivery surface is selected through an accepted OpenSpec change and proves the required audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation.
+Trial delivery and release publication remain disabled until a delivery surface is selected through an accepted OpenSpec change and proves the required audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation.
 An unselected surface is neither optional nor satisfied, and the §11.0 distribution pause remains independently binding.
 If the delivery surface cannot distinguish restricted and general audiences, the affected channels remain disabled until an alternative surface is selected through an accepted OpenSpec change.
 
@@ -242,17 +251,18 @@ The SBOM supplements and does not replace exact artifact and tree identities.
 Normal pull-request and `main` CI validates Product Version authority, transition rules, first-party BEAM agreement, packaging mappings, glossary and OpenSpec consistency, and affected tests with read-only repository permissions.
 Candidate validation reads source and validation evidence but has no release credentials.
 Candidate construction may write only ephemeral workflow artifacts.
+Signed, notarized, or restricted-channel Candidate or Internal Build bytes must never enter workflow artifacts, caches, logs, job summaries, or any other store readable by the repository's general audience.
 Apple build-number allocation, Apple signing and notarization, GitHub drafting, delivery-surface staging, publication approval, delivery-surface publication, and GitHub publication use separate jobs and narrowly scoped credentials.
 Signing, delivery-surface publication, and GitHub publication credentials do not coexist in one job.
 
 Distribution approval binds the Candidate Manifest or Internal Build Manifest digest, channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
-An approval is scoped to one channel distribution and may cover both the delivery-surface live transition and GitHub `non_draft` transition for pilot or release.
+An approval is scoped to one channel distribution and may cover both the delivery-surface live transition and GitHub `non_draft` transition for release.
 The transition that first makes the reduction terminal (`delivered`, `published`, or `withdrawn`), or Candidate invalidation or supersession, atomically consumes the approval through the attestation-chain compare-and-swap update, after which it cannot authorize another transition or Candidate.
 The transition that first completes delivery or publication requires valid, unconsumed, unrevoked channel-required approval at that moment, including a trial GitHub draft transition after the delivery surface is live; trial completion requires that approval to bind the draft target.
 For channels that require them, distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
 Each surface State Attestation records its target identifier.
 For channels requiring those publication surfaces, only attestations whose target identifier is bound by a current unrevoked approval establish partial or complete delivery or publication, and that approval must have authorized each approval-gated transition being counted except under the identical-binding replacement rule below.
-If approval expires between required pilot or release transitions, a valid replacement approval binding the identical Candidate Manifest digest, channel, Product Version, tag, required artifact set, and target identifiers may authorize the remaining gated transition, and the earlier transition's attestation counts toward completion if its authorizing approval was valid at that transition and remains unrevoked.
+If approval expires between required release transitions, a valid replacement approval binding the identical Candidate Manifest digest, channel, Product Version, tag, required artifact set, and target identifiers may authorize the remaining gated transition, and the earlier transition's attestation counts toward completion if its authorizing approval was valid at that transition and remains unrevoked.
 Any difference in those bindings requires withdrawal and a new Product Version and tag; replacement cannot revive a consumed or revoked approval or reopen a terminal distribution or invalid or superseded Candidate.
 A non-gated target state, including trial's GitHub `draft`, may count once a valid approval binds its target; approval of its earlier staging transition is not required.
 For reduction, expiry or consumption does not erase the approval's existing target bindings or authorization of past transitions, but prevents it from authorizing a new approval-gated transition.
@@ -262,9 +272,9 @@ Retargeting after any live transition requires withdrawal and a new Product Vers
 Any changed digest, channel, artifact requirement, or compatibility declaration revokes approval automatically.
 The GitHub Release becomes non-draft only after delivery-surface live verification succeeds for the exact approved candidate.
 
-Implementation must prove private-repository support for environment reviewers, self-review prevention, tag or ruleset restrictions, immutable Releases, environment-scoped secrets, and artifact attestations before claiming those controls.
+Implementation must prove support for environment reviewers, self-review prevention, tag or ruleset restrictions, immutable Releases, environment-scoped secrets, and artifact attestations for the repository's current visibility and plan before claiming those controls.
 If protected reviewer support is unavailable, the signed approval fallback and a separately controlled runner or secret store are required.
-Trial delivery and pilot or release publication must not silently degrade to an unrestricted manual workflow.
+Trial delivery and release publication must not silently degrade to an unrestricted manual workflow.
 
 ### Decision: N And N-1 Use Explicit Release Lines
 
@@ -291,8 +301,8 @@ Current numeric minor arithmetic in `Orchard.Upgrade` remains unchanged until `S
 - Current dirty-build support can be mistaken for release eligibility, so dirty or ambiguous provenance remains ineligible for governed promotion.
 - Cross-artifact checks can duplicate artifact-specific verification, so this capability governs shared identity and references existing app and packaging contracts.
 - Release automation can expose credentials too broadly, so credential capabilities remain isolated and publication requires digest-bound approval.
-- Private-repository GitHub features may be unavailable, so the contract specifies required guarantees and fail-closed fallbacks rather than assuming a plan entitlement.
-- A selected delivery surface may not expose all required audience and digest semantics, so trial, pilot, and release publication remain disabled until live capability checks pass.
+- GitHub features may be unavailable for the repository's current visibility and plan, so the contract specifies required guarantees and fail-closed fallbacks rather than assuming a plan entitlement.
+- A selected delivery surface may not expose all required audience and digest semantics, so trial delivery and release publication remain disabled until live capability checks pass.
 - An explicit Previous Supported Release Line adds a registry decision, but it handles skipped minor lines without inventing compatibility through arithmetic.
 - A Candidate Manifest can become incomplete as channels evolve, so its schema is versioned and unsupported mandatory fields fail closed.
 - SPDX generation increases release evidence, but it provides a portable candidate-level inventory without coupling policy to optional GitHub attestations.
@@ -305,11 +315,11 @@ Current numeric minor arithmetic in `Orchard.Upgrade` remains unchanged until `S
 4. Define Candidate Manifest, canonical tree, State Attestation, component-provenance, and SPDX SBOM schemas without enabling publication.
 5. Add normal CI governance checks with read-only permissions.
 6. Add a non-publishing signed-tag candidate workflow and exercise it in an isolated repository or dry-run mode.
-7. Select the delivery surface through an accepted OpenSpec change and probe private-repository GitHub controls, live delivery-surface behavior, historical Apple build numbers, signing identities, and credential custody.
+7. Select the delivery surface through an accepted OpenSpec change and probe GitHub controls for the repository's current visibility and plan, live delivery-surface behavior, historical Apple build numbers, signing identities, and credential custody.
 8. Add isolated credential-gated signing, notarization, stapling, final verification, and manifest sealing in that order.
-9. Add private GitHub draft creation and delivery-surface staging only after candidate evidence passes.
+9. Add record-only GitHub draft creation and delivery-surface staging only after candidate evidence passes.
 10. Enable digest-bound approval and exact-byte promotion only after the required capability and role-assignment gates pass.
-11. Publish through the delivery surface first and make the matching private GitHub Release non-draft last.
+11. Publish through the delivery surface first and make the matching public record-only GitHub Release non-draft last.
 12. Reconcile `SPEC.md` compatibility language and `Orchard.Upgrade` behavior in the same implementation branch.
 13. Leave `v0.4.0` and historical state unchanged unless a separate accepted migration requests a backfill.
 
@@ -322,7 +332,7 @@ The solo Repository Owner currently holds the Release Owner, Tag Signer, publica
 No collaborator or backup currently has enough established experience and trust to assume those authorities.
 This is a deliberate current operating constraint rather than an implied two-person control claim.
 
-Each trial, pilot, or release Candidate must carry a signed single-owner exception bound to the exact Candidate Manifest digest and channel.
+Each trial or release Candidate must carry a signed single-owner exception bound to the exact Candidate Manifest digest and channel.
 The exception is a mandatory `single_owner_exception` State Attestation with deterministic canonical serialization.
 Its payload records schema version, Candidate Manifest digest, Release Channel, consolidated roles, signer identity and key identifier, single-Candidate purpose, issue time, expiry, unique nonce, and acknowledgement of every mandatory compensating control.
 Validation verifies its signature against the pre-existing release key registry and current revocation data, rejects malformed, future-issued, or expired validity windows, and stores it in the Candidate's append-only attestation chain.
@@ -340,8 +350,8 @@ The amendment to decision 1.4 and the retained GitHub release-record role are ac
 
 ## Remaining Gates
 
-- Verify private-repository GitHub plan support for each proposed protected control before trial delivery or pilot and release publication.
-- Select the delivery surface through an accepted OpenSpec change and verify its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before trial delivery or pilot and release publication.
+- Verify GitHub support for each proposed protected control for the repository's current visibility and plan before trial delivery or release publication.
+- Select the delivery surface through an accepted OpenSpec change and verify its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before trial delivery or release publication.
 - Inspect the highest historically distributed `CFBundleVersion` for `com.orchard.app` before allocating the first governed number.
 - Identify actual signing identities, credential stores, and release hosts without recording secret or machine-local values in durable policy.
 - Select and prove the append-only evidence store used for approvals and attestations.

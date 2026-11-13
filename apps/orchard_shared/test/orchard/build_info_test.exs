@@ -129,9 +129,9 @@ defmodule Orchard.BuildInfoTest do
     refute unchanged_output =~ "Compiling"
     assert File.read!(counter) == "compiled\n"
 
-    changed_channel_output = compile!(fixture, counter, sha: sha, channel: "pilot")
+    changed_channel_output = compile!(fixture, counter, sha: sha, channel: "release")
     assert changed_channel_output =~ "Compiling 1 file"
-    assert baked_info!(fixture, counter, sha: sha, channel: "pilot").build_channel == "pilot"
+    assert baked_info!(fixture, counter, sha: sha, channel: "release").build_channel == "release"
     assert File.read!(counter) == "compiled\n"
 
     available_git_output = compile!(fixture, counter)
@@ -190,11 +190,11 @@ defmodule Orchard.BuildInfoTest do
     assert baked_info!(fixture, counter, date: next_date) == original_info
     assert File.read!(counter) == "compiled\n"
 
-    changed_output = compile!(fixture, counter, date: next_date, channel: "pilot")
+    changed_output = compile!(fixture, counter, date: next_date, channel: "release")
     assert changed_output =~ "Compiling 1 file"
-    changed_info = baked_info!(fixture, counter, date: next_date, channel: "pilot")
+    changed_info = baked_info!(fixture, counter, date: next_date, channel: "release")
     assert changed_info.build_date == next_date
-    assert changed_info.build_channel == "pilot"
+    assert changed_info.build_channel == "release"
     assert changed_info.git_sha == original_info.git_sha
     assert File.read!(counter) == "compiled\n"
   end
