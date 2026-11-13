@@ -245,6 +245,7 @@ Signing, delivery-surface publication, and GitHub publication credentials do not
 
 Distribution approval binds the Candidate Manifest or Internal Build Manifest digest, channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
 Distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
+Each surface State Attestation records its target identifier, and reduction considers only attestations whose target matches the identifiers bound by the current approval.
 Any changed digest, channel, artifact requirement, or compatibility declaration revokes approval automatically.
 The GitHub Release becomes non-draft only after delivery-surface live verification succeeds for the exact approved candidate.
 

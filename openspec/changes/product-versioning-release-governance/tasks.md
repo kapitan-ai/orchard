@@ -10,7 +10,7 @@
 - [x] 1.8 Approve separate least-privilege candidate, signing, drafting, staging, approval, and publication boundaries plus fail-closed fallbacks for unavailable private-repository GitHub features.
 - [x] 1.9 Record the solo Repository Owner as the current holder of every release, signing, allocation, publication, and trust-administration role, with no experienced backup, and require a signed candidate-bound single-owner exception plus logical action separation for each trial, pilot, or release Candidate.
 - [ ] 1.10 Verify private-repository GitHub protections, the selected delivery surface's audience and promotion behavior, historical `CFBundleVersion` maximum, signing identities, credential stores, and release hosts before trial delivery or pilot and release publication.
-- [ ] 1.11 Select the delivery surface for `trial`, `pilot`, and `release` through an accepted OpenSpec change and prove its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before any of those channels is enabled. Owner approval of ADR 0043 and the amended 1.4 wording remains pending; this task does not lift the §11.0 distribution pause.
+- [ ] 1.11 Select the delivery surface for `trial`, `pilot`, and `release` through an accepted OpenSpec change and prove its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before any of those channels is enabled. This task does not lift the §11.0 distribution pause.
 
 ## 2. Apex Contract And Durable Documentation
 

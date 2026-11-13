@@ -97,9 +97,8 @@ Orchard SHALL record distribution state independently for each Release Channel a
 Draft SHALL be a publication-surface state rather than a candidate state, and failed SHALL be an attempt outcome rather than a candidate state.
 A valid unpublished RC MAY be superseded by a later RC, while a Published Release SHALL only be withdrawn or followed by a new release and SHALL NOT be superseded in place.
 
-The proposed ADR 0043 amendment withdraws only decision 1.4's vendor selection, pending owner approval; it preserves channel contracts, DMG artifact treatment, and conjunctive completion across the GitHub release record and one delivery surface.
-GitHub SHALL remain the release record under `AGENTS.md` "Tracking and publication"; the delivery surface SHALL be the single customer-facing distribution surface for published channels.
-Under this proposed amendment, no delivery surface is selected; selecting one SHALL require an accepted OpenSpec change.
+GitHub SHALL remain the release record under `AGENTS.md` "Tracking and publication"; the delivery surface SHALL be the single customer-facing distribution surface for trial, pilot, and release.
+A delivery surface SHALL be selected only through an accepted OpenSpec change.
 The two roles SHALL retain separate observations and authorization boundaries even if one provider supplies both.
 GitHub surface state SHALL be `absent`, `draft`, `non_draft`, or `withdrawn`.
 Delivery surface state SHALL be `absent`, `staged`, `restricted_live`, `general_live`, or `withdrawn`.
@@ -279,6 +278,7 @@ Candidate validation, Candidate or Internal Build construction, Apple build-numb
 Signing, delivery-surface publication, and GitHub publication credentials SHALL NOT coexist in one job.
 Distribution approval SHALL bind the Candidate Manifest or Internal Build Manifest digest, Release Channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
 Distribution approval SHALL also bind the selected GitHub release-record and delivery-surface target identifiers; changing either identifier SHALL revoke that approval.
+Each surface State Attestation SHALL record its target identifier, and reduction SHALL consider only attestations whose target matches the identifiers bound by the current approval.
 Any changed digest, channel, artifact requirement, or compatibility declaration SHALL revoke approval automatically.
 The GitHub Release SHALL become non-draft only after delivery-surface live verification succeeds for the same approved candidate.
 
