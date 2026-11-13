@@ -698,6 +698,8 @@ Safe-tokenization caller-string segmentation SHALL protect free-form caller-auth
 
 The controller-side chat-template renderer SHALL support Hugging Face's standard chat-template globals used by tokenizer templates, including `raise_exception(message)` and `strftime_now(format_string)`, so compatibility decisions reflect template semantics rather than missing helper globals.
 
+In both plain and marker-aware rendering, the dictionary global SHALL expose only ordinary dictionary construction and `fromkeys`, not the Python dictionary type. Namespace construction and assignment SHALL reject underscore-prefixed names. These restrictions SHALL preserve ordinary mapping keys, public namespace state, and existing caller-provenance checks; they do not establish a template-trust or model-qualification policy.
+
 Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispatched]` when capable workers receive controller-supplied IDs, `[:orchard, :tokenizer, :unsafe_mode_active]` when safe-mode falls back to legacy rendered-prompt dispatch, and `[:orchard, :tokenizer, :parity_drift]` when a capable worker rejects controller-supplied `prompt_token_ids` with `prompt_token_ids_length_mismatch`. The parity-drift event is an operator-visible invariant breach counter; it is emitted only for worker stream failures, not controller-synthesized timeout or cancellation failures.
 
 When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` is not `:off`, the multi-node scheduler MAY prefer Runtime Endpoints whose live Runtime Endpoint Observation reports `supports_prompt_token_ids = true`.

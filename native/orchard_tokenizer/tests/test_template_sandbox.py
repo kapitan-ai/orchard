@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from jinja2.exceptions import SecurityError
 
 from orchard_tokenizer.cli import _chat_template_environment
 from orchard_tokenizer.safe_segmented import (
@@ -10,6 +11,42 @@ from orchard_tokenizer.safe_segmented import (
     walk_rendered,
 )
 from orchard_tokenizer.template_sandbox import MarkerPolicy
+
+
+@pytest.mark.parametrize("marked", [False, True])
+@pytest.mark.parametrize("expression", ["dict['value']", "dict.func"])
+def test_dictionary_global_only_exposes_construction(marked, expression):
+    _, pairs = tag_caller_strings([{"role": "user", "content": "hello"}], [], None, "2" * 39)
+    environment = _chat_template_environment(marker_pairs=pairs if marked else ())
+    assert environment.from_string("{{ " + expression + " is undefined }}").render() == "True"
+
+
+@pytest.mark.parametrize("marked", [False, True])
+@pytest.mark.parametrize("expression", ["ns.__class__", "ns['__class__']", "ns|attr('__class__')"])
+def test_namespace_private_attributes_remain_unavailable(marked, expression):
+    _, pairs = tag_caller_strings([{"role": "user", "content": "hello"}], [], None, "2" * 39)
+    environment = _chat_template_environment(marker_pairs=pairs if marked else ())
+    template = "{% set ns = namespace(value=1) %}{{ " + expression + " is undefined }}"
+    assert environment.from_string(template).render() == "True"
+
+
+@pytest.mark.parametrize("marked", [False, True])
+@pytest.mark.parametrize("name", ["_private", "__private__"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{% set ns = namespace(NAME=1) %}",
+        "{% set ns = namespace({'NAME': 1}) %}",
+        "{% set ns = namespace([('NAME', 1)]) %}",
+        "{% set ns = namespace() %}{% set ns.NAME = 1 %}",
+    ],
+    ids=["keyword", "mapping", "pairs", "assignment"],
+)
+def test_namespace_rejects_reserved_names(marked, name, template):
+    _, pairs = tag_caller_strings([{"role": "user", "content": "hello"}], [], None, "2" * 39)
+    environment = _chat_template_environment(marker_pairs=pairs if marked else ())
+    with pytest.raises(SecurityError):
+        environment.from_string(template.replace("NAME", name)).render()
 
 
 @pytest.mark.parametrize(
@@ -22,6 +59,27 @@ from orchard_tokenizer.template_sandbox import MarkerPolicy
         ("{% for message in messages[:] %}{{ message.content }}{% endfor %}", "hello", 1),
         ("{{ (messages | first).content }}", "hello", 1),
         ("{{ dict(value=messages[0].content).get('value') }}", "hello", 1),
+        ("{{ dict({'value': messages[0].content}).value }}", "hello", 1),
+        ("{{ dict([('value', messages[0].content)]).value }}", "hello", 1),
+        ("{{ dict.fromkeys(['a', 'b'], messages[0].content).b }}", "hello", 1),
+        ("{{ dict(_private=messages[0].content)['_private'] }}", "hello", 1),
+        (
+            "{% set ns = namespace({'value': 'old'}, value=messages[0].content) %}{{ ns.value }}",
+            "hello",
+            1,
+        ),
+        (
+            "{% set ns = namespace({'self': messages[0].content}) %}{{ ns.self }}",
+            "hello",
+            1,
+        ),
+        (
+            "{% set ns = namespace(value='old') %}"
+            "{% for message in messages %}{% set ns.value = message.content %}{% endfor %}"
+            "{{ ns.value }}",
+            "hello",
+            1,
+        ),
         (
             "{% for key, value in dict(x=messages[0].content) | items %}{{ value }}{% endfor %}",
             "hello",
