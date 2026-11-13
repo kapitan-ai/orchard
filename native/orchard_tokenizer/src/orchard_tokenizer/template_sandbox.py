@@ -290,7 +290,7 @@ class ProvenanceSandbox(ImmutableSandboxedEnvironment):
             reject_marker_transform("operator_" + operator)
         return super().call_binop(context, operator, left, right)
 
-    def call(self, context: Any, obj: Any, *args: Any, **kwargs: Any) -> Any:
+    def call(self, context: Any, obj: Any, /, *args: Any, **kwargs: Any) -> Any:
         if not self.is_safe_callable(obj):
             return super().call(context, obj, *args, **kwargs)
         receiver = getattr(obj, "__self__", None)

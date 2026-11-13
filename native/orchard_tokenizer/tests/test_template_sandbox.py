@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from jinja2.exceptions import SecurityError
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from orchard_tokenizer.cli import _chat_template_environment
 from orchard_tokenizer.safe_segmented import (
@@ -11,6 +12,81 @@ from orchard_tokenizer.safe_segmented import (
     walk_rendered,
 )
 from orchard_tokenizer.template_sandbox import MarkerPolicy
+
+
+@pytest.mark.parametrize("marked", [False, True], ids=["plain", "marker-aware"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{{ namespace(self=value).self }}",
+        "{{ namespace(context=value).context }}",
+        "{{ namespace(obj=value).obj }}",
+        "{{ dict(self=value).self }}",
+        "{{ dict(context=value).context }}",
+        "{{ dict(obj=value).obj }}",
+        "{% macro m(context) %}{{ context }}{% endmacro %}{{ m(context=value) }}",
+        "{% macro m(obj) %}{{ obj }}{% endmacro %}{{ m(obj=value) }}",
+    ],
+    ids=[
+        "namespace-self",
+        "namespace-context",
+        "namespace-obj",
+        "dict-self",
+        "dict-context",
+        "dict-obj",
+        "macro-context",
+        "macro-obj",
+    ],
+)
+def test_call_keywords_preserve_values_and_caller_provenance(marked, template):
+    # SPEC.md §3.5: ordinary template state retains caller provenance.
+    tagged, pairs = tag_caller_strings([{"role": "user", "content": "Hello"}], [], None, "2" * 39)
+    value = tagged["input_items"][0]["content"] if marked else "Hello"
+    environment = _chat_template_environment(marker_pairs=pairs if marked else ())
+    rendered = environment.from_string(template).render(value=value)
+    assert rendered == value
+    if marked:
+        dual_render_guard("Hello", rendered, pairs)
+        assert [
+            (segment.kind, segment.text, segment.provenance_path)
+            for segment in walk_rendered(rendered, pairs)
+            if segment.text
+        ] == [("caller", "Hello", "messages[0].content")]
+
+
+@pytest.mark.parametrize("marked", [False, True], ids=["plain", "marker-aware"])
+def test_macro_self_keyword_matches_upstream(marked):
+    tagged, pairs = tag_caller_strings([{"role": "user", "content": "Hello"}], [], None, "2" * 39)
+    value = tagged["input_items"][0]["content"] if marked else "Hello"
+    source = "{% macro m(self) %}{{ self }}{% endmacro %}{{ m(self=value) }}"
+    template = _chat_template_environment(marker_pairs=pairs if marked else ()).from_string(source)
+    # Jinja 3.1.6's Macro.__call__ rejects self=; follow upstream if it later supports it.
+    try:
+        expected = ImmutableSandboxedEnvironment().from_string(source).render(value=value)
+    except TypeError as upstream_error:
+        with pytest.raises(TypeError) as error:
+            template.render(value=value)
+        assert str(error.value) == str(upstream_error)
+    else:
+        assert template.render(value=value) == expected
+
+
+@pytest.mark.parametrize("name", ["self", "context", "obj"])
+def test_call_keywords_cannot_bypass_provenance_check(name):
+    # SPEC.md §3.5: unaudited transformations of marker-bearing values fail closed.
+    def transform(**kwargs):
+        return str(kwargs[name]).lower()
+
+    tagged, pairs = tag_caller_strings([{"role": "user", "content": "Hello"}], [], None, "2" * 39)
+    environment = _chat_template_environment(marker_pairs=pairs)
+    template = environment.from_string("{{ transform(" + name + "=value) }}")
+    assert template.render(transform=transform, value="Hello") == "hello"
+    with pytest.raises(SafeSegmentedError) as error:
+        template.render(transform=transform, value=tagged["input_items"][0]["content"])
+    assert error.value.reason == {
+        "category": "marker_transform_unsupported",
+        "operation": "callable",
+    }
 
 
 @pytest.mark.parametrize("marked", [False, True])
