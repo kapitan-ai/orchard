@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the macOS native distribution profile's app-primary lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified Amore DMG handoff.
+Defines the macOS native distribution profile's app-primary lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified DMG handoff to the outer distribution layer.
 
 The generic-distribution-artifact contract that the archived `2026-07-20-amore-dmg-service-lifecycle` delta also proposed here is owned solely by `packaging-deployment`, so it is deliberately not restated in this capability.
 ## Requirements
@@ -17,8 +17,8 @@ Orchard's interactive DMG in `SPEC.md` §11.3 SHALL contain a real signed `Orcha
 
 ### Requirement: Release Metadata Is Verifiable Without Rewriting The DMG
 
-The Orchard release distribution set SHALL place release notes, a SHA-256 checksum, and before/after app-signing manifests alongside the Amore-produced DMG.
-Orchard SHALL NOT rewrite the DMG after Amore has assembled or notarized it to inject metadata.
+The Orchard release distribution set SHALL place release notes, a SHA-256 checksum, and before/after app-signing manifests alongside the DMG.
+Orchard SHALL NOT rewrite the DMG after final assembly or notarization to inject metadata.
 
 #### Scenario: Operator receives a release distribution set
 
@@ -94,14 +94,14 @@ Orchard SHALL sign nested Mach-O libraries and executables with their required e
 
 #### Scenario: App is ready for the outer distribution layer
 
-- **WHEN** Orchard hands an app bundle to Amore
+- **WHEN** Orchard hands an app bundle to the outer DMG assembly tooling
 - **THEN** every nested Mach-O and the final app bundle have passed Orchard-owned identity, hardened-runtime, entitlement, closure, and signature verification appropriate to the build mode
 
-### Requirement: Amore Handoff Fails Closed On Nested Mutation
+### Requirement: DMG Handoff Fails Closed On Nested Mutation
 
-The Amore DMG handoff SHALL compare signing manifests before and after DMG assembly and SHALL fail when nested code signatures or entitlements change unexpectedly.
+The DMG handoff SHALL compare signing manifests before and after DMG assembly and SHALL fail when nested code signatures or entitlements change unexpectedly.
 
-#### Scenario: Amore changes nested code
+#### Scenario: Outer tooling changes nested code
 
 - **WHEN** the mounted DMG contains an app whose nested signature or canonical entitlement digest differs from the verified input app
 - **THEN** Orchard rejects the DMG and does not mark it ready for notarization, publication, or distribution

@@ -90,7 +90,7 @@ This changes the named app scope in `SPEC.md` §§11.3-11.4 without changing inn
 
 #### Scenario: App is ready for the outer distribution layer
 
-- **WHEN** Orchard hands either profile's app bundle to Amore
+- **WHEN** Orchard hands either profile's app bundle to the outer DMG assembly tooling
 - **THEN** every nested Mach-O and the final app bundle have passed identity, hardened-runtime, entitlement, closure, and signature verification for that build mode
 
 ## ADDED Requirements

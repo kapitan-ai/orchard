@@ -5971,13 +5971,17 @@ DMG SHALL include `Orchard.app` as the primary interactive install artifact.
 It SHALL NOT include or require a native PKG artifact under the current distribution contract.
 
 The release distribution set SHALL place release notes, a DMG SHA-256 checksum, and the before/after app-signing manifests alongside the DMG.
-These sidecars remain outside the DMG because Amore owns final image assembly and notarization, and changing the image afterward would invalidate that outer trust boundary.
+These sidecars remain outside the DMG because changing the image after final assembly, notarization, and stapling would invalidate its signature and notarization ticket.
 
 The app bundle SHALL be verified before DMG assembly.
 The mounted DMG SHALL be verified after assembly, and nested code signatures and entitlement digests SHALL match the verified input app.
 An outer distribution tool that changes nested code or entitlements SHALL cause the release handoff to fail closed.
-Amore SHALL be the current outer DMG assembly, notarization, stapling, hosting, and publication integration.
-Orchard SHALL feature-detect the required Amore CLI surface and SHALL keep nested signing and verification under Orchard control.
+Developer ID signing, notarization by Apple's notary service, and stapling are mandatory macOS platform trust requirements of this profile, not a choice of distribution service.
+Beyond those three platform requirements, this contract SHALL NOT require a specific commercial or proprietary service or tool for DMG assembly, notarization submission, or customer-facing delivery, hosting, or publication.
+These Apple platform requirements SHALL NOT extend to Apple hosting or publication or to any intermediary service, including notarization-submission tooling.
+This neutrality rule governs outer DMG tooling and the customer delivery surface; it does not apply to GitHub Releases as Orchard's release record (`docs/process.md` "Tracking and Publication").
+Orchard SHALL feature-detect every capability it requires from outer distribution tooling before invoking it and SHALL fail closed before DMG assembly when a required capability is absent or cannot be verified.
+Whatever tooling performs those steps, Orchard SHALL keep nested signing and verification under Orchard control and SHALL apply the mounted-DMG verification required above to the assembled DMG, comparing its contained app against the verified input app.
 
 ### 11.4 Root-Authorized App Service Lifecycle
 
