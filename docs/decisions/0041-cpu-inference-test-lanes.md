@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed on 2026-11-09 under the OpenSpec change `add-cpu-inference-test-lanes`.
+Accepted on 2026-11-13.
+
+Najib, product owner, accepted this decision and the `SPEC.md` §1.5 CPU inference test-lane amendment on 2026-11-13, when that amendment merged in pull request #558.
+It was proposed on 2026-11-09 under the OpenSpec change `add-cpu-inference-test-lanes`.
 It chooses test-lane runtimes only. It is not a runtime-provider profile, a qualification record or a support claim under `SPEC.md` §1.4 and §1.5.
 
 ## Context
