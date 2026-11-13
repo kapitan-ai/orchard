@@ -677,23 +677,23 @@ fi
 
 if [[ -z "$ORCHARD_BUILD_CHANNEL" ]]; then
     log_error "Distributed payload builds require ORCHARD_BUILD_CHANNEL to be non-empty"
-    log_error "Allowed values: internal, trial, pilot, release"
+    log_error "Allowed values: internal, trial, release"
     log_error "Unset ORCHARD_BUILD_CHANNEL to use the default channel: trial"
     exit 1
 fi
 
 case "$ORCHARD_BUILD_CHANNEL" in
-    internal|trial|pilot|release)
+    internal|trial|release)
         export ORCHARD_BUILD_CHANNEL
         ;;
     dev)
         log_error "Distributed payload builds do not support ORCHARD_BUILD_CHANNEL=dev"
-        log_error "Allowed values: internal, trial, pilot, release"
+        log_error "Allowed values: internal, trial, release"
         exit 1
         ;;
     *)
         log_error "Invalid ORCHARD_BUILD_CHANNEL: $ORCHARD_BUILD_CHANNEL"
-        log_error "Allowed values: internal, trial, pilot, release"
+        log_error "Allowed values: internal, trial, release"
         exit 1
         ;;
 esac

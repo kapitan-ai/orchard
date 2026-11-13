@@ -224,6 +224,19 @@ done
 
 chmod +x "$TOOLS/git" "$TOOLS/uv" "$TOOLS/mix"
 
+REJECTED_CHANNEL_OUT="$TMP_ROOT/rejected-channel.out"
+if ORCHARD_BUILD_CHANNEL=pilot PATH="$TOOLS:$PATH" \
+    "$REPO_ROOT/scripts/build-payload.sh" "$TMP_ROOT/rejected-channel" \
+    >"$REJECTED_CHANNEL_OUT" 2>&1; then
+    fail 'removed pilot channel produced a payload'
+fi
+grep -Fq 'Invalid ORCHARD_BUILD_CHANNEL: pilot' "$REJECTED_CHANNEL_OUT" ||
+    fail 'removed pilot channel did not report the expected refusal'
+grep -Fq 'Allowed values: internal, trial, release' "$REJECTED_CHANNEL_OUT" ||
+    fail 'channel refusal did not list the supported channels'
+test ! -e "$TMP_ROOT/rejected-channel" ||
+    fail 'removed pilot channel created a staging directory'
+
 if [[ -e "$PRIV_DIR" ]]; then
     mv "$PRIV_DIR" "$PRIV_STASH/priv"
     PRIV_STASHED=true
