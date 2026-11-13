@@ -97,16 +97,20 @@ Orchard SHALL record distribution state independently for each Release Channel a
 Draft SHALL be a publication-surface state rather than a candidate state, and failed SHALL be an attempt outcome rather than a candidate state.
 A valid unpublished RC MAY be superseded by a later RC, while a Published Release SHALL only be withdrawn or followed by a new release and SHALL NOT be superseded in place.
 
+The proposed ADR 0043 amendment withdraws only decision 1.4's vendor selection, pending owner approval; it preserves channel contracts, DMG artifact treatment, and conjunctive completion across the GitHub release record and one delivery surface.
+GitHub SHALL remain the release record under `AGENTS.md` "Tracking and publication"; the delivery surface SHALL be the single customer-facing distribution surface for published channels.
+Under this proposed amendment, no delivery surface is selected; selecting one SHALL require an accepted OpenSpec change.
+The two roles SHALL retain separate observations and authorization boundaries even if one provider supplies both.
 GitHub surface state SHALL be `absent`, `draft`, `non_draft`, or `withdrawn`.
-Amore surface state SHALL be `absent`, `staged`, `restricted_live`, `general_live`, or `withdrawn`.
+Delivery surface state SHALL be `absent`, `staged`, `restricted_live`, `general_live`, or `withdrawn`.
 Internal recipient-delivery state SHALL be `absent`, `staged`, `delivered`, or `withdrawn` and SHALL follow `absent -> staged -> delivered -> withdrawn`.
-The `trial` channel SHALL allow GitHub only through `absent -> draft -> withdrawn` and Amore only through `absent -> staged -> restricted_live -> withdrawn`, and a trial GitHub draft SHALL NOT become non-draft.
-The `pilot` channel SHALL allow GitHub only through `absent -> draft -> non_draft -> withdrawn` and Amore only through `absent -> staged -> restricted_live -> withdrawn`.
-The `release` channel SHALL allow GitHub only through `absent -> draft -> non_draft -> withdrawn` and Amore only through `absent -> staged -> general_live -> withdrawn`.
+The `trial` channel SHALL allow GitHub only through `absent -> draft -> withdrawn` and the delivery surface only through `absent -> staged -> restricted_live -> withdrawn`, and a trial GitHub draft SHALL NOT become non-draft.
+The `pilot` channel SHALL allow GitHub only through `absent -> draft -> non_draft -> withdrawn` and the delivery surface only through `absent -> staged -> restricted_live -> withdrawn`.
+The `release` channel SHALL allow GitHub only through `absent -> draft -> non_draft -> withdrawn` and the delivery surface only through `absent -> staged -> general_live -> withdrawn`.
 Failed attempts and unavailable observations SHALL produce authenticated attestations without advancing surface state.
 Every surface transition SHALL require the actor authorized for that surface and an atomic compare-and-swap append against the unique current attestation-chain head, and stale or concurrent forks SHALL fail closed.
-Transitions to internal `delivered`, Amore `restricted_live` or `general_live`, and GitHub `non_draft` SHALL require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
-GitHub `draft` and Amore `staged` MAY exist before approval, but they SHALL remain staging evidence and SHALL NOT yield successful or partial delivery or publication state until required verification and approval are valid.
+Transitions to internal `delivered`, delivery-surface `restricted_live` or `general_live`, and GitHub `non_draft` SHALL require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
+GitHub `draft` and delivery-surface `staged` MAY exist before approval, but they SHALL remain staging evidence and SHALL NOT yield successful or partial delivery or publication state until required verification and approval are valid.
 An externally observed live target state without those prerequisites SHALL record a fail-closed observation and SHALL NOT advance governed surface or distribution state.
 
 Distribution state SHALL use an ordered total reduction over every reachable channel combination.
@@ -115,9 +119,9 @@ An invalid or superseded Candidate SHALL reduce to `withdrawn` when any required
 Before any complete or partial delivery or publication reduction, the Candidate SHALL be `verified` or the Internal Build Manifest SHALL be sealed and every channel-required approval SHALL remain valid.
 When those prerequisites are absent, pre-live `draft` or `staged` surfaces SHALL reduce only to `staged`, while any observed live target state SHALL fail closed without changing governed state.
 Internal SHALL reduce to `delivered` when its recipient-delivery surface is `delivered`.
-Trial SHALL reduce to `delivered` only when GitHub is `draft` and Amore is `restricted_live`.
-Pilot SHALL reduce to `published` only when GitHub is `non_draft` and Amore is `restricted_live`.
-Release SHALL reduce to `published` only when GitHub is `non_draft` and Amore is `general_live`.
+Trial SHALL reduce to `delivered` only when GitHub is `draft` and the delivery surface is `restricted_live`.
+Pilot SHALL reduce to `published` only when GitHub is `non_draft` and the delivery surface is `restricted_live`.
+Release SHALL reduce to `published` only when GitHub is `non_draft` and the delivery surface is `general_live`.
 Trial SHALL reduce to `partially_delivered` when exactly one required surface has reached its channel target, while pilot and release SHALL reduce to `partially_published` under the same target-state rule.
 Any remaining verified combination with valid digest-bound approval SHALL reduce to `approved`.
 Any remaining verified combination with at least one required surface in `draft` or `staged` SHALL reduce to `staged`.
@@ -146,31 +150,38 @@ Each Candidate SHALL have exactly one fixed Release Channel, and the governed bu
 Exact-byte Promotion SHALL occur only within that channel, and a channel change SHALL require a new Product Version and tag.
 
 The `internal` channel SHALL accept development, RC, or final versions and SHALL require the selected installable artifact, checksum, build manifest, validation summary, and component inventory, plus all `SPEC.md`-required sidecars when a DMG is included.
-The `internal` channel SHALL require no GitHub Release or Amore publication and SHALL become Delivered when exact intended recipients can retrieve the recorded bytes.
+The `internal` channel SHALL require no GitHub Release or delivery-surface publication and SHALL become Delivered when exact intended recipients can retrieve the recorded bytes.
 An untagged development build in the `internal` channel SHALL be an Internal Build rather than a Candidate and SHALL use a commit-bound Internal Build Manifest containing Product Version, full source commit, channel, artifact identities, validation summary, component inventory, and any Apple build-number allocation.
 An untagged Internal Build SHALL NOT enter Candidate or Candidate Manifest state, while signed RC or final internal builds SHALL use the Candidate path.
 Internal Build delivery SHALL produce signed, hash-chained Internal Build Attestations that reference the Internal Build Manifest digest and use the same append-only evidence-store and signer-verification guarantees as Candidate State Attestations.
 
 The `trial` channel SHALL accept RC versions for one named time-bounded evaluator engagement and SHALL require a signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and State Attestation evidence.
-The `trial` channel SHALL require a private GitHub draft record and an access-restricted Amore delivery of the same candidate and SHALL become Delivered rather than Published when both are complete.
+The `trial` channel SHALL require a private GitHub draft record and access-restricted delivery of the same candidate through the delivery surface and SHALL become Delivered rather than Published when both are complete.
 
 The `pilot` channel SHALL accept RC versions for named design partners or controlled production-like rollout and SHALL require the same distribution set as `trial`.
-The `pilot` channel SHALL become Published only when a non-draft private GitHub Release and access-restricted Amore delivery contain or reference the exact approved candidate.
+The `pilot` channel SHALL become Published only when a non-draft private GitHub Release and access-restricted delivery through the delivery surface contain or reference the exact approved candidate.
 
 The `release` channel SHALL accept final versions for generally available Orchard customer distribution and SHALL require the same distribution set as `trial`.
-The `release` channel SHALL become Published only when general Amore delivery is live and the private GitHub Release is non-draft for the exact approved candidate.
-The workflow SHALL publish through Amore first, verify its live state and digest, and publish the matching GitHub Release last.
+The `release` channel SHALL become Published only when general delivery through the delivery surface is live and the private GitHub Release is non-draft for the exact approved candidate.
+The workflow SHALL publish through the delivery surface first, verify its live state and digest, and publish the matching GitHub Release last.
 
 Native PKG SHALL NOT be a governed current artifact.
 Adding it or another distribution artifact type SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
-Trial, pilot, and release publication SHALL remain disabled until live capability checks prove the required Amore audience, idempotency, digest-inspection, and exact-byte promotion behavior.
+Trial delivery and pilot and release publication SHALL remain disabled until a delivery surface is selected and live capability checks prove its required audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation.
+An unselected delivery surface SHALL NOT be treated as optional or satisfied, and the §11.0 distribution pause SHALL remain independently binding.
+
+#### Scenario: No delivery surface is selected
+
+- **WHEN** no delivery surface has been selected through an accepted OpenSpec change
+- **THEN** trial delivery and pilot and release publication remain disabled
+- **AND** a GitHub release record alone does not satisfy conjunctive completion
 
 #### Scenario: Required channel artifact is absent
 
 - **WHEN** a Release Channel requires an artifact or evidence item that is absent
 - **THEN** the distribution remains incomplete and unpublishable
 
-#### Scenario: Amore cannot enforce a restricted audience
+#### Scenario: Delivery surface cannot enforce a restricted audience
 
 - **WHEN** live capability checks cannot prove the audience restriction required by `trial` or `pilot`
 - **THEN** the affected publication lane remains disabled until an alternative surface is accepted
@@ -254,7 +265,7 @@ This requirement refines component evidence beneath `SPEC.md` §11.8 and §13.1.
 ### Requirement: Normal Validation Enforces Governance Without Publication Authority
 
 Pull-request and ordinary `main` validation SHALL verify root `VERSION`, transition rules, first-party BEAM agreement, packaging mappings, compatibility declarations, glossary and OpenSpec consistency, and affected tests while retaining read-only release permissions.
-Normal validation SHALL NOT access release credentials or mutate tags, assets, GitHub Release state, or Amore state.
+Normal validation SHALL NOT access release credentials or mutate tags, assets, GitHub Release state, or delivery-surface state.
 This requirement adds CI governance beneath `SPEC.md` §11 and §13.1.
 
 #### Scenario: Pull request changes a governed version surface
@@ -264,11 +275,12 @@ This requirement adds CI governance beneath `SPEC.md` §11 and §13.1.
 
 ### Requirement: Release Workflows Use Separate Least-Privilege Boundaries
 
-Candidate validation, Candidate or Internal Build construction, Apple build-number allocation, Apple signing and notarization, GitHub drafting, Amore staging, distribution approval, Amore delivery or publication, and GitHub publication SHALL use separate capability boundaries with only the credentials and permissions required for each operation.
-Signing, Amore publication, and GitHub publication credentials SHALL NOT coexist in one job.
+Candidate validation, Candidate or Internal Build construction, Apple build-number allocation, Apple signing and notarization, GitHub drafting, delivery-surface staging, distribution approval, delivery or publication through the delivery surface, and GitHub publication SHALL use separate capability boundaries with only the credentials and permissions required for each operation.
+Signing, delivery-surface publication, and GitHub publication credentials SHALL NOT coexist in one job.
 Distribution approval SHALL bind the Candidate Manifest or Internal Build Manifest digest, Release Channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
+Distribution approval SHALL also bind the selected GitHub release-record and delivery-surface target identifiers; changing either identifier SHALL revoke that approval.
 Any changed digest, channel, artifact requirement, or compatibility declaration SHALL revoke approval automatically.
-The GitHub Release SHALL become non-draft only after Amore live verification succeeds for the same approved candidate.
+The GitHub Release SHALL become non-draft only after delivery-surface live verification succeeds for the same approved candidate.
 
 Implementation SHALL prove private-repository availability of every proposed GitHub protection before claiming it.
 If protected reviewers are unavailable, Orchard SHALL require the signed-approval fallback and separately controlled credential custody.
@@ -276,7 +288,7 @@ Unavailable immutable Releases or artifact attestations SHALL NOT block a correc
 Applicable named role assignment, capability checks, digest-bound approval, and credential protection SHALL complete before trial delivery or pilot and release publication.
 Trial delivery and pilot or release publication SHALL NOT degrade to an unrestricted manual workflow.
 
-During Orchard's solo-owner operating phase, the Repository Owner MAY hold the Release Owner, Tag Signer, publication approver, Apple Build Number Allocator, Apple-signing custodian, Amore-publication custodian, GitHub-publication custodian, and release-trust administrator roles.
+During Orchard's solo-owner operating phase, the Repository Owner MAY hold the Release Owner, Tag Signer, publication approver, Apple Build Number Allocator, Apple-signing custodian, delivery-surface publication custodian, GitHub-publication custodian, and release-trust administrator roles.
 Each trial, pilot, or release Candidate in that phase SHALL include a signed single-owner exception bound to the exact Candidate Manifest digest and Release Channel.
 The exception SHALL be a mandatory `single_owner_exception` State Attestation with deterministic canonical serialization.
 Its payload SHALL record schema version, Candidate Manifest digest, Release Channel, consolidated roles, signer identity and key identifier, single-Candidate purpose, issue time, expiry, unique nonce, and acknowledgement of every mandatory compensating control.

@@ -8,7 +8,8 @@ Source availability does not promise a supported public binary or bypass the rel
 
 Native `Orchard.app` and DMG distribution is paused (`SPEC.md` §11.0).
 Source development, documented in [`docs/local-dev.md`](../../docs/local-dev.md), is the current active installation path.
-The rest of this runbook describes the approved design and the dormant tooling that returns when the pause is lifted; none of it is a currently available distribution.
+The rest of this runbook describes the retained design and dormant implementation; none of it is a currently available distribution.
+The Amore-specific commands document existing tooling, not a required future service under §11.3; the selected tooling, tests, and runbook must be reconciled before distribution resumes.
 
 `packaging/distribution-control` is the only switch and is committed as `state=paused`.
 While paused, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78` after argument parsing and before any build, signing, image, notarization, stapling, or publication step.
@@ -41,6 +42,7 @@ Only Najib Ninaba, the accountable product owner, can approve resuming distribut
 1. Get Najib's explicit approval to resume.
 2. Open a pull request that changes `packaging/distribution-control` to `state=active`.
    In the same pull request, update the committed-state block in `scripts/test-distribution-control.sh` and the paused wording in `SPEC.md` §1, §1.4, §11.0, and the milestone acceptance lists, and in `AGENTS.md`, `docs/tooling.md`, `docs/process.md`, `docs/local-dev.md`, `docs/operator-journey.md`, `docs/README.md`, `docs/architecture.md`, `README.md`, `SECURITY.md`, `packaging/README.md`, and this runbook.
+   Confirm or replace the outer distribution tooling; `scripts/build-dmg.sh` still drives the Amore CLI, which `SPEC.md` §11.3 permits but does not require. Reconcile its tests and runbook with that selection.
 3. Record Najib's approval in that pull request.
    CI then runs the `Orchard.app and DMG assembly validation` job, and it must pass.
 4. Merge only after review.
@@ -163,7 +165,7 @@ The completed release distribution set keeps these files together:
 - `Orchard.dmg.amore-release.json` when draft publication is requested
 
 Release notes and verification metadata are sidecars instead of files injected into the image.
-Amore owns final image assembly and notarization, so rewriting its DMG afterward would invalidate the outer distribution trust boundary.
+Rewriting the DMG after final assembly, notarization, and stapling would invalidate its signature and notarization ticket.
 Developer ID mode therefore requires `--release-notes-file`; the ad hoc local smoke accepts it but does not require it.
 
 Once mounted-app verification succeeds — and, in Developer ID mode, the staple validates — Orchard retains the DMG and its sidecars even if a later checksum-write or draft-publication step fails.

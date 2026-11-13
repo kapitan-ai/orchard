@@ -4,7 +4,7 @@
 
 Product release governance SHALL define a Release Activation Attestation before the dedicated Node distribution can implement install, enrollment, update, or serving startup.
 The attestation SHALL bind contract version and activation purpose, Product Version, release channel, Candidate Manifest digest, exact Node artifact identity, eligible verified candidate and distribution state, bundle identifier, platform tuple, monotonically increasing artifact-lineage sequence, release-registry generation and signing key identity, issue time, not-before time, expiry time, withdrawal, supersession, or replacement relationship, maximum clock uncertainty, and offline verification policy.
-Distribution approval, publication approval, GitHub state, Amore state, a checksum, or a Candidate Manifest alone SHALL NOT authorize activation.
+Distribution approval, publication approval, GitHub state, delivery-surface state, a checksum, or a Candidate Manifest alone SHALL NOT authorize activation.
 Known withdrawal SHALL take precedence over an older unexpired attestation.
 Replay below the locally recorded highest accepted lineage sequence SHALL fail closed.
 Release trust SHALL bootstrap from owner-approved root key identifiers and fingerprints plus the expected Apple Team identity and SHALL NOT accept a root introduced only by the candidate it verifies.

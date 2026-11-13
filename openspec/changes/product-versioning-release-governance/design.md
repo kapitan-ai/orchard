@@ -15,7 +15,8 @@ The current upgrade implementation treats `N` as a SemVer major and minor line a
 That behavior is executable evidence, but it is not authoritative until the meaning is accepted in `SPEC.md`.
 
 `SPEC.md` §11 requires the DMG distribution set to include release notes, a DMG checksum, and before and after app-signing manifests.
-It also assigns final DMG assembly, notarization, stapling, hosting, and publication integration to Amore while retaining nested signing and verification under Orchard control.
+It also requires that outer DMG tooling retain nested signing and verification under Orchard control; §11.3 names no vendor for assembly or customer delivery and preserves only the narrow Apple platform trust requirements.
+ADR 0043 proposes withdrawing only decision 1.4's Amore vendor selection, pending owner approval of the exact wording; channel contracts, DMG artifact treatment, and conjunctive two-surface completion remain approved.
 The accepted `app-distribution-lifecycle` and `packaging-deployment` capabilities continue to own artifact-specific assembly, verification, and lifecycle behavior.
 This change adds product-wide governance without duplicating those contracts.
 
@@ -48,7 +49,7 @@ GitHub protected-environment approvals, immutable Releases, and artifact attesta
 - Force internal Python package versions to match the Orchard product version.
 - Backfill a GitHub Release for `v0.4.0` or rewrite historical release evidence.
 - Store credentials, keychain names, DSNs, local paths, or workflow session identifiers in release metadata.
-- Assume that a private-repository GitHub feature or an Amore capability exists before a live implementation check proves it.
+- Assume that a private-repository GitHub feature or a delivery-surface capability exists before a live implementation check proves it.
 
 ## Decisions
 
@@ -121,20 +122,20 @@ A Published Release is never superseded, but it may be withdrawn and followed by
 
 Candidate states are `tagged`, `verified`, `invalid`, and `superseded`.
 Distribution states are recorded independently per Release Channel as `not_started`, `staged`, `approved`, `partially_delivered`, `delivered`, `partially_published`, `published`, and `withdrawn`.
-Draft is a GitHub-specific or Amore-specific surface state and is not a candidate state.
+Draft is a GitHub release-record state and is not a candidate state; the delivery surface records pre-live bytes as staged.
 Failed is an attempt outcome and is not a durable candidate state.
 
 GitHub surface states are `absent`, `draft`, `non_draft`, and `withdrawn`.
-Amore surface states are `absent`, `staged`, `restricted_live`, `general_live`, and `withdrawn`.
+Delivery surface states are `absent`, `staged`, `restricted_live`, `general_live`, and `withdrawn`.
 Internal recipient-delivery states are `absent`, `staged`, `delivered`, and `withdrawn`.
 Internal allows only recipient delivery through `absent -> staged -> delivered -> withdrawn`.
-Trial allows GitHub `absent -> draft -> withdrawn` and Amore `absent -> staged -> restricted_live -> withdrawn`, and it prohibits a trial GitHub draft from becoming non-draft.
-Pilot allows GitHub `absent -> draft -> non_draft -> withdrawn` and Amore `absent -> staged -> restricted_live -> withdrawn`.
-Release allows GitHub `absent -> draft -> non_draft -> withdrawn` and Amore `absent -> staged -> general_live -> withdrawn`.
+Trial allows GitHub `absent -> draft -> withdrawn` and the delivery surface `absent -> staged -> restricted_live -> withdrawn`, and it prohibits a trial GitHub draft from becoming non-draft.
+Pilot allows GitHub `absent -> draft -> non_draft -> withdrawn` and the delivery surface `absent -> staged -> restricted_live -> withdrawn`.
+Release allows GitHub `absent -> draft -> non_draft -> withdrawn` and the delivery surface `absent -> staged -> general_live -> withdrawn`.
 Failed attempts and unavailable observations produce signed attestations without advancing surface state.
 Each transition requires the actor authorized for that surface and an atomic compare-and-swap append against the unique current attestation-chain head, so stale or concurrent forks fail closed.
-Transitions to internal `delivered`, Amore `restricted_live` or `general_live`, and GitHub `non_draft` require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
-GitHub `draft` and Amore `staged` may exist before approval, but they remain staging evidence and cannot yield successful or partial delivery or publication state until the required verification and approval are valid.
+Transitions to internal `delivered`, delivery-surface `restricted_live` or `general_live`, and GitHub `non_draft` require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
+GitHub `draft` and delivery-surface `staged` may exist before approval, but they remain staging evidence and cannot yield successful or partial delivery or publication state until the required verification and approval are valid.
 An externally observed live target state without those prerequisites records a fail-closed observation and does not advance the governed surface or distribution state.
 
 Distribution state uses one ordered total reduction over every reachable combination.
@@ -143,9 +144,9 @@ An invalid or superseded Candidate reduces to `withdrawn` when any required surf
 Before any complete or partial delivery or publication reduction, the Candidate must be `verified` or the Internal Build Manifest must be sealed and every channel-required approval must remain valid.
 If those prerequisites are absent, pre-live `draft` or `staged` surfaces reduce only to `staged`, while any observed live target state fails closed without changing the governed state.
 Internal reduces to `delivered` when its recipient surface is `delivered`.
-Trial reduces to `delivered` only for GitHub `draft` plus Amore `restricted_live`.
-Pilot reduces to `published` only for GitHub `non_draft` plus Amore `restricted_live`.
-Release reduces to `published` only for GitHub `non_draft` plus Amore `general_live`.
+Trial reduces to `delivered` only for GitHub `draft` plus delivery-surface `restricted_live`.
+Pilot reduces to `published` only for GitHub `non_draft` plus delivery-surface `restricted_live`.
+Release reduces to `published` only for GitHub `non_draft` plus delivery-surface `general_live`.
 Trial reduces to `partially_delivered` when exactly one required surface has reached its channel target, while pilot and release reduce to `partially_published` under the same target-state rule.
 Any remaining verified combination with valid digest-bound approval reduces to `approved`.
 Any remaining verified combination with at least one required surface in `draft` or `staged` reduces to `staged`.
@@ -162,18 +163,21 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 
 | Channel | Audience | Eligible version | Required distribution | Required surfaces and completion |
 | --- | --- | --- | --- | --- |
-| `internal` | Orchard collaborators | Development, RC, or final | Selected installable artifact, checksum, build manifest, validation summary, and component inventory, plus all apex-required sidecars for any DMG | No GitHub Release or Amore publication is required, and completion is Delivered when exact intended recipients can retrieve the recorded bytes. |
-| `trial` | One named time-bounded evaluator engagement | RC | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | A private GitHub draft record and an access-restricted Amore delivery surface must contain the same candidate, and successful completion is Delivered rather than Published. |
-| `pilot` | Named design partners or a controlled production-like rollout | RC | The same required set as `trial` | A non-draft private GitHub Release and access-restricted Amore delivery must contain the exact approved bytes. |
-| `release` | Generally available Orchard customers | Final | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | General Amore delivery must be live and the private GitHub Release must be non-draft for the same approved candidate. |
+| `internal` | Orchard collaborators | Development, RC, or final | Selected installable artifact, checksum, build manifest, validation summary, and component inventory, plus all apex-required sidecars for any DMG | No GitHub Release or delivery-surface publication is required, and completion is Delivered when exact intended recipients can retrieve the recorded bytes. |
+| `trial` | One named time-bounded evaluator engagement | RC | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | A private GitHub draft record and an access-restricted delivery surface must contain the same candidate, and successful completion is Delivered rather than Published. |
+| `pilot` | Named design partners or a controlled production-like rollout | RC | The same required set as `trial` | A non-draft private GitHub Release and access-restricted delivery through the delivery surface must contain the exact approved bytes. |
+| `release` | Generally available Orchard customers | Final | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | General delivery through the delivery surface must be live and the private GitHub Release must be non-draft for the same approved candidate. |
 
 Native PKG is not a governed current artifact.
 Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
-Because this repository is private, GitHub Releases act as the internal release registry while Amore remains the customer-facing distribution surface assigned by `SPEC.md`.
-The release workflow publishes through Amore first, verifies its live state and digest, and publishes the GitHub Release last.
+GitHub Releases act as the release record under `AGENTS.md` "Tracking and publication", and a separately selected delivery surface is the customer-facing distribution surface.
+Under the proposed ADR 0043 amendment, §11.3 names no vendor for that delivery role and no delivery surface is selected.
+The two roles retain separate observations and authorization boundaries even if one provider supplies both.
+The release workflow publishes through the delivery surface first, verifies its live state and digest, and publishes the GitHub Release last.
 
-Trial, pilot, and release publication remain disabled until Amore proves the required audience restriction, idempotency, digest inspection, and promotion behavior.
-If Amore cannot distinguish restricted and general audiences, the affected channels remain disabled until an alternative surface is approved.
+Trial delivery and pilot and release publication remain disabled until a delivery surface is selected through an accepted OpenSpec change and proves the required audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation.
+An unselected surface is neither optional nor satisfied, and the §11.0 distribution pause remains independently binding.
+If the delivery surface cannot distinguish restricted and general audiences, the affected channels remain disabled until an alternative surface is approved.
 
 An untagged development build in the internal channel is an Internal Build rather than a Candidate.
 It uses a commit-bound Internal Build Manifest with Product Version, full source commit, channel, artifact identities, validation summary, component inventory, and any Apple build-number allocation, and it does not enter Candidate or Candidate Manifest state.
@@ -219,7 +223,7 @@ Git SHA, date, workflow identity, and rerun count are not Apple build numbers.
 
 Before initializing the sequence, implementation must inspect any historically distributed `com.orchard.app` build and seed above the highest observed value.
 Allocation uses merge-time serialization and uniqueness checks, and app publication stops before `9999` is exhausted until an accepted migration defines and validates a replacement Apple-safe mapping.
-Publication remains disabled until the historical maximum and live Amore and Apple validation paths are proved.
+Publication remains disabled until the historical maximum and live delivery-surface and Apple validation paths are proved.
 
 ### Decision: Internal Helpers Keep Independent Versions And Exact Provenance
 
@@ -236,12 +240,13 @@ The SBOM supplements and does not replace exact artifact and tree identities.
 Normal pull-request and `main` CI validates Product Version authority, transition rules, first-party BEAM agreement, packaging mappings, glossary and OpenSpec consistency, and affected tests with read-only repository permissions.
 Candidate validation reads source and validation evidence but has no release credentials.
 Candidate construction may write only ephemeral workflow artifacts.
-Apple build-number allocation, Apple signing and notarization, GitHub drafting, Amore staging, publication approval, Amore publication, and GitHub publication use separate jobs and narrowly scoped credentials.
-Signing, Amore publication, and GitHub publication credentials do not coexist in one job.
+Apple build-number allocation, Apple signing and notarization, GitHub drafting, delivery-surface staging, publication approval, delivery-surface publication, and GitHub publication use separate jobs and narrowly scoped credentials.
+Signing, delivery-surface publication, and GitHub publication credentials do not coexist in one job.
 
 Distribution approval binds the Candidate Manifest or Internal Build Manifest digest, channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
+Distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
 Any changed digest, channel, artifact requirement, or compatibility declaration revokes approval automatically.
-The GitHub Release becomes non-draft only after Amore live verification succeeds for the exact approved candidate.
+The GitHub Release becomes non-draft only after delivery-surface live verification succeeds for the exact approved candidate.
 
 Implementation must prove private-repository support for environment reviewers, self-review prevention, tag or ruleset restrictions, immutable Releases, environment-scoped secrets, and artifact attestations before claiming those controls.
 If protected reviewer support is unavailable, the signed approval fallback and a separately controlled runner or secret store are required.
@@ -273,7 +278,7 @@ Current numeric minor arithmetic in `Orchard.Upgrade` remains unchanged until `S
 - Cross-artifact checks can duplicate artifact-specific verification, so this capability governs shared identity and references existing app and packaging contracts.
 - Release automation can expose credentials too broadly, so credential capabilities remain isolated and publication requires digest-bound approval.
 - Private-repository GitHub features may be unavailable, so the contract specifies required guarantees and fail-closed fallbacks rather than assuming a plan entitlement.
-- Amore may not expose all required audience and digest semantics, so trial, pilot, and release publication remain disabled until live capability checks pass.
+- A selected delivery surface may not expose all required audience and digest semantics, so trial, pilot, and release publication remain disabled until live capability checks pass.
 - An explicit Previous Supported Release Line adds a registry decision, but it handles skipped minor lines without inventing compatibility through arithmetic.
 - A Candidate Manifest can become incomplete as channels evolve, so its schema is versioned and unsupported mandatory fields fail closed.
 - SPDX generation increases release evidence, but it provides a portable candidate-level inventory without coupling policy to optional GitHub attestations.
@@ -286,11 +291,11 @@ Current numeric minor arithmetic in `Orchard.Upgrade` remains unchanged until `S
 4. Define Candidate Manifest, canonical tree, State Attestation, component-provenance, and SPDX SBOM schemas without enabling publication.
 5. Add normal CI governance checks with read-only permissions.
 6. Add a non-publishing signed-tag candidate workflow and exercise it in an isolated repository or dry-run mode.
-7. Probe private-repository GitHub controls, live Amore behavior, historical Apple build numbers, signing identities, and credential custody.
+7. Select the delivery surface through an accepted OpenSpec change and probe private-repository GitHub controls, live delivery-surface behavior, historical Apple build numbers, signing identities, and credential custody.
 8. Add isolated credential-gated signing, notarization, stapling, final verification, and manifest sealing in that order.
-9. Add private GitHub draft creation and Amore staging only after candidate evidence passes.
+9. Add private GitHub draft creation and delivery-surface staging only after candidate evidence passes.
 10. Enable digest-bound approval and exact-byte promotion only after the required capability and role-assignment gates pass.
-11. Publish through Amore first and make the matching private GitHub Release non-draft last.
+11. Publish through the delivery surface first and make the matching private GitHub Release non-draft last.
 12. Reconcile `SPEC.md` compatibility language and `Orchard.Upgrade` behavior in the same implementation branch.
 13. Leave `v0.4.0` and historical state unchanged unless a separate accepted migration requests a backfill.
 
@@ -299,7 +304,7 @@ A Published Release is never rewritten or replaced in place, so remediation with
 
 ### Decision: The Current Operating Model Uses Solo-Owner Custodianship
 
-The solo Repository Owner currently holds the Release Owner, Tag Signer, publication approver, Apple Build Number Allocator, Apple-signing custodian, Amore-publication custodian, GitHub-publication custodian, and release-trust administrator roles.
+The solo Repository Owner currently holds the Release Owner, Tag Signer, publication approver, Apple Build Number Allocator, Apple-signing custodian, delivery-surface publication custodian, GitHub-publication custodian, and release-trust administrator roles.
 No collaborator or backup currently has enough established experience and trust to assume those authorities.
 This is a deliberate current operating constraint rather than an implied two-person control claim.
 
@@ -320,7 +325,8 @@ Delegation is not automatic, and any new custodian or backup requires a separate
 ## Remaining Gates
 
 - Verify private-repository GitHub plan support for each proposed protected control before trial delivery or pilot and release publication.
-- Verify Amore audience restriction, idempotency, digest inspection, and exact-byte promotion behavior before trial delivery or pilot and release publication.
+- Obtain owner approval of ADR 0043 and the amended decision 1.4, including the retained GitHub release-record role.
+- Select the delivery surface through an accepted OpenSpec change and verify its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before trial delivery or pilot and release publication.
 - Inspect the highest historically distributed `CFBundleVersion` for `com.orchard.app` before allocating the first governed number.
 - Identify actual signing identities, credential stores, and release hosts without recording secret or machine-local values in durable policy.
 - Select and prove the append-only evidence store used for approvals and attestations.
