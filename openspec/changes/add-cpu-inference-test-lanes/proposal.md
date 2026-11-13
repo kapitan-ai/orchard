@@ -117,8 +117,7 @@ Worker contract as implementation evidence only. They are not runtime-provider
 profiles and grant no runtime-provider, platform, model, acceleration or
 agentic execution qualification or support. They must pin artifacts by digest,
 verify the host before mutation, and keep accelerators hidden. The amendment
-takes effect only when the accountable product owner merges it. Until then
-this package authorizes design review only.
+took effect when the accountable product owner merged it on 2026-11-13.
 
 `SPEC.md` sections that stay unchanged and authoritative:
 
