@@ -33,7 +33,7 @@ LEGACY_PROTO = (
 # real schema revision rather than the current bindings.
 N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
 N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
-EXPECTED_DESCRIPTOR_SET_SHA256 = "662d160511ea354164d6cf451e117266e99380a27d79f2bd28dbd624c15711d4"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "f643bb10886f3184a68317d4af303cf02410ac0ab877fd44c9e0f63dd95b6245"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
@@ -156,7 +156,6 @@ EXPECTED_MESSAGES = {
             False,
             ".orchard.worker.v1.WorkerCapabilities",
         ),
-        ("tensorfold_profile_admission_json", 11, "TYPE_BYTES", False, None),
     ],
     "LoadModelRequest": [
         ("model_id", 1, "TYPE_STRING", False, None),
@@ -165,7 +164,10 @@ EXPECTED_MESSAGES = {
     ],
 }
 
-EXPECTED_RESERVED_RANGES = {message_name: [] for message_name in EXPECTED_MESSAGES}
+EXPECTED_RESERVED_RANGES = {
+    message_name: [(11, 12)] if message_name == "WorkerStatusResponse" else []
+    for message_name in EXPECTED_MESSAGES
+}
 
 EXPECTED_RPCS = [
     (
@@ -526,7 +528,10 @@ def test_descriptor_golden_covers_the_complete_current_wire_contract() -> None:
         for message in descriptor.message_type
     } == EXPECTED_RESERVED_RANGES
     assert {message.name: list(message.reserved_name) for message in descriptor.message_type} == {
-        message_name: [] for message_name in EXPECTED_MESSAGES
+        message_name: ["tensorfold_profile_admission_json"]
+        if message_name == "WorkerStatusResponse"
+        else []
+        for message_name in EXPECTED_MESSAGES
     }
 
     assert len(descriptor.service) == 1
@@ -683,21 +688,10 @@ def test_frozen_input_descriptor_matches_execution_except_internal_extensions() 
     frozen = _message_descriptor(reasoning_descriptor, "FrozenExecutionInput")
     execution = _message_descriptor(runtime_descriptor, "ExecuteInferenceRequest")
 
+    assert list(execution.reserved_name) == ["tensorfold_history_projection_json"]
+    assert [(span.start, span.end) for span in execution.reserved_range] == [(15, 16)]
     redemption = [field for field in execution.field if field.number == 14]
-    execution_input = [field for field in execution.field if field.number not in {14, 15}]
-    projection = [field for field in execution.field if field.number == 15]
-
-    assert [_field_signature(field) for field in projection] == [
-        (
-            "tensorfold_history_projection_json",
-            15,
-            "TYPE_BYTES",
-            "LABEL_OPTIONAL",
-            None,
-            False,
-            None,
-        )
-    ]
+    execution_input = [field for field in execution.field if field.number != 14]
 
     assert [_field_signature(field) for field in redemption] == [
         (
@@ -713,28 +707,6 @@ def test_frozen_input_descriptor_matches_execution_except_internal_extensions() 
     assert [_field_signature(field) for field in execution_input] == [
         _field_signature(field) for field in frozen.field
     ]
-
-
-def test_tensorfold_projection_round_trip_preserves_bytes_and_baseline_wire() -> None:
-    projection = b'{"schema_version":1,"messages":[{"content":"opaque\\ntext"}]}'
-    request = runtime_pb2.ExecuteInferenceRequest(
-        request_id="fixture", tensorfold_history_projection_json=projection
-    )
-    decoded = runtime_pb2.ExecuteInferenceRequest.FromString(request.SerializeToString())
-    assert decoded.tensorfold_history_projection_json == projection
-    assert runtime_pb2.ExecuteInferenceRequest(request_id="fixture").SerializeToString() == (
-        b"\x0a\x07fixture"
-    )
-
-
-def test_tensorfold_identity_offer_round_trip_preserves_bytes_and_baseline_wire() -> None:
-    offer = b'{"schema_version":1,"service_incarnation":"fixture"}'
-    status = worker_runtime_pb2.WorkerStatusResponse(
-        ready=True, tensorfold_profile_admission_json=offer
-    )
-    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(status.SerializeToString())
-    assert decoded.tensorfold_profile_admission_json == offer
-    assert worker_runtime_pb2.WorkerStatusResponse(ready=True).SerializeToString() == b"\x18\x01"
 
 
 def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:

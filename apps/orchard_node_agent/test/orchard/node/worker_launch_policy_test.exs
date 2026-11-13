@@ -132,12 +132,12 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
        %{dir: dir} do
     entry = %{"model_id" => "org/small", "version" => "v1", "prefix_cache_mode" => "kv"}
     {:ok, overrides} = load!(dir, [entry])
-    globals = Keyword.put(@globals, :backend, "tensorfold")
+    globals = Keyword.put(@globals, :backend, "stub")
 
     assert {:error, message} =
              WorkerLaunchPolicy.resolve(ref("org/small", "v1"), overrides, globals)
 
-    assert message =~ ~s(per-model overrides require the mlx backend, got "tensorfold")
+    assert message =~ ~s(per-model overrides require the mlx backend, got "stub")
 
     # A model without an override on that Node is unaffected.
     assert {:ok, _options} =
@@ -147,7 +147,7 @@ defmodule Orchard.Node.WorkerLaunchPolicyTest do
   test "resolve refuses strict_prefix on another backend even without an override" do
     globals =
       Keyword.merge(@globals,
-        backend: "tensorfold",
+        backend: "stub",
         prefix_cache_mode: "strict_prefix",
         generation_mode: "stream",
         strict_prefix_slot_bytes: 1,

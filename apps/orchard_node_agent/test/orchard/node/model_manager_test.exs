@@ -1,9 +1,73 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Cluster.V1.{Ack, EnsureModelLoadedRequest, UnloadModelRequest}
+  alias Orchard.Cluster.V1.{
+    Ack,
+    EnsureModelLoadedRequest,
+    ExecuteInferenceRequest,
+    ModelRef,
+    UnloadModelRequest
+  }
+
   alias Orchard.Node.CustodyTestHelpers
-  alias Orchard.Node.{ModelManager, RuntimeProcessReaper, WorkerRecoveryState, WorkerSupervisor}
+
+  alias Orchard.Node.{
+    FakeRuntimeAdapter,
+    ModelManager,
+    RuntimeProcessReaper,
+    WorkerProcess,
+    WorkerRecoveryState,
+    WorkerSupervisor
+  }
+
+  test "starting a changed prepared request rejects it and releases subscriber and capacity claims" do
+    model_ref = %ModelRef{model_id: "model/prepared", version: "v1"}
+    key = {model_ref.model_id, model_ref.version}
+    worker = start_supervised!({WorkerProcess, model_ref: model_ref, manager: self()})
+    {:ok, adapter_state} = FakeRuntimeAdapter.load_model(model_ref, [])
+
+    :sys.replace_state(worker, fn state ->
+      %{state | loaded?: true, adapter: FakeRuntimeAdapter, adapter_state: adapter_state}
+    end)
+
+    state = %{
+      active_requests: %{},
+      subscriber_refs: %{},
+      stopping?: false,
+      resetting?: false,
+      recovery: %{
+        key =>
+          "prepared-request-test-epoch"
+          |> WorkerRecoveryState.new()
+          |> WorkerRecoveryState.hydrate(:absent)
+      },
+      workers: %{
+        key => %{pid: worker, placement_state: :PLACEMENT_STATE_LOADED, request_limit: 1}
+      }
+    }
+
+    request = %ExecuteInferenceRequest{
+      request_id: "prepared-request",
+      model_id: model_ref.model_id,
+      version: model_ref.version,
+      rendered_prompt_utf8: "original"
+    }
+
+    assert {:reply, :ok, prepared} =
+             ModelManager.handle_call({:prepare_request, request, self()}, nil, state)
+
+    assert Map.has_key?(prepared.active_requests, request.request_id)
+
+    assert {:reply, {:error, :request_not_prepared}, rejected} =
+             ModelManager.handle_call(
+               {:start_request, %{request | rendered_prompt_utf8: "changed"}},
+               nil,
+               prepared
+             )
+
+    assert rejected.active_requests == %{}
+    assert rejected.subscriber_refs == %{}
+  end
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
     reply_ref = make_ref()

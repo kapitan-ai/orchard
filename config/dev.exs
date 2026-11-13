@@ -3,7 +3,6 @@ import Config
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
 Code.require_file("source_dev_beam.exs", __DIR__)
 Code.require_file("source_postgres.exs", __DIR__)
-Code.require_file("source_dev_tensorfold.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 dev_root = Path.join([repo_root, "tmp", "dev"])
@@ -479,14 +478,11 @@ worker_backend =
   env_optional_string.("ORCHARD_WORKER_BACKEND") ||
     Keyword.fetch!(node_runtime_defaults, :worker_backend)
 
-worker_defaults =
-  Orchard.Config.SourceDevTensorFold.worker_defaults(worker_backend, node_runtime_defaults)
-
 worker_prefix_cache_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") ||
-         Keyword.fetch!(worker_defaults, :worker_prefix_cache_mode)
+         Keyword.fetch!(node_runtime_defaults, :worker_prefix_cache_mode)
 
      unless mode in ["disabled", "kv", "trie"] do
        raise "ORCHARD_WORKER_PREFIX_CACHE_MODE must be disabled|kv|trie, got: #{inspect(mode)}"
@@ -502,7 +498,7 @@ worker_generation_mode =
          if worker_backend in ["stub", "vllm_poc"] do
            "stream"
          else
-           Keyword.fetch!(worker_defaults, :worker_generation_mode)
+           Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
          end
 
      unless mode in ["stream", "batch"] do
@@ -516,7 +512,7 @@ worker_max_concurrent_requests_per_model =
   (fn ->
      value =
        System.get_env("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL") ||
-         Keyword.fetch!(worker_defaults, :worker_max_concurrent_requests_per_model)
+         Keyword.fetch!(node_runtime_defaults, :worker_max_concurrent_requests_per_model)
 
      if value == "auto" do
        "auto"
@@ -540,7 +536,7 @@ worker_auto_max_concurrent_requests_per_model =
      v =
        env_int.(
          "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
-         Keyword.fetch!(worker_defaults, :worker_auto_max_concurrent_requests_per_model)
+         Keyword.fetch!(node_runtime_defaults, :worker_auto_max_concurrent_requests_per_model)
        )
 
      if v < 1 do
@@ -553,20 +549,20 @@ worker_auto_max_concurrent_requests_per_model =
 worker_prefix_cache_max_entries =
   env_positive_int.(
     "ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES",
-    Keyword.fetch!(worker_defaults, :worker_prefix_cache_max_entries)
+    Keyword.fetch!(node_runtime_defaults, :worker_prefix_cache_max_entries)
   )
 
 worker_prefix_cache_max_bytes =
   env_non_neg_int.(
     "ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES",
-    Keyword.fetch!(worker_defaults, :worker_prefix_cache_max_bytes)
+    Keyword.fetch!(node_runtime_defaults, :worker_prefix_cache_max_bytes)
   )
 
 worker_memory_budget_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_MEMORY_BUDGET_MODE") ||
-         Keyword.fetch!(worker_defaults, :worker_memory_budget_mode)
+         Keyword.fetch!(node_runtime_defaults, :worker_memory_budget_mode)
 
      unless mode in ["disabled", "observe", "enforce"] do
        raise "ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled|observe|enforce, got: #{inspect(mode)}"
@@ -580,7 +576,7 @@ worker_memory_budget_utilization =
      v =
        env_float.(
          "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION",
-         Keyword.fetch!(worker_defaults, :worker_memory_budget_utilization)
+         Keyword.fetch!(node_runtime_defaults, :worker_memory_budget_utilization)
        )
 
      if v <= 0.0 or v > 1.0 do
@@ -593,7 +589,7 @@ worker_memory_budget_utilization =
 worker_memory_budget_overhead_bytes =
   env_non_neg_int.(
     "ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES",
-    Keyword.fetch!(worker_defaults, :worker_memory_budget_overhead_bytes)
+    Keyword.fetch!(node_runtime_defaults, :worker_memory_budget_overhead_bytes)
   )
 
 worker_settings = [
@@ -607,18 +603,6 @@ worker_settings = [
   worker_memory_budget_utilization: worker_memory_budget_utilization,
   worker_memory_budget_overhead_bytes: worker_memory_budget_overhead_bytes
 ]
-
-Orchard.Config.SourceDevTensorFold.validate_worker!(worker_backend, worker_settings)
-
-tensorfold_profiles =
-  Orchard.Config.SourceDevTensorFold.profiles!(
-    source_dev_role,
-    worker_backend,
-    env_source_dev_path
-  )
-
-config :orchard_controller, tensorfold_experiment_profile: tensorfold_profiles.controller
-config :orchard_node_agent, tensorfold_experiment_profile: tensorfold_profiles.node
 
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
@@ -689,11 +673,6 @@ controller_inference =
     ),
     runtime_endpoint_inference_config
   )
-
-Orchard.Config.SourceDevTensorFold.validate_controller!(
-  tensorfold_profiles.controller,
-  controller_inference
-)
 
 config :orchard_controller, inference: controller_inference
 
@@ -795,11 +774,7 @@ config :orchard_node_agent,
       force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:
         env_source_dev_path.("ORCHARD_WORKER_EXECUTABLE") ||
-          if(worker_backend == Orchard.Config.SourceDevTensorFold.backend(),
-            do: Orchard.Config.SourceDevTensorFold.worker_executable(repo_root),
-            else:
-              Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"])
-          ),
+          Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_socket_dir: worker_socket_dir,
       worker_backend: worker_backend
     )

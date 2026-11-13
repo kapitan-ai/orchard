@@ -41,11 +41,7 @@ legacy blended output. The shared source-owned `effort_profiles.json` binds each
 supported tier to an exact artifact/template digest and render contract version.
 The helper verifies the template bytes, applies only the registered arguments,
 counts the actual rendered input and returns both canonical identity and applied
-arguments for Controller verification. For Hugging Face tokenizers it also
-returns `prompt_token_ids`, the whole rendered prompt encoded without added
-special tokens. The field is omitted when those IDs disagree with the count, for
-example when the tokenizer post-processor adds a beginning-of-sequence token.
-The selected TensorFold experiment requires these IDs; other callers ignore them.
+arguments for Controller verification.
 It accepts no caller template overrides.
 This route requires port tokenization with safe mode off; explicit effort is
 rejected on fake or segmented routes rather than degraded. Its first exact

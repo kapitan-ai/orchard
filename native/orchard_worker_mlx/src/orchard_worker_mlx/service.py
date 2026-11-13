@@ -670,12 +670,6 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         if capabilities is not None:
             response.capabilities.CopyFrom(capabilities)
 
-        profile_offer = getattr(self._backend, "tensorfold_profile_admission", None)
-        if callable(profile_offer):
-            offer = profile_offer()
-            if type(offer) is bytes and len(offer) <= 4096:
-                response.tensorfold_profile_admission_json = offer
-
         if _prefix_cache_disabled(self._prefix_cache_config):
             response.prefix_cache.CopyFrom(
                 _disabled_prefix_cache_status_response(self._prefix_cache_config)
@@ -837,16 +831,6 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         self, request: runtime_pb2.ExecuteInferenceRequest, context: grpc.ServicerContext
     ) -> Iterator[events_pb2.InferenceEvent]:
         logger.info("generate start request_id=%s", request.request_id)
-        if (
-            getattr(request, "tensorfold_history_projection_json", b"")
-            and getattr(self._backend, "accepts_tensorfold_history_projection", False) is not True
-        ):
-            yield build_failed_event(
-                "unsupported_history_projection",
-                "this worker implementation does not admit TensorFold history projections",
-                False,
-            )
-            return
         # --- claim or create cancel entry ---
         with self._lock:
             self._prune_expired_tombstones()

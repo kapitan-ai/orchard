@@ -24,8 +24,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
       deadline_unix_ms: request.deadline_unix_ms || 0,
       metadata_json: request.metadata_json || "{}",
       cache_affinity_fingerprint: request.cache_affinity_fingerprint || "",
-      prompt_token_ids: request.prompt_token_ids || [],
-      tensorfold_history_projection_json: request.tensorfold_history_projection_json || ""
+      prompt_token_ids: request.prompt_token_ids || []
     }
   end
 

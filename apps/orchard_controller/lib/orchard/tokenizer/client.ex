@@ -994,37 +994,27 @@ defmodule Orchard.Tokenizer.Client do
          %{
            "contract_version" => @render_and_count_effort_contract_version,
            "ok" => true,
-           "result" =>
-             %{
-               "rendered_prompt" => prompt,
-               "input_token_count" => count,
-               "reasoning" => reasoning,
-               "applied_template_arguments" => arguments
-             } = result
+           "result" => %{
+             "rendered_prompt" => prompt,
+             "input_token_count" => count,
+             "reasoning" => reasoning,
+             "applied_template_arguments" => arguments
+           }
          },
          0,
          %{mode: :rendered, expected_reasoning: expected, expected_arguments: expected_arguments}
        )
        when is_binary(prompt) and is_integer(count) and count >= 0 do
-    cond do
-      reasoning != expected or arguments != expected_arguments ->
-        runtime_incompatible_error(
-          "tokenizer did not prove selected rendered effort and arguments"
-        )
-
-      Map.has_key?(result, "prompt_token_ids") and
-          not rendered_effort_ids?(result["prompt_token_ids"], count) ->
-        {:error, :invalid_response}
-
-      true ->
-        {:ok,
-         %{
-           rendered_prompt: prompt,
-           input_token_count: count,
-           reasoning: reasoning,
-           applied_template_arguments: arguments
-         }
-         |> maybe_put_rendered_effort_ids(result)}
+    if reasoning == expected and arguments == expected_arguments do
+      {:ok,
+       %{
+         rendered_prompt: prompt,
+         input_token_count: count,
+         reasoning: reasoning,
+         applied_template_arguments: arguments
+       }}
+    else
+      runtime_incompatible_error("tokenizer did not prove selected rendered effort and arguments")
     end
   end
 
@@ -1210,17 +1200,6 @@ defmodule Orchard.Tokenizer.Client do
     length(prompt_token_ids) == input_token_count and
       Enum.all?(prompt_token_ids, &(is_integer(&1) and &1 >= 0))
   end
-
-  # SPEC.md §7.2.9: rendered effort carries the whole-prompt IDs the TensorFold
-  # bridge re-derives at admission. The helper omits them when they disagree
-  # with the count, so a present field must match it exactly.
-  defp rendered_effort_ids?(ids, count),
-    do: is_list(ids) and ids != [] and valid_prompt_token_ids?(ids, count)
-
-  defp maybe_put_rendered_effort_ids(normalized, %{"prompt_token_ids" => ids}),
-    do: Map.put(normalized, :prompt_token_ids, ids)
-
-  defp maybe_put_rendered_effort_ids(normalized, _result), do: normalized
 
   defp maybe_cache_segmented_incompatibility(cache_key, category, error)
        when category in [

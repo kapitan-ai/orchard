@@ -97,8 +97,7 @@ defmodule Orchard.Node.WorkerLaunchPolicy do
     end
   end
 
-  # Other backends, such as the TensorFold experiment, own Node-wide Worker
-  # settings and check them at boot, so per-model overrides would bypass them.
+  # Per-model overrides apply only to the MLX backend's launch policy.
   defp validate_override_backend([], _backend), do: :ok
   defp validate_override_backend(_override, "mlx"), do: :ok
 
