@@ -109,7 +109,7 @@ The `release` channel SHALL allow GitHub only through `absent -> draft -> non_dr
 Failed attempts and unavailable observations SHALL produce authenticated attestations without advancing surface state.
 Every surface transition SHALL require the actor authorized for that surface and an atomic compare-and-swap append against the unique current attestation-chain head, and stale or concurrent forks SHALL fail closed.
 Transitions to internal `delivered`, delivery-surface `restricted_live` or `general_live`, and GitHub `non_draft` SHALL require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
-GitHub `draft` and delivery-surface `staged` MAY exist before approval, but they SHALL remain staging evidence and SHALL NOT initially yield successful or partial delivery or publication state until required verification is complete and a valid approval binds their targets.
+GitHub `draft` and delivery-surface `staged` MAY exist before approval, but they SHALL remain staging evidence and SHALL NOT yield successful or partial delivery or publication state until required verification is complete and a valid approval binds their targets.
 An externally observed live target state without those prerequisites SHALL record a fail-closed observation and SHALL NOT advance governed surface or distribution state.
 
 Distribution state SHALL use an ordered total reduction over every reachable channel combination.
@@ -117,6 +117,7 @@ Any required withdrawn surface or explicit channel withdrawal SHALL reduce first
 An invalid or superseded Candidate SHALL reduce to `withdrawn` when any required surface advanced beyond `absent` and otherwise SHALL reduce to `not_started`.
 Before any complete or partial delivery or publication reduction, the Candidate SHALL be `verified` or the Internal Build Manifest SHALL be sealed, and every channel-required approval SHALL have been valid at the time of each approval-gated transition it authorized and SHALL remain unrevoked.
 Later expiry or consumption of approval SHALL NOT regress a completed reduction; it SHALL NOT authorize a new approval-gated transition.
+Revocation after a completed reduction SHALL NOT regress it; it SHALL block further approval-gated transitions and SHALL require withdrawal.
 When those prerequisites are absent, pre-live `draft` or `staged` surfaces SHALL reduce only to `staged`, while any observed live target state SHALL fail closed without changing governed state.
 Internal SHALL reduce to `delivered` when its recipient-delivery surface is `delivered`.
 Trial SHALL reduce to `delivered` only when GitHub is `draft` and the delivery surface is `restricted_live`.
@@ -285,14 +286,18 @@ This requirement adds CI governance beneath `SPEC.md` §11 and §13.1.
 Candidate validation, Candidate or Internal Build construction, Apple build-number allocation, Apple signing and notarization, GitHub drafting, delivery-surface staging, distribution approval, delivery or publication through the delivery surface, and GitHub publication SHALL use separate capability boundaries with only the credentials and permissions required for each operation.
 Signing, delivery-surface publication, and GitHub publication credentials SHALL NOT coexist in one job.
 Distribution approval SHALL bind the Candidate Manifest or Internal Build Manifest digest, Release Channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
-One approval SHALL cover the required surface transitions of one channel distribution, including both the delivery-surface live transition and GitHub `non_draft` transition for pilot or release.
-The terminal `delivered` or `published` transition SHALL atomically consume the approval through the attestation-chain compare-and-swap update, after which it SHALL NOT authorize another transition or Candidate.
+An approval SHALL be scoped to one channel distribution and MAY cover both the delivery-surface live transition and GitHub `non_draft` transition for pilot or release.
+The transition that first makes the reduction terminal (`delivered`, `published`, or `withdrawn`), or Candidate invalidation or supersession, SHALL atomically consume the approval through the attestation-chain compare-and-swap update, after which it SHALL NOT authorize another transition or Candidate.
+The transition that first completes delivery or publication SHALL require valid, unconsumed, unrevoked channel-required approval at that moment, including a trial GitHub draft transition after the delivery surface is live; trial completion SHALL require that approval to bind the draft target.
 For channels that require them, distribution approval SHALL also bind the selected GitHub release-record and delivery-surface target identifiers; changing either identifier SHALL revoke that approval.
 Each surface State Attestation SHALL record its target identifier.
-For channels requiring those publication surfaces, only attestations whose target identifier is bound by a current unrevoked approval SHALL satisfy partial or complete delivery or publication, and that approval SHALL have authorized each approval-gated transition being counted.
+For channels requiring those publication surfaces, only attestations whose target identifier is bound by a current unrevoked approval SHALL establish partial or complete delivery or publication, and that approval SHALL have authorized each approval-gated transition being counted except under the identical-binding replacement rule below.
+If approval expires between required pilot or release transitions, a valid replacement approval binding the identical Candidate Manifest digest, channel, Product Version, tag, required artifact set, and target identifiers MAY authorize the remaining gated transition, and the earlier transition's attestation SHALL count toward completion if its authorizing approval was valid at that transition and remains unrevoked.
+Any difference in those bindings SHALL require withdrawal and a new Product Version and tag; replacement SHALL NOT revive a consumed or revoked approval or reopen a terminal distribution or invalid or superseded Candidate.
 A non-gated target state, including trial's GitHub `draft`, MAY count once a valid approval binds its target; approval of its earlier staging transition SHALL NOT be required.
 For reduction, expiry or consumption SHALL NOT erase the approval's existing target bindings or authorization of past transitions, but SHALL prevent it from authorizing a new approval-gated transition.
 Attestations for any other target, or authorized by a revoked approval, SHALL still apply the staging, withdrawal, invalid-candidate, and fail-closed observation rules, and an observed live state on an unbound target SHALL fail closed.
+Withdrawing an unbound target that never went live SHALL NOT withdraw the distribution.
 Retargeting after any live transition SHALL require withdrawal and a new Product Version and tag.
 Any changed digest, channel, artifact requirement, or compatibility declaration SHALL revoke approval automatically.
 The GitHub Release SHALL become non-draft only after delivery-surface live verification succeeds for the same approved candidate.
@@ -331,8 +336,39 @@ A future custodian or backup SHALL receive authority only through a separately p
 #### Scenario: Approval expires after completed delivery or publication
 
 - **WHEN** all required transitions occurred under valid approval and the distribution reached `delivered` or `published`
-- **THEN** terminal consumption or later expiry does not regress that completed reduction while the approval remains unrevoked
+- **THEN** terminal consumption or later expiry does not regress that completed reduction
 - **AND** the consumed or expired approval cannot authorize another approval-gated transition
+
+#### Scenario: Approval is revoked after completion
+
+- **WHEN** approval is revoked after the distribution reached `delivered` or `published`
+- **THEN** the completed reduction does not regress and further approval-gated transitions are blocked
+- **AND** withdrawal is required and moves the distribution to `withdrawn`
+
+#### Scenario: Withdrawal or invalidation prevents remaining publication
+
+- **WHEN** a partial distribution becomes `withdrawn`, or its Candidate is invalidated or superseded
+- **THEN** the same atomic attestation-chain update consumes the approval
+- **AND** that approval cannot take the remaining surface live
+
+#### Scenario: Approval expires between publication transitions
+
+- **WHEN** a pilot or release delivery surface went live under valid approval that expires before GitHub becomes `non_draft`
+- **THEN** a valid replacement approval with the identical Candidate Manifest digest, channel, Product Version, tag, required artifact set, and target identifiers may authorize GitHub publication
+- **AND** the earlier live attestation counts toward completion while its authorizing approval remains unrevoked
+- **AND** a binding difference requires withdrawal and a new Product Version and tag instead
+
+#### Scenario: Trial draft is created after the delivery surface goes live
+
+- **WHEN** a trial delivery surface is `restricted_live` and the GitHub draft transition would first make the reduction `delivered`
+- **THEN** completion requires a valid, unconsumed, unrevoked approval binding the draft target at that moment and atomically consumes it
+- **AND** an expired approval cannot complete the distribution merely because draft creation is ordinarily non-gated
+
+#### Scenario: Abandoned pre-live staging is withdrawn after retargeting
+
+- **WHEN** a publication target is replaced before any live transition and its abandoned, now-unbound staging is withdrawn
+- **THEN** that cleanup does not withdraw the distribution
+- **AND** the new target still requires valid target-bound approval before delivery or publication
 
 #### Scenario: A live distribution is retargeted
 
