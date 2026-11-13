@@ -3333,6 +3333,8 @@ defmodule OrchardNodeAgentTest do
                NodeStatus.cancel_request(request.request_id, request.controller_session_id)
 
       assert {:error, :request_not_prepared} = NodeStatus.start_request(request)
+      # A rejected start alone does not prove that the worker never launched generation.
+      assert generation_refs_for_request_ids([request.request_id]) == %{}
       assert %StatusResponse{active_request_count: 0} = NodeStatus.current()
       refute_receive {:node_runtime_event, "req-r3-prepared-cancel", _event}, 100
     end)
@@ -3530,7 +3532,7 @@ defmodule OrchardNodeAgentTest do
                       %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
                      1_000
 
-      wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+      wait_for_generation_refs([request1.request_id])
 
       cancel_request =
         Operation.CancelRequest.new!(%{
@@ -3589,6 +3591,9 @@ defmodule OrchardNodeAgentTest do
       assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-cancel-rejected",
                       %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
                      1_000
+
+      # Accepted only proves preparation; cancellation can still prevent generation entirely.
+      wait_for_generation_refs([request.request_id])
 
       cancel_request =
         Operation.CancelRequest.new!(%{
