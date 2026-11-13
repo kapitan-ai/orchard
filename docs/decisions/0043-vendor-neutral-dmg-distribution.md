@@ -1,12 +1,11 @@
-# ADR: Withdraw the Amore selection from the DMG distribution contract
+# ADR 0043: Withdraw the Amore selection from the DMG distribution contract
 
 ## Status
 
 Accepted on 2026-11-13.
 
-The owner-approved decision in PR #556, recorded in ADR 0043, includes the
-amended release-governance decision 1.4 and the retained GitHub release-record
-role.
+Najib, product owner, accepted this decision, the amended decision 1.4, and the
+GitHub release-record role on 2026-11-13.
 
 ## Context
 
@@ -41,9 +40,10 @@ Under this amendment, no customer delivery surface is selected. Selection
 requires an accepted OpenSpec change and live proof of audience restriction,
 idempotency, digest inspection, exact-byte promotion, and credential isolation
 before trial delivery or pilot or release publication is enabled. An unselected
-surface is neither optional nor satisfied. Distribution approval binds the
-selected GitHub release-record and delivery-surface target identifiers; changing
-either target revokes that approval.
+surface is neither optional nor satisfied. For channels that require them,
+distribution approval binds the selected GitHub release-record and delivery-surface
+target identifiers; changing either target revokes that approval. Retargeting
+after any live transition requires withdrawal and a new Product Version and tag.
 
 Developer ID signing, Apple notarization, and stapling remain mandatory platform
 trust requirements. The exemption is limited to those three requirements: it

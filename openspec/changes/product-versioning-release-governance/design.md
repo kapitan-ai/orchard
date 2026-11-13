@@ -16,7 +16,7 @@ That behavior is executable evidence, but it is not authoritative until the mean
 
 `SPEC.md` §11 requires the DMG distribution set to include release notes, a DMG checksum, and before and after app-signing manifests.
 It also requires that outer DMG tooling retain nested signing and verification under Orchard control; §11.3 names no vendor for assembly or customer delivery and preserves only the narrow Apple platform trust requirements.
-The owner-approved decision in PR #556, recorded in ADR 0043, withdraws only decision 1.4's Amore vendor selection; channel contracts, DMG artifact treatment, and conjunctive two-surface completion remain approved.
+The decision accepted in ADR 0043 withdraws only decision 1.4's Amore vendor selection; channel contracts, DMG artifact treatment, and conjunctive two-surface completion remain approved.
 The accepted `app-distribution-lifecycle` and `packaging-deployment` capabilities continue to own artifact-specific assembly, verification, and lifecycle behavior.
 This change adds product-wide governance without duplicating those contracts.
 
@@ -135,13 +135,14 @@ Release allows GitHub `absent -> draft -> non_draft -> withdrawn` and the delive
 Failed attempts and unavailable observations produce signed attestations without advancing surface state.
 Each transition requires the actor authorized for that surface and an atomic compare-and-swap append against the unique current attestation-chain head, so stale or concurrent forks fail closed.
 Transitions to internal `delivered`, delivery-surface `restricted_live` or `general_live`, and GitHub `non_draft` require a Verified Candidate or sealed Internal Build Manifest plus every digest-bound approval required by the channel.
-GitHub `draft` and delivery-surface `staged` may exist before approval, but they remain staging evidence and cannot yield successful or partial delivery or publication state until the required verification and approval are valid.
+GitHub `draft` and delivery-surface `staged` may exist before approval, but they remain staging evidence and cannot initially yield successful or partial delivery or publication state until required verification is complete and a valid approval binds their targets.
 An externally observed live target state without those prerequisites records a fail-closed observation and does not advance the governed surface or distribution state.
 
 Distribution state uses one ordered total reduction over every reachable combination.
 Any required withdrawn surface or explicit channel withdrawal reduces first to `withdrawn`.
 An invalid or superseded Candidate reduces to `withdrawn` when any required surface advanced beyond `absent` and otherwise reduces to `not_started`.
-Before any complete or partial delivery or publication reduction, the Candidate must be `verified` or the Internal Build Manifest must be sealed and every channel-required approval must remain valid.
+Before any complete or partial delivery or publication reduction, the Candidate must be `verified` or the Internal Build Manifest must be sealed, and every channel-required approval must have been valid at the time of each approval-gated transition it authorized and remain unrevoked.
+Later expiry or consumption of approval does not regress a completed reduction; it cannot authorize a new approval-gated transition.
 If those prerequisites are absent, pre-live `draft` or `staged` surfaces reduce only to `staged`, while any observed live target state fails closed without changing the governed state.
 Internal reduces to `delivered` when its recipient surface is `delivered`.
 Trial reduces to `delivered` only for GitHub `draft` plus delivery-surface `restricted_live`.
@@ -171,13 +172,13 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 Native PKG is not a governed current artifact.
 Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
 GitHub Releases act as the release record under `docs/process.md` "Tracking and Publication", and a separately selected delivery surface is the customer-facing distribution surface.
-Under the owner-approved decision in PR #556, recorded in ADR 0043, §11.3 names no vendor for that delivery role and no delivery surface is selected.
+Under the decision accepted in ADR 0043, §11.3 names no vendor for that delivery role and no delivery surface is selected.
 The two roles retain separate observations and authorization boundaries even if one provider supplies both.
 The release workflow publishes through the delivery surface first, verifies its live state and digest, and publishes the GitHub Release last.
 
 Trial delivery and pilot and release publication remain disabled until a delivery surface is selected through an accepted OpenSpec change and proves the required audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation.
 An unselected surface is neither optional nor satisfied, and the §11.0 distribution pause remains independently binding.
-If the delivery surface cannot distinguish restricted and general audiences, the affected channels remain disabled until an alternative surface is approved.
+If the delivery surface cannot distinguish restricted and general audiences, the affected channels remain disabled until an alternative surface is selected through an accepted OpenSpec change.
 
 An untagged development build in the internal channel is an Internal Build rather than a Candidate.
 It uses a commit-bound Internal Build Manifest with Product Version, full source commit, channel, artifact identities, validation summary, component inventory, and any Apple build-number allocation, and it does not enter Candidate or Candidate Manifest state.
@@ -244,10 +245,15 @@ Apple build-number allocation, Apple signing and notarization, GitHub drafting, 
 Signing, delivery-surface publication, and GitHub publication credentials do not coexist in one job.
 
 Distribution approval binds the Candidate Manifest or Internal Build Manifest digest, channel, Product Version, tag when applicable, required artifact set, approving identity, timestamp, expiry, and single-use intent.
-Distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
+One approval covers the required surface transitions of one channel distribution, including both the delivery-surface live transition and GitHub `non_draft` transition for pilot or release.
+The terminal `delivered` or `published` transition atomically consumes the approval through the attestation-chain compare-and-swap update, after which it cannot authorize another transition or Candidate.
+For channels that require them, distribution approval also binds the selected GitHub release-record and delivery-surface target identifiers; changing either identifier revokes that approval.
 Each surface State Attestation records its target identifier.
-Only attestations for the targets bound by the approval that authorized the transition, while that approval remains unrevoked, satisfy partial or complete delivery or publication.
+For channels requiring those publication surfaces, only attestations whose target identifier is bound by a current unrevoked approval satisfy partial or complete delivery or publication, and that approval must have authorized each approval-gated transition being counted.
+A non-gated target state, including trial's GitHub `draft`, may count once a valid approval binds its target; approval of its earlier staging transition is not required.
+For reduction, expiry or consumption does not erase the approval's existing target bindings or authorization of past transitions, but prevents it from authorizing a new approval-gated transition.
 Attestations for any other target, or authorized by a revoked approval, still apply the staging, withdrawal, invalid-candidate, and fail-closed observation rules, and an observed live state on an unbound target fails closed.
+Retargeting after any live transition requires withdrawal and a new Product Version and tag.
 Any changed digest, channel, artifact requirement, or compatibility declaration revokes approval automatically.
 The GitHub Release becomes non-draft only after delivery-surface live verification succeeds for the exact approved candidate.
 
@@ -325,10 +331,11 @@ The absence of an experienced backup is recorded as a resilience risk in every r
 Two-person control remains the preferred future operating model after at least one collaborator has demonstrated sufficient release experience and has been explicitly entrusted with a named role.
 Delegation is not automatic, and any new custodian or backup requires a separately protected trust-administration change before receiving authority.
 
+The amendment to decision 1.4 and the retained GitHub release-record role are accepted in ADR 0043.
+
 ## Remaining Gates
 
 - Verify private-repository GitHub plan support for each proposed protected control before trial delivery or pilot and release publication.
-- [x] Record acceptance of ADR 0043 and the amended decision 1.4, including the retained GitHub release-record role, through the owner-approved decision in PR #556, recorded in ADR 0043.
 - Select the delivery surface through an accepted OpenSpec change and verify its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before trial delivery or pilot and release publication.
 - Inspect the highest historically distributed `CFBundleVersion` for `com.orchard.app` before allocating the first governed number.
 - Identify actual signing identities, credential stores, and release hosts without recording secret or machine-local values in durable policy.
