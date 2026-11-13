@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed. Acceptance requires Najib's approval of the exact wording, including
-the amended release-governance decision 1.4 and the retained GitHub release-record
-role. Authorization to prepare this amendment is not acceptance of this decision.
+Accepted on 2026-11-13.
+
+The owner-approved decision in PR #556, recorded in ADR 0043, includes the
+amended release-governance decision 1.4 and the retained GitHub release-record
+role.
 
 ## Context
 
@@ -20,16 +22,16 @@ not a mandatory commercial customer-delivery provider. Removing a provider does
 not remove the second surface: partial-publication states, ordered completion,
 credential separation, and publication custody depend on both roles.
 
-## Proposed decision
+## Decision
 
 Withdraw only the Amore vendor selection from decision 1.4. Retain its approved
 channel contracts, DMG artifact treatment, and conjunctive completion across the
 release record and one customer delivery surface. Keep task 1.4 checked as the
-approval history, with this proposed amendment recorded in place.
+approval history, with this accepted amendment recorded in place.
 
 GitHub remains the named release record under `docs/process.md` "Tracking and
 Publication". The §11.3 neutrality rule governs outer DMG tooling and the customer
-delivery surface, not that release-record role. This proposal does not abstract
+delivery surface, not that release-record role. This decision does not abstract
 GitHub or authorize a new publication target. A future proposal may replace the
 GitHub release-record implementation with a neutral release-registry role while
 retaining the same state transitions, conjunctive reducer, audience obligations,

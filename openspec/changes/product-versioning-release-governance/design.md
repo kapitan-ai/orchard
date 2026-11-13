@@ -16,7 +16,7 @@ That behavior is executable evidence, but it is not authoritative until the mean
 
 `SPEC.md` §11 requires the DMG distribution set to include release notes, a DMG checksum, and before and after app-signing manifests.
 It also requires that outer DMG tooling retain nested signing and verification under Orchard control; §11.3 names no vendor for assembly or customer delivery and preserves only the narrow Apple platform trust requirements.
-ADR 0043 proposes withdrawing only decision 1.4's Amore vendor selection, pending owner approval of the exact wording; channel contracts, DMG artifact treatment, and conjunctive two-surface completion remain approved.
+The owner-approved decision in PR #556, recorded in ADR 0043, withdraws only decision 1.4's Amore vendor selection; channel contracts, DMG artifact treatment, and conjunctive two-surface completion remain approved.
 The accepted `app-distribution-lifecycle` and `packaging-deployment` capabilities continue to own artifact-specific assembly, verification, and lifecycle behavior.
 This change adds product-wide governance without duplicating those contracts.
 
@@ -171,7 +171,7 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 Native PKG is not a governed current artifact.
 Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
 GitHub Releases act as the release record under `docs/process.md` "Tracking and Publication", and a separately selected delivery surface is the customer-facing distribution surface.
-Under the proposed ADR 0043 amendment, §11.3 names no vendor for that delivery role and no delivery surface is selected.
+Under the owner-approved decision in PR #556, recorded in ADR 0043, §11.3 names no vendor for that delivery role and no delivery surface is selected.
 The two roles retain separate observations and authorization boundaries even if one provider supplies both.
 The release workflow publishes through the delivery surface first, verifies its live state and digest, and publishes the GitHub Release last.
 
@@ -328,7 +328,7 @@ Delegation is not automatic, and any new custodian or backup requires a separate
 ## Remaining Gates
 
 - Verify private-repository GitHub plan support for each proposed protected control before trial delivery or pilot and release publication.
-- Obtain owner approval of ADR 0043 and the amended decision 1.4, including the retained GitHub release-record role.
+- [x] Record acceptance of ADR 0043 and the amended decision 1.4, including the retained GitHub release-record role, through the owner-approved decision in PR #556, recorded in ADR 0043.
 - Select the delivery surface through an accepted OpenSpec change and verify its audience restriction, idempotency, digest inspection, exact-byte promotion, and credential isolation before trial delivery or pilot and release publication.
 - Inspect the highest historically distributed `CFBundleVersion` for `com.orchard.app` before allocating the first governed number.
 - Identify actual signing identities, credential stores, and release hosts without recording secret or machine-local values in durable policy.
