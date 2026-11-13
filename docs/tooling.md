@@ -83,13 +83,12 @@ The tokenizer, MLX worker and proto tooling require Python 3.14 or newer;
 repository development and CI use the exact pin above, not an arbitrary newer
 interpreter. Their dependency locks retain existing versions where compatible.
 
+After pulling, run `mise install`, then `mise exec -- uv sync --locked --directory native/orchard_tokenizer` and `mise exec -- uv sync --locked --directory native/orchard_worker_mlx` (append `--extra mlx` on Apple Silicon hosts that run real MLX inference) to replace stale Python 3.11 `.venv` environments before the wrappers execute Python 3.14-only syntax.
+
 Runtime dependency changes require requalification under
 [Model qualification](model-qualification.md#requalification-triggers).
 Native test results and smoke evidence do not approve or transfer existing
-qualification records. The migration must complete by December 31, 2026,
-and before the SPEC §11.0 distribution pause lifts.
-Python 3.13.18 is a contingency requiring the owner to review evidence of an
-Apple Silicon MLX failure on 3.14 before switching.
+qualification records.
 
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.

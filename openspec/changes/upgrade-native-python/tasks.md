@@ -7,7 +7,7 @@
 
 - [x] 2.1 Run native formatting, lint, tests and coverage for every retained native package.
 - [x] 2.2 Compare tokenizer bytes, token IDs/counts and marker provenance against pinned smoke assets.
-- [x] 2.3 Run available Apple Silicon load, generation, cancellation, reaping and cache checks; report missing evidence.
+- [x] 2.3 Run available Apple Silicon load, generation, cancellation, reaping and cache checks; report missing evidence (native worker harness only; Node Agent forced-reap/capacity-release integration not run).
 - [x] 2.4 Run strict OpenSpec, affected script/workflow contracts and supply-chain validation.
 
 ## 3. Owner gates
