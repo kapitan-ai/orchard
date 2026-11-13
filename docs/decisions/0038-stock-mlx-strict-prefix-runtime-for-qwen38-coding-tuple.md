@@ -5,6 +5,8 @@
 Accepted runtime direction on 2026-10-13 by the accountable product owner.
 The acceptance binds to the reviewed revision of this record that merges through its pull request.
 
+Amended 2026-11-13: the frozen TensorFold bridge is retired in pull request #590; benchmark evidence remains and lessons are tracked privately.
+
 This record chooses the candidate runtime for one exact tuple.
 It is not a qualification record, a support claim or a production activation under `SPEC.md` §1.4 and §7.2.9.
 The following remain separately approved work:
@@ -83,7 +85,7 @@ A change to any of them needs a new qualification identity under §6.4 governanc
 
 ### TensorFold
 
-The TensorFold bridge was removed in the retirement pull request that amends this record.
+The TensorFold bridge was removed in pull request #590.
 Its benchmark results remain reference evidence for this decision.
 Reusable patterns and lessons are tracked privately.
 
@@ -138,7 +140,8 @@ Reusable patterns and lessons are tracked privately.
 
 ## SPEC.md impact
 
-No change in this record.
+The original runtime-direction decision required no SPEC.md change.
+The 2026-11-13 amendment deletes the §7.2.9 experiment-permission paragraph for the embedded TensorFold bridge.
 `SPEC.md` §7.5.3 already defines `strict_prefix` prefix-cache status, the absence of fingerprints and of the prefix-cache capability, and the `disabled` score answer, and §12.4 already defines the chunk-boundary cancel.
 Both landed with pull requests #521 to #523.
 
