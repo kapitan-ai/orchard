@@ -1,8 +1,6 @@
 defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
-  alias Orchard.Inference.TensorFoldProjection
-
   alias Orchard.CanonicalRequest
 
   alias Orchard.Inference.{
@@ -37,8 +35,7 @@ defmodule Orchard.Inference.RequestPreparation do
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model, params),
          :ok <- enforce_context_window(canonical, model),
-         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted),
-         :ok <- TensorFoldProjection.validate(canonical) do
+         {:ok, canonical} <- authorize_model(canonical, model, effort, :omitted) do
       {:ok, canonical, model}
     end
   end

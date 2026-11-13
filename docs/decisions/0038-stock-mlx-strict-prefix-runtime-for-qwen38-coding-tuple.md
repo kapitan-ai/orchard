@@ -24,7 +24,7 @@ Every agent turn prefilled its whole prompt again, which took about 600 to 780 s
 
 Two candidates could reuse checkpoints across turns for this model:
 
-1. **The TensorFold 0.6.6 Worker**, a default-off source experiment that embeds TensorFold in a Node-owned Worker process (`native/orchard_tensorfold_http`), allowed by the last paragraph of `SPEC.md` §7.2.9.
+1. **The TensorFold 0.6.6 Worker**, a default-off source experiment that embedded TensorFold in a Node-owned Worker process, then permitted by `SPEC.md` §7.2.9 and since removed.
 2. **Strict-prefix checkpoint reuse in the stock MLX-LM Worker**, added as a default-off spike in pull request #512.
    It restores a checkpoint only when the checkpoint's tokens are an exact, strictly shorter prefix of the new prompt, and never trims cache state.
 
@@ -83,10 +83,9 @@ A change to any of them needs a new qualification identity under §6.4 governanc
 
 ### TensorFold
 
-The TensorFold bridge stays in the repository as a frozen, default-off source experiment, as `native/orchard_tensorfold_http/README.md` states.
-Orchard does not promote it, mirror its pinned engine, add it to required CI or `make setup`, or start new TensorFold work.
-Frozen status does not waive the README's rule: a change that breaks the `SPEC.md` §7.2.9 experiment contract still blocks a merge.
-Its measured results stay as reference evidence for this decision.
+The TensorFold bridge was removed in the retirement pull request that amends this record.
+Its benchmark results remain reference evidence for this decision.
+Reusable patterns and lessons are tracked privately.
 
 ## Alternatives considered
 
@@ -97,7 +96,7 @@ Its measured results stay as reference evidence for this decision.
   It would also need an accepted runtime-provider profile and qualification under `SPEC.md` §1.4 and §1.5, and a change to §7.2.9.
 - **A newer TensorFold engine.**
   Not selected.
-  The experiment pins TensorFold 0.6.6, and a newer engine would need a new experiment and its own evidence.
+  The experiment pinned TensorFold 0.6.6, and a newer engine would need a new experiment and its own evidence.
 - **Upstream `LRUPromptCache` from mlx-lm.**
   Rejected.
   It reuses exact shorter prefixes, but it is built for the mlx-lm server, reserves no memory before a copy, and does not align checkpoints to Orchard's prefill step, which the exact-output result depends on.
@@ -127,7 +126,7 @@ Its measured results stay as reference evidence for this decision.
   Checkpoint-identity routing is separate work.
 - Rollback to an older Worker needs the `strict_prefix` entries removed from the per-model settings first, because older Workers reject the mode.
 - Later readiness work for the tuple targets the stock Worker.
-- The open OpenSpec change `add-tensorfold-http-worker` should be archived or marked frozen, so that it does not read as planned work.
+- The unarchived OpenSpec change `add-tensorfold-http-worker` was removed with the bridge; it had no main-spec counterpart.
 
 ### What would reopen this decision
 
@@ -147,7 +146,6 @@ The promotion is a separate OpenSpec change for task 5.1 of `add-stock-strict-pr
 It updates §7.2.9:
 
 - state that `strict_prefix` is a Worker prefix-cache mode of the MLX-LM provider that a qualified tuple may use, and that the mode alone is not a support claim;
-- state that the resolved per-model launch policy and the prefill step size are part of the cache settings in the qualification identity;
-- in the TensorFold paragraph, state that the experiment is frozen reference evidence and not a candidate runtime.
+- state that the resolved per-model launch policy and the prefill step size are part of the cache settings in the qualification identity.
 
 No change to §1.5, §6.4 or `AGENTS.md`: MLX-LM stays the runtime provider.

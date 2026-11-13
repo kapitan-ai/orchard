@@ -64,15 +64,8 @@ orchard_source_dev_configure_worker_runtime() {
     socket_dir=""
   fi
 
-  local tensorfold_wrapper
-  tensorfold_wrapper="$repo_root/native/orchard_tensorfold_http/bin/orchard-worker-tensorfold"
   default_wrapper="$repo_root/native/orchard_worker_mlx/bin/orchard-worker-mlx"
-  # config/dev.exs selects the TensorFold wrapper for ORCHARD_WORKER_BACKEND=tensorfold.
-  if [[ "${ORCHARD_WORKER_BACKEND:-}" == "tensorfold" ]]; then
-    worker_executable="${ORCHARD_WORKER_EXECUTABLE:-$tensorfold_wrapper}"
-  else
-    worker_executable="${ORCHARD_WORKER_EXECUTABLE:-$default_wrapper}"
-  fi
+  worker_executable="${ORCHARD_WORKER_EXECUTABLE:-$default_wrapper}"
   worker_executable="$(orchard_source_dev_resolve_executable "$repo_root" "$worker_executable")" || {
     echo "error: unable to resolve ORCHARD_WORKER_EXECUTABLE" >&2
     return 64
@@ -80,17 +73,10 @@ orchard_source_dev_configure_worker_runtime() {
 
   effective_executable="${ORCHARD_WORKER_EFFECTIVE_EXECUTABLE:-}"
   default_wrapper="$(orchard_source_dev_canonical_existing_path "$default_wrapper")" || true
-  tensorfold_wrapper="$(orchard_source_dev_canonical_existing_path "$tensorfold_wrapper")" || true
   if [[ -z "$effective_executable" && "$worker_executable" == "$default_wrapper" ]]; then
     effective_executable="$repo_root/native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx"
     if [[ ! -e "$effective_executable" ]]; then
       echo "warning: MLX worker environment is not built; effective-executable cleanup is disabled" >&2
-      effective_executable=""
-    fi
-  elif [[ -z "$effective_executable" && "$worker_executable" == "$tensorfold_wrapper" ]]; then
-    effective_executable="$repo_root/native/orchard_tensorfold_http/.venv/bin/orchard-worker-tensorfold"
-    if [[ ! -e "$effective_executable" ]]; then
-      echo "warning: TensorFold worker environment is not built; effective-executable cleanup is disabled" >&2
       effective_executable=""
     fi
   elif [[ -z "$effective_executable" ]]; then
@@ -186,7 +172,7 @@ orchard_source_dev_worker_processes() {
   while IFS= read -r line; do
     read -r pid args <<< "$line"
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$args" == *orchard-worker-mlx* || "$args" == *orchard-worker-tensorfold* ]] || continue
+    [[ "$args" == *orchard-worker-mlx* ]] || continue
     [[ "$pid" != "$$" ]] || continue
     printf '%s %s\n' "$pid" "$args"
   done < <(ps -ww -A -o pid= -o args= 2>/dev/null || true)

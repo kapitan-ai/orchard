@@ -221,7 +221,6 @@ GPU, downloading a model or asserting current real API/OpenCode success.
 The string fallback retains the live risk of Controller/provider tokenization
 divergence. Authoritative IDs avoid provider retokenization, but do not establish
 live compatibility, tokenizer registration authority or a new supported tuple.
-`supports_prompt_token_ids=true` also satisfies the TensorFold token-ID gate, but `gate_tensorfold_route` requires an explicit TensorFold Node allowlist, so projected requests reach this backend only through operator misconfiguration.
 
 ## SPEC.md impact
 

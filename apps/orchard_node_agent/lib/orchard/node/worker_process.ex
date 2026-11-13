@@ -18,7 +18,6 @@ defmodule Orchard.Node.WorkerProcess do
     ModelManager,
     RuntimeAdapter,
     RuntimeProcessReaper,
-    TensorFoldProjection,
     WorkerCapabilityEvidence
   }
 
@@ -218,30 +217,7 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_call({:prepare_request, request}, _from, state) do
-    config = TensorFoldProjection.config()
-    projection? = request.tensorfold_history_projection_json not in [nil, ""]
-    selected? = TensorFoldProjection.selected?(request, config)
-
-    result =
-      cond do
-        not state.loaded? ->
-          {:error, :model_not_loaded}
-
-        not projection? and not selected? ->
-          {:ok, request}
-
-        not projection? ->
-          {:error, :tensorfold_projection_rejected}
-
-        not selected? ->
-          {:error, :tensorfold_projection_rejected}
-
-        function_exported?(state.adapter, :prepare_request, 3) ->
-          state.adapter.prepare_request(state.adapter_state, request, [])
-
-        true ->
-          {:error, :tensorfold_projection_rejected}
-      end
+    result = if state.loaded?, do: {:ok, request}, else: {:error, :model_not_loaded}
 
     {:reply, result, state}
   end

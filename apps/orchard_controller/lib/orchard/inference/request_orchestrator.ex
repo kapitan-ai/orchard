@@ -7,8 +7,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
   requests do not remain active without a runtime owner.
   """
 
-  alias Orchard.Inference.TensorFoldProjection
-
   alias Orchard.CanonicalRequest
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
@@ -1144,7 +1142,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
        ) do
     cond do
       outcome.delivery_state == :failed ->
-        {:error, public_dispatch_reason(outcome, canonical),
+        {:error, public_dispatch_reason(outcome),
          terminal_evidence(context, outcome, retry_decision)}
 
       Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
@@ -1158,7 +1156,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
         )
 
       true ->
-        {:error, public_dispatch_reason(outcome, canonical),
+        {:error, public_dispatch_reason(outcome),
          terminal_evidence(context, outcome, retry_decision)}
     end
   end
@@ -1949,29 +1947,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp memory_admission_metadata_key?(_key), do: false
 
   defp dispatch(db_request, canonical, model, schedule, execution_opts) do
-    case TensorFoldProjection.issue(canonical, model, schedule) do
-      {:ok, projection} ->
-        execute_request = %{
-          build_execute_request(canonical, schedule)
-          | tensorfold_history_projection_json: projection
-        }
+    execute_request = build_execute_request(canonical, schedule)
+    model_load_request = build_model_load_request(model, schedule)
+    queue_grant = Map.get(execution_opts, :queue_grant)
 
-        model_load_request = build_model_load_request(model, schedule)
-        queue_grant = Map.get(execution_opts, :queue_grant)
+    maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
-        maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
-
-        dispatch_request(
-          schedule,
-          execute_request,
-          model_load_request,
-          db_request.id,
-          execution_opts
-        )
-
-      {:error, _reason} ->
-        {:error, {:dispatch_failed, :runtime_incompatible}}
-    end
+    dispatch_request(
+      schedule,
+      execute_request,
+      model_load_request,
+      db_request.id,
+      execution_opts
+    )
   end
 
   defp dispatch_request(schedule, execute_request, model_load_request, request_id, execution_opts) do
@@ -2001,12 +1989,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
     _kind, _reason ->
       log_warn("dispatch threw")
       {:error, orchestration_crash(:dispatch, :throw)}
-  end
-
-  defp public_dispatch_reason(%AttemptOutcome{} = outcome, canonical) do
-    if TensorFoldProjection.refused_before_acceptance?(canonical, outcome),
-      do: {:dispatch_failed, :runtime_incompatible},
-      else: public_dispatch_reason(outcome)
   end
 
   defp public_dispatch_reason(%AttemptOutcome{
