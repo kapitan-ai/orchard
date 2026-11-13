@@ -56,6 +56,8 @@ defmodule Orchard.Node.ModelManagerTest do
     assert {:reply, :ok, prepared} =
              ModelManager.handle_call({:prepare_request, request, self()}, nil, state)
 
+    assert Map.has_key?(prepared.active_requests, request.request_id)
+
     assert {:reply, {:error, :request_not_prepared}, rejected} =
              ModelManager.handle_call(
                {:start_request, %{request | rendered_prompt_utf8: "changed"}},
