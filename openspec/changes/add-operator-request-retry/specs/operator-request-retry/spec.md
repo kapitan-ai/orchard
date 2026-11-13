@@ -44,11 +44,12 @@ enabled Model access grant. Orchard SHALL fail closed with
 SHALL resolve the descendant's routing policy, allowed pools, and residency
 preference from that current grant, and SHALL NOT widen a retained queue-wait
 or cold-start budget beyond the current grant's budget, including a grant budget
-of zero. Orchard SHALL preserve the retained request deadline rather than
-re-deriving it under the current residency preference, so a current grant that
-permits cold loading spends queue-wait and cold-start time from that retained
-deadline. This requirement applies `SPEC.md` §5.2 steps 3 and 7 to the operator
-retry path.
+of zero. Orchard SHALL preserve the retained request timeout duration rather
+than re-deriving it under the current residency preference, and SHALL derive
+the descendant's absolute deadline from that duration when the descendant is
+created, so a current grant that permits cold loading spends queue-wait and
+cold-start time from the retained duration. This requirement applies `SPEC.md`
+§5.2 steps 3 and 7 to the operator retry path.
 
 #### Scenario: Tenant Model access was revoked after the source Request failed
 
@@ -73,7 +74,8 @@ retry path.
   preference, and the narrower budgets
 - **AND** it does not record a budget wider than either the retained snapshot or
   the current grant
-- **AND** it records the retained request deadline
+- **AND** it records the retained request timeout duration, with an absolute
+  deadline derived from that duration when the descendant is created
 
 #### Scenario: The current grant sets a zero queue-wait or cold-start budget
 

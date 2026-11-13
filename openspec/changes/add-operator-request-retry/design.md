@@ -22,19 +22,22 @@ instead of being widened by it. The resolved policy keeps its retained quota and
 active-request limit, because no grant-side source for either exists in this
 revision.
 
-The retry deliberately preserves the retained deadline instead of re-deriving it
-under the current residency preference. A current grant that newly permits cold
-loading therefore spends queue-wait and cold-start time from that retained
-deadline rather than receiving fresh headroom, which keeps a retry from
-outliving the budget its source was admitted under. The retained deadline still
-passes through the deployment deadline ceiling.
+The retry deliberately preserves the retained timeout duration
+(`admission.timeout_ms`) instead of re-deriving it under the current residency
+preference. The descendant's absolute deadline is derived from that duration
+when the descendant is created, as for any new Request; the source's absolute
+deadline has usually already passed. A current grant that newly permits cold
+loading therefore spends queue-wait and cold-start time from the retained
+duration rather than receiving fresh headroom, which keeps a retry from
+receiving a larger budget than its source was admitted under. The retained
+duration still passes through the deployment deadline ceiling.
 
-Narrowed budgets and the retained deadline are handed to admission resolution
+Narrowed budgets and the retained duration are handed to admission resolution
 explicitly, through `AdmissionPolicy`'s `:effective_timeout_ms`,
 `:queue_wait_ms`, and `:max_cold_start_ms` options. Without that, the
 zero-means-unset fallbacks in admission resolution would replace an explicit
 zero queue-wait or cold-start budget with a default, and supplying the budgets
-without an already-effective deadline would add them to the retained deadline a
+without an already-effective timeout would add them to the retained duration a
 second time.
 
 One request-attrs builder on `Orchard.Inference.RequestOrchestrator` serves both
