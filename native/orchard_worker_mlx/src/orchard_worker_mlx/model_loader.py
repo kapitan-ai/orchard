@@ -598,7 +598,7 @@ def _installed_vcs_commit(distribution_name: str) -> str:
     try:
         raw = importlib.metadata.distribution(distribution_name).read_text("direct_url.json")
         commit = json.loads(raw or "{}").get("vcs_info", {}).get("commit_id", "")
-    except (importlib.metadata.PackageNotFoundError, ValueError, AttributeError):
+    except importlib.metadata.PackageNotFoundError, ValueError, AttributeError:
         return ""
     return commit if isinstance(commit, str) else ""
 
@@ -650,7 +650,7 @@ def _default_mlx_deps() -> MLXDeps:
 
         _make_prompt_cache = _make
         _can_trim_prompt_cache = _can_trim
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
     # Optional sampler factory — fail-open if unavailable.
@@ -659,7 +659,7 @@ def _default_mlx_deps() -> MLXDeps:
         from mlx_lm.sample_utils import make_sampler as _make_sampler_impl
 
         _make_sampler = _make_sampler_impl
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
     def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
@@ -674,7 +674,7 @@ def _default_mlx_deps() -> MLXDeps:
             accepts_trust = "trust_remote_code" in params or any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # Fail closed: if signature inspection fails, still force disable.
             accepts_trust = True
 
@@ -700,7 +700,7 @@ def _default_mlx_deps() -> MLXDeps:
                     tokenizer_dir,
                     tokenizer_config_extra={"trust_remote_code": False},
                 )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
         return mlx_lm_load_tokenizer(tokenizer_dir)
 
@@ -951,7 +951,7 @@ def _reject_model_file_config(model_path: str | Path) -> None:
 
     try:
         config = json.loads(config_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except OSError, UnicodeDecodeError, json.JSONDecodeError:
         return
 
     if isinstance(config, Mapping) and "model_file" in config:

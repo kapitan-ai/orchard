@@ -701,7 +701,7 @@ def _tool_capability_definition_rendered(
             ],
             tool_choice="auto",
         )
-    except (TokenizerCliError, TemplateError, ValueError, TypeError):
+    except TokenizerCliError, TemplateError, ValueError, TypeError:
         return False
 
     return definition_name in rendered and definition_description in rendered
@@ -753,7 +753,7 @@ def _tool_capability_history_rendered(
             tools=[],
             tool_choice=None,
         )
-    except (TokenizerCliError, TemplateError, ValueError, TypeError):
+    except TokenizerCliError, TemplateError, ValueError, TypeError:
         return False
 
     return function_name in rendered and argument_value in rendered and result_value in rendered

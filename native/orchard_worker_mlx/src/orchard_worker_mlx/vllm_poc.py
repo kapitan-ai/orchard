@@ -355,7 +355,7 @@ class VLLMPocBackend:
             )
         try:
             payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except UnicodeDecodeError, json.JSONDecodeError:
             raise BackendError(
                 "provider_identity_mismatch", "vllm_poc provider identity did not match", False
             ) from None
@@ -441,7 +441,7 @@ class VLLMPocBackend:
         try:
             temperature = float(getattr(params, "temperature", 0.0))
             top_p = float(getattr(params, "top_p", 1.0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise BackendError(
                 "invalid_generation_params", "sampling parameters are invalid", False
             ) from None
@@ -573,7 +573,7 @@ class VLLMPocBackend:
                         return
                     try:
                         event = json.loads(data)
-                    except (UnicodeDecodeError, json.JSONDecodeError):
+                    except UnicodeDecodeError, json.JSONDecodeError:
                         enqueue("error", "provider event was invalid JSON")
                         return
                     if not isinstance(event, dict):
@@ -581,7 +581,7 @@ class VLLMPocBackend:
                         return
                     if not enqueue("event", event):
                         return
-            except (OSError, http.client.HTTPException, ValueError):
+            except OSError, http.client.HTTPException, ValueError:
                 enqueue("error", "provider stream failed")
             finally:
                 if response is not None:
@@ -650,7 +650,7 @@ def _redacted_error_excerpt(body: bytes) -> str:
         return "[oversized error body omitted]"
     try:
         error = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+    except UnicodeDecodeError, json.JSONDecodeError, RecursionError:
         return "[unparseable error body omitted]"
     if isinstance(error, dict):
         error = error.get("error", error)
@@ -972,7 +972,7 @@ def _decode_json_bytes(payload: Any, field: str, default: Any) -> Any:
     try:
         text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
         return json.loads(text)
-    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+    except AttributeError, UnicodeDecodeError, json.JSONDecodeError, TypeError:
         raise BackendError("invalid_generation_params", f"{field} is invalid JSON", False) from None
 
 

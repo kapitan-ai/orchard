@@ -94,7 +94,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
                     self.wfile.write(bytes([byte]))
                     self.wfile.flush()
                     time.sleep(0.02)
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 self.server.client_closed.set()
             return
         self.wfile.write(body)
@@ -130,7 +130,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                     time.sleep(0.02)
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 self.server.client_closed.set()
             return
         try:
@@ -146,7 +146,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
             if self.server.send_done:
                 self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             self.server.client_closed.set()
 
     def log_message(self, _format: str, *_args: object) -> None:
