@@ -58,7 +58,7 @@ The pinned toolchain currently covers:
 |------|-----|---------|
 | Erlang/OTP | `29.1.1` | BEAM runtime, compiler, Dialyzer PLTs, releases |
 | Elixir | `1.20.4-otp-29` | Mix, umbrella compilation, tests, releases |
-| Python | `3.11.16` | Native tokenizer and MLX worker packages |
+| Python | `3.14.10` | Native tokenizer, MLX worker and proto tooling |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
 | Node.js | `24.22.1` | Repository-local OpenSpec and Phoenix asset CLI runtime |
 | npm | `11.19.1` | Package manager for root tool and asset pins |
@@ -72,11 +72,23 @@ The mise environment also sets:
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `UV_PYTHON` | `3.11` | Direct `uv` to the repo Python line |
+| `UV_PYTHON` | `3.14.10` | Direct `uv` to the exact repo Python interpreter |
 | `UV_NO_MANAGED_PYTHON` | `1` | Prevent silent uv Python downloads |
 
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
+
+Python 3.14.10 includes the CPython gh-155752 fix unavailable on 3.11.
+The tokenizer, MLX worker and proto tooling require Python 3.14 or newer;
+repository development and CI use the exact pin above, not an arbitrary newer
+interpreter. Their dependency locks retain existing versions where compatible.
+
+After pulling, run `mise install`, then `mise exec -- uv sync --locked --directory native/orchard_tokenizer` and `mise exec -- uv sync --locked --directory native/orchard_worker_mlx` (append `--extra mlx` on Apple Silicon hosts that run real MLX inference) to replace stale Python 3.11 `.venv` environments before the wrappers execute Python 3.14-only syntax.
+
+Runtime dependency changes require requalification under
+[Model qualification](model-qualification.md#requalification-triggers).
+Native test results and smoke evidence do not approve or transfer existing
+qualification records.
 
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.

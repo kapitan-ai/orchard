@@ -239,7 +239,7 @@ def _default_generation_deps() -> GenerationDeps:
 
         _make_prompt_cache = _make
         _trim_prompt_cache = _trim
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
     try:
@@ -252,7 +252,7 @@ def _default_generation_deps() -> GenerationDeps:
         maybe_memory_probe = getattr(mx, "get_active_memory", None)
         if callable(maybe_memory_probe):
             _current_memory_bytes = cast(Callable[[], int | None], maybe_memory_probe)
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
     return GenerationDeps(
@@ -2960,12 +2960,12 @@ def _usage_event(input_tokens: int, output_tokens: int) -> dict[str, Any]:
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default

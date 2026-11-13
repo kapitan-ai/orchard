@@ -637,7 +637,7 @@ assert_report_shape "$parse_dir/report.staging"
 # --- Finalize: only a complete, successful record is success -------------
 
 # `mise --version` plus `mise current` for the pinned mise.toml.
-CONFIGURED_LINES=('mise 2026.9.2' 'erlang 29.1.1' 'elixir 1.20.0-otp-29' 'python 3.11.15' 'uv 0.11.23'
+CONFIGURED_LINES=('mise 2026.9.2' 'erlang 29.1.1' 'elixir 1.20.0-otp-29' 'python 3.14.10' 'uv 0.11.23'
   'node 24.17.0')
 
 # The lane's label:kind sequence and one realistic capture per kind.
@@ -679,7 +679,7 @@ full_report() {
       ${pr_env[@]+"${pr_env[@]}"} "$TEST_BASH" "$HELPER" source "$dir"
     helper lockfiles "$dir" before
     printf '%s\n' "${CONFIGURED_LINES[@]}" | helper tools "$dir"
-    printf 'erlang 29.1.1\nelixir 1.20.0\nuv 0.11.23\npython_tokenizer 3.11.15\npython_worker_mlx 3.11.15\n' |
+    printf 'erlang 29.1.1\nelixir 1.20.0\nuv 0.11.23\npython_tokenizer 3.14.10\npython_worker_mlx 3.14.10\n' |
       helper runtime "$dir"
     printf '160010\n' | helper postgres "$dir"
     helper lockfiles "$dir" after
@@ -704,7 +704,7 @@ for line in report.complete=true tests.result=success report.result=success repo
   source.repository=example/orchard source.event=pull_request source.run_attempt=1 \
   runner.image_os=ubuntu24 runner.image_version=20260928.1.0 toolchain.configured.mise=2026.9.2 \
   toolchain.configured.elixir=1.20.0-otp-29 toolchain.configured_count=6 runtime.erlang=29.1.1 \
-  runtime.elixir=1.20.0 runtime.uv=0.11.23 runtime.python_tokenizer=3.11.15 runtime.python_worker_mlx=3.11.15 \
+  runtime.elixir=1.20.0 runtime.uv=0.11.23 runtime.python_tokenizer=3.14.10 runtime.python_worker_mlx=3.14.10 \
   postgres.server_version_num=160010 cache.dialyzer_plt=hit "cache.dialyzer_plt.key_sha256=$key_digest" \
   lockfile.mix_lock.changed=false job.status_at_finalize=success; do
   assert_has "$final/report.txt" "$line"
@@ -881,7 +881,7 @@ EOF
 # consistent and every probed runtime is healthy.
 tool_index=0
 for tool_case in 'mise 2026.9.2' \
-  'mise 2026.9.2|erlang 29.1.1|elixir 1.20.0-otp-29|python 3.11.15|uv 0.11.23' \
+  'mise 2026.9.2|erlang 29.1.1|elixir 1.20.0-otp-29|python 3.14.10|uv 0.11.23' \
   'mise 2026.9.2|erlang 29.1.1|elixir 1.20.0-otp-29|python unknown|uv 0.11.23|node 24.17.0'; do
   tool_index=$((tool_index + 1))
   final="$TMP_ROOT/final-configured-tools-$tool_index"
@@ -1114,11 +1114,11 @@ helper start "$meta"
   printf 'erlang 1.0.0\n'
   printf 'elixir \n'
   printf 'uv 0.11.23 (abc 2026-09-01)\n'
-  printf 'python_tokenizer 3.11.15\n'
+  printf 'python_tokenizer 3.14.10\n'
   printf 'python_worker_mlx /home/runner/.venv/bin/python\n'
   printf 'node 24.17.0\n'
 } | helper runtime "$meta"
-for line in runtime.erlang=29.1.1 runtime.elixir=unknown runtime.uv=unknown runtime.python_tokenizer=3.11.15 \
+for line in runtime.erlang=29.1.1 runtime.elixir=unknown runtime.uv=unknown runtime.python_tokenizer=3.14.10 \
   runtime.python_worker_mlx=unknown; do
   assert_has "$meta/report.staging" "$line"
 done
@@ -1157,7 +1157,7 @@ helper start "$meta"
   printf 'mise 2026.9.2\n'
   printf 'erlang 29.1.1\n'
   printf 'erlang 99.0.0\n'
-  printf 'python-build 3.11.15\n'
+  printf 'python-build 3.14.10\n'
   printf 'bad tool line with spaces 1.0\n'
   printf 'node $(evil)\n'
   printf 'secret postgres://u:p@h/x\n'
@@ -1165,7 +1165,7 @@ helper start "$meta"
   for n in $(seq 1 30); do printf 'tool%s 1.%s\n' "$n" "$n"; done
 } | helper tools "$meta"
 assert_has "$meta/report.staging" 'toolchain.configured.erlang=29.1.1'
-assert_has "$meta/report.staging" 'toolchain.configured.python_build=3.11.15'
+assert_has "$meta/report.staging" 'toolchain.configured.python_build=3.14.10'
 assert_has "$meta/report.staging" 'toolchain.configured_count=16'
 assert_lacks_key "$meta/report.staging" 'toolchain.configured.node'
 assert_lacks_key "$meta/report.staging" 'toolchain.configured.secret'
@@ -1282,13 +1282,13 @@ if [ "$1" = --directory ]; then
   elif [ -e "$2/.venv/bin/python3" ] && [ ! -e "$2/.venv/INCOMPATIBLE" ]; then
     printf '%s/%s/.venv/bin/python3\n' "$(pwd -P)" "$2"
   else
-    printf '/opt/mise/installs/python/3.11.15/bin/python3\n'
+    printf '/opt/mise/installs/python/3.14.10/bin/python3\n'
   fi
   exit 0
 fi
 [ "$1 $2" = "--no-project --show-version" ] || exit 9
 if [ -e "$3" ] && [ -z "${PROBE_VANISH:-}" ]; then
-  printf '3.11.15\n'
+  printf '3.14.10\n'
 else
   printf 'error: No interpreter found at path\n' >&2
   exit 2
@@ -1323,9 +1323,9 @@ while IFS='|' read -r tokenizer_state worker_state extra_env expected_tokenizer 
     fail "Python probe case $probe_index ran an unexpected command"
   fi
 done <<'EOF'
-present|absent||3.11.15|
-absent|present|||3.11.15
-incompatible|present|||3.11.15
+present|absent||3.14.10|
+absent|present|||3.14.10
+incompatible|present|||3.14.10
 present|present|PROBE_FIND_OVERRIDE=/elsewhere/native/orchard_tokenizer/.venv/bin/python3||
 present|present|PROBE_FIND_OVERRIDE=@ROOT@/native/orchard_tokenizer/.venv/bin/../../../../evil/python3||
 present|present|PROBE_VANISH=1||

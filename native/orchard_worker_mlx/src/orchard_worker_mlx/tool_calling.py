@@ -290,7 +290,7 @@ def _normalize_parsed_tool_call(ctx: ToolCallingContext, parsed_call: Any) -> tu
         )
     try:
         encoded = json.dumps(arguments, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise BackendError(
             "tool_call_parse_failed", "provider tool arguments are not valid JSON", False
         ) from None

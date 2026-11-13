@@ -7,7 +7,7 @@ name = "orchard-worker-mlx"
 version = "0.1.0"
 description = "Orchard MLX worker runtime scaffold"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "grpcio>=1.81.1",
   "protobuf>=6.33.5",
@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 100
 exclude = ["src/orchard_worker_mlx/generated"]
 

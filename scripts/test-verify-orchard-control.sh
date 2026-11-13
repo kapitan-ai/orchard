@@ -77,8 +77,8 @@ fi
 [[ ! -e "$legacy_sentinel" ]] || fail "legacy metadata executed as shell code"
 rm -f "$LEGACY_META_FILE"
 
-python_version="$(pinned_python -c 'import sys; print(sys.version_info[:2])')"
-[[ "$python_version" == "(3, 11)" ]] || fail "pinned Python 3.11 was not used"
+python_version="$(pinned_python -c 'import sys; print(sys.version_info[:3])')"
+[[ "$python_version" == "(3, 14, 10)" ]] || fail "pinned Python 3.14.10 was not used"
 
 if grep -q 'python3' "$CONTROL"; then
   fail "control helper still bypasses the pinned Python interpreter"

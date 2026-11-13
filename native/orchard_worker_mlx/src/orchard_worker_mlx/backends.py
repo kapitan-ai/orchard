@@ -1144,7 +1144,7 @@ def decode_metadata(metadata_json: bytes | str | None) -> dict[str, Any]:
             payload = metadata_json
 
         decoded = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    except UnicodeDecodeError, json.JSONDecodeError, ValueError:
         return {}
 
     return decoded if isinstance(decoded, dict) else {}
@@ -1154,7 +1154,7 @@ def safe_int(value: Any, default: int = 0) -> int:
     """Convert *value* to int, returning *default* on failure."""
     try:
         return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

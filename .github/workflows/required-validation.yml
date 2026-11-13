@@ -157,6 +157,10 @@ jobs:
           make setup-elixir
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+          for package in native/orchard_tokenizer native/orchard_worker_mlx; do
+            mise exec -- uv run --locked --directory "$package" python -c \
+              'import os, platform; assert platform.python_version() == os.environ["UV_PYTHON"], platform.python_version()'
+          done
 
       # `mise current` reports the configured toolchain; the runtime probes
       # report what each installed runtime says. Probes never install tools
@@ -354,6 +358,11 @@ jobs:
         run: |
           make setup-elixir
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+          mise exec -- uv sync --locked --directory proto/orchard/worker/tooling
+          for package in native/orchard_worker_mlx proto/orchard/worker/tooling; do
+            mise exec -- uv run --locked --directory "$package" python -c \
+              'import os, platform; assert platform.python_version() == os.environ["UV_PYTHON"], platform.python_version()'
+          done
           mise exec -- mix escript.install hex protobuf 0.16.0 --force
 
       - name: Prepare test database
@@ -466,12 +475,14 @@ jobs:
       - name: Bootstrap MLX environment from lockfile
         run: |
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
+          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx python -c \
+            'import os, platform; assert platform.python_version() == os.environ["UV_PYTHON"], platform.python_version()'
           mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx --help >/dev/null
 
       - name: Validate MLX-LM security baseline
-        run: >-
-          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx
-          pytest
+        run: |
+          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx pytest
+          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx pytest --cov
 
   # Payload, signing-contract, Swift package, relocated-root lifecycle, and
   # packaged orchardctl checks. It never assembles Orchard.app or a DMG.

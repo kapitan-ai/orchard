@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, TypeAlias
+from typing import Final
 
-ContractKey: TypeAlias = tuple[str, str]
-PolicyKey: TypeAlias = tuple[str, str, str | None]
-ContractRegistration: TypeAlias = Mapping[str, object]
-TemplateArgumentValue: TypeAlias = bool | str
+type ContractKey = tuple[str, str]
+type PolicyKey = tuple[str, str, str | None]
+type ContractRegistration = Mapping[str, object]
+type TemplateArgumentValue = bool | str
 
 _IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
     {

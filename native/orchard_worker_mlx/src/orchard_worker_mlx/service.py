@@ -156,7 +156,7 @@ def _valid_status_float(value: Any) -> bool:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
             converted = float(value)
-        except (OverflowError, ValueError):
+        except OverflowError, ValueError:
             return False
 
         return math.isfinite(converted) and converted >= 0.0
@@ -357,7 +357,7 @@ def _capabilities_status_response(
             service_incarnation=_status_string(capabilities.get("service_incarnation")),
             profiles=[_capability_profile_response(profile) for profile in profiles],
         )
-    except (_MalformedCapabilities, ValueError, TypeError, UnicodeError):
+    except _MalformedCapabilities, ValueError, TypeError, UnicodeError:
         return _malformed_capabilities()
 
 
@@ -1136,7 +1136,7 @@ def _derive_server_max_workers(generation_config: Any | None) -> int:
                 concurrency = int(getattr(generation_config, "auto_max_concurrent_generations", 1))
             else:
                 concurrency = int(configured)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             concurrency = 1
 
     concurrency = max(1, concurrency)
