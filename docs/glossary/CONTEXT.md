@@ -949,7 +949,7 @@ A `release` channel distribution for which at least one required publication sur
 _Avoid_: Published Release, Draft, failed build
 
 **Delivered Distribution**:
-A channel distribution whose required record and recipient-delivery conditions are complete for the exact approved bytes, without representing a Published Release; record-only GitHub records reference those bytes rather than hosting them.
+A channel distribution whose required record, delivery-surface, or recipient-delivery conditions are complete for the exact approved bytes, without representing a Published Release; record-only GitHub records reference those bytes rather than hosting them.
 _Avoid_: Published Release, partial delivery, build completion
 
 **Published Release**:

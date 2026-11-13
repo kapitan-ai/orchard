@@ -190,7 +190,7 @@ An unselected delivery surface SHALL NOT be treated as optional or satisfied, an
 #### Scenario: Delivery surface cannot enforce a restricted audience
 
 - **WHEN** live capability checks cannot prove the audience restriction required by `trial`
-- **THEN** the affected publication lane remains disabled until an alternative surface is selected through an accepted OpenSpec change
+- **THEN** the affected delivery lane remains disabled until an alternative surface is selected through an accepted OpenSpec change
 
 ### Requirement: Governed Artifacts Are Promoted Without Mutation
 
@@ -300,7 +300,8 @@ Retargeting after any live transition SHALL require withdrawal and a new Product
 Any changed digest, channel, artifact requirement, or compatibility declaration SHALL revoke approval automatically.
 The GitHub Release SHALL become non-draft only after delivery-surface live verification succeeds for the same approved candidate.
 
-Signed, notarized, or restricted-channel Candidate or Internal Build bytes SHALL NOT enter workflow artifacts, caches, logs, job summaries, or any other store readable by the repository's general audience.
+Signed, notarized, or restricted-channel (`trial`) Candidate or Internal Build bytes SHALL NOT enter workflow artifacts, caches, logs, job summaries, or any other store readable by the repository's general audience.
+Until the delivery-surface selection change provides the inter-job byte store, trial Candidate construction and any signed or notarized byte handoff SHALL fail closed because they have no permitted store.
 Implementation SHALL prove availability of every proposed GitHub protection for the repository's current visibility and plan before claiming it.
 If protected reviewers are unavailable, Orchard SHALL require the signed-approval fallback and separately controlled credential custody.
 Unavailable immutable Releases or artifact attestations SHALL NOT block a correctly configured fallback, but Orchard SHALL NOT claim platform-enforced immutability or attestation when the feature is unavailable.

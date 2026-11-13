@@ -17,7 +17,7 @@ Active development now needs release-boundary SemVer and immutable build provena
 - Add separate normal-validation and tag-triggered release gates, including exact-commit evidence, credential boundaries, owner approval boundaries, and fail-closed publication behavior.
 - Replace the undefined use of controller and node version `N` and `N-1` with an explicitly enumerated Current Release Line and Previous Supported Release Line rather than allowing current implementation arithmetic to become policy silently.
 - Keep the current product version unchanged and create no tags, releases, or distribution artifacts in this change.
-- Narrow Release Channels to `internal`, `trial`, and `release`, make GitHub records record-only, and keep signed, notarized, or restricted-channel Candidate or Internal Build bytes out of general-audience-readable stores under accepted ADR 0044.
+- Narrow Release Channels to `internal`, `trial`, and `release`, make GitHub records record-only, and keep signed, notarized, or restricted-channel (`trial`) Candidate or Internal Build bytes out of general-audience-readable stores under accepted ADR 0044.
 
 ## Capabilities
 

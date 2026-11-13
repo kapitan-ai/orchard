@@ -33,9 +33,9 @@ ADR 0044 amends decision 1.4 and ADR 0043's channel references: the channels are
 This follow-up amends the still-active change in place, preserving its task numbering and approval history.
 No `SPEC.md` change is made now. The following §11.3 sentence is held for task 2.1:
 
-> A GitHub release record for an audience-restricted Release Channel SHALL NOT carry installable bytes.
+> No GitHub release record SHALL carry installable bytes until an accepted OpenSpec change amends the single-delivery-surface rule; bytes on a `release` record additionally require the `SPEC.md` §11 public-binary decision.
 
-The delivery-surface selection change (task 1.11) will address record-projection digest approval, the unsafe-record rule, prerelease and Latest validation, the audited inter-job byte store, capability re-reads at transition time, and deferred tasks 5.3.1, 5.6.1, 5.7.1, 5.8.1, 5.9.1 and 5.9.2.
+The delivery-surface selection change (task 1.11) will address record-projection digest approval, record-content rules (no bearer or access-bypass links), unsafe-record observation, prerelease/Latest validation, redirect and token-leakage audience checks, the audited inter-job byte store, capability re-reads at transition time, and their failure-path tests.
 
 ## Goals / Non-Goals
 
@@ -251,7 +251,8 @@ The SBOM supplements and does not replace exact artifact and tree identities.
 Normal pull-request and `main` CI validates Product Version authority, transition rules, first-party BEAM agreement, packaging mappings, glossary and OpenSpec consistency, and affected tests with read-only repository permissions.
 Candidate validation reads source and validation evidence but has no release credentials.
 Candidate construction may write only ephemeral workflow artifacts.
-Signed, notarized, or restricted-channel Candidate or Internal Build bytes must never enter workflow artifacts, caches, logs, job summaries, or any other store readable by the repository's general audience.
+Signed, notarized, or restricted-channel (`trial`) Candidate or Internal Build bytes must never enter workflow artifacts, caches, logs, job summaries, or any other store readable by the repository's general audience.
+Until task 1.11 provides the inter-job byte store, trial Candidate construction and any signed or notarized byte handoff have no permitted store and fail closed.
 Apple build-number allocation, Apple signing and notarization, GitHub drafting, delivery-surface staging, publication approval, delivery-surface publication, and GitHub publication use separate jobs and narrowly scoped credentials.
 Signing, delivery-surface publication, and GitHub publication credentials do not coexist in one job.
 
