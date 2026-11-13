@@ -7,14 +7,11 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     EnsureModelLoadedRequest,
     EnsureModelLoadedResponse,
     NodeRuntimeService,
-    NodeWorkerRecoveryService,
     StatusRequest,
     WorkerRecoveryCommand,
     WorkerRecoveryKey,
     WorkerRecoveryResult
   }
-
-  alias Orchard.Dispatch.GrpcNodeRuntimeClient
 
   alias Orchard.Node.{
     RuntimeServer,
@@ -483,27 +480,27 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
 
     {:ok, identity} = RuntimeTLS.load_registered_identity(identity_root)
 
-    anonymous =
-      GRPC.Credential.new(
-        ssl: [
-          cacertfile: identity.cacertfile,
-          verify: :verify_peer,
-          server_name_indication: :disable,
-          verify_fun: PeerVerifier.new(identity.node_uri_san)
-        ]
-      )
+    for {version, alert} <- ["tlsv1.3": :certificate_required] do
+      anonymous = [
+        cacertfile: identity.cacertfile,
+        verify: :verify_peer,
+        server_name_indication: :disable,
+        verify_fun: PeerVerifier.new(identity.node_uri_san),
+        versions: [version],
+        active: true
+      ]
 
-    {:ok, anonymous_channel} =
-      GrpcNodeRuntimeClient.connect(target.address, cred: anonymous)
+      # TLS 1.3 can finish the client handshake before the server rejects its missing
+      # certificate. Assert that rejection, not whether Gun manages to open a channel first.
+      case :ssl.connect(~c"127.0.0.1", opts[:port], anonymous, 2_000) do
+        {:ok, socket} ->
+          on_exit(fn -> :ssl.close(socket) end)
+          assert_receive {:ssl_error, ^socket, {:tls_alert, {^alert, _}}}, 2_000
 
-    on_exit(fn -> GRPC.Stub.disconnect(anonymous_channel) end)
-
-    assert {:error, _} =
-             NodeWorkerRecoveryService.Stub.inspect_worker_recovery_placement(
-               anonymous_channel,
-               key(),
-               timeout: 500
-             )
+        {:error, reason} ->
+          assert {:tls_alert, {^alert, _}} = reason
+      end
+    end
 
     refute_received {:inspect, _, _}
 
