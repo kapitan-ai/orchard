@@ -647,9 +647,10 @@ during `ModelRenderAssets` request preparation, bundle build/import validation,
 and manifest reparsing by `ResidentMemoryBackfill`. This boundary limits what
 the helper inherits; it is not containment. The helper runs as the Controller's
 OS user, so template code that escapes the Jinja sandbox can still read that
-user's files and process state, including the Controller's own environment,
-write outside its working directory, start programs and use the network. This
-contract revision provides no OS-level containment; see ADR 0045.
+user's files and process metadata, such as the Controller's environment (and
+its memory where same-user tracing is permitted), write outside its working
+directory, start programs and use the network. The renderer has no OS-level
+containment; see ADR 0045.
 
 Implementation requirement:
 

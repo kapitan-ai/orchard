@@ -20,5 +20,5 @@ rendering and preflight launches, the tokenizer wrapper and tests. OS network/wr
 denial, broader resource limits and OS containment at every render site (including
 CLI/dev harnesses) are follow-up work, not delivered guarantees. The boundary
 limits inheritance only: template code that escapes the Jinja sandbox can still
-read same-user files and process state, including the Controller's environment.
+read same-user files and process metadata, such as the Controller's environment.
 No public API, model support claim or qualification gate changes.

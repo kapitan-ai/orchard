@@ -25,9 +25,10 @@ boundary.
 Under SPEC.md §§3.5 and 6.4, import validation and qualification SHALL NOT be
 represented as a template safety review. The process/environment boundary limits
 what the helper inherits and is not containment: template code that escapes the
-Jinja sandbox can still read same-user files and process state, including the
-Controller's environment, write outside its working directory, start programs and
-use the network; see ADR 0045.
+Jinja sandbox can still read same-user files and process metadata, such as the
+Controller's environment (and its memory where same-user tracing is permitted),
+write outside its working directory, start programs and use the network; see
+ADR 0045.
 
 #### Scenario: Validated or qualified bundle
 - **WHEN** a bundle passes import validation or qualification

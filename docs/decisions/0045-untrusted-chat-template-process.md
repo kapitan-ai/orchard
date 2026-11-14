@@ -68,8 +68,9 @@ Controller request-time launch paths and remain outside this step.
 
 This limits what the helper inherits; it is not containment. The helper still
 runs as the Controller's OS user, so template code that escapes the Jinja sandbox
-can still read that user's files and process state, including the Controller's
-own environment (for example through `/proc` on Linux), write outside its working
+can still read that user's files and process metadata, such as the Controller's
+environment (for example through `/proc` on Linux) and its memory where same-user
+tracing is permitted, write outside its working
 directory, start programs and use the network. HOME/cwd isolation is not
 filesystem denial. Absolute installation and asset paths remain necessary
 inputs, not a capability boundary. The direct virtualenv is the normal path;
@@ -94,9 +95,11 @@ qualification, not a binding guarantee delivered by this change. Comprehensive
 CPU/memory limits, stronger termination/reaping, OS containment at every render
 site (including CLI/dev harnesses), a read-only filesystem, denial of same-user
 process inspection and child-process prohibition are not delivered here.
-The process and environment boundary is a second layer against inheritance only;
-until OS containment is delivered, the Jinja sandbox remains the only barrier
-against template code execution. No new
+The separate process is the second layer required by SPEC.md §3.5: it keeps
+template code out of the Controller's address space and open connections and
+limits what the helper inherits. It does not stop an escaped template from using
+the Controller user's files, environment or network until OS containment is
+delivered. No new
 service, VM, model-admission gate or support claim is introduced.
 
 ## SPEC.md impact
