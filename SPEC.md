@@ -633,6 +633,25 @@ Tooling contract rules:
 
 The controller SHALL perform **exact prompt rendering and exact token counting before scheduling**.
 
+Chat templates SHALL be treated as untrusted executable input. The Jinja sandbox
+is defence in depth and MUST NOT be the only boundary. The Controller's
+request-time and preflight renderers SHALL run out of process with a minimal
+explicitly allow-listed environment, no inherited environment credentials, and
+an initially empty private working directory rather than the Controller's cwd.
+Import validation and qualification are not a template safety review and SHALL
+NOT change this trust classification; digest binding proves identity, not safety.
+
+This boundary covers `Orchard.Tokenizer.Client` and
+`Orchard.Models.SafeTokenizationPreflight`, including tool-capability renders
+during `ModelRenderAssets` request preparation, bundle build/import validation,
+and manifest reparsing by `ResidentMemoryBackfill`. This boundary limits what
+the helper inherits; it is not containment. The helper runs as the Controller's
+OS user, so template code that escapes the Jinja sandbox can still read that
+user's files and process metadata, such as the Controller's environment (and
+its memory where same-user tracing is permitted), write outside its working
+directory, start programs and use the network. The renderer has no OS-level
+containment; see ADR 0045.
+
 Implementation requirement:
 
 * bundle a helper executable `orchard-tokenizer`
@@ -2098,6 +2117,10 @@ State meanings:
 * `failed`: most recent placement transition failed
 
 ### 6.4 Model bundle format
+
+Chat-template trust and the renderer process boundary are governed by §3.5.
+Neither bundle import validation nor manual qualification is a template safety
+review or a reason to treat template code as trusted.
 
 The target model contract SHALL represent artifact format independently from compatible runtime providers, acceleration implementations, and device-resource requirements.
 An artifact MAY declare more than one compatible provider or acceleration requirement set.

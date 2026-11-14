@@ -15,8 +15,7 @@ defmodule Orchard.Tokenizer.Client do
     CallerStrings,
     CompatibilityCache,
     ControlTokenDetector,
-    HelperOutputCollector,
-    HelperRequestTransport,
+    HelperProcess,
     Telemetry
   }
 
@@ -882,52 +881,21 @@ defmodule Orchard.Tokenizer.Client do
        when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
               timeout_ms > 0 and is_integer(max_stdout_bytes) and max_stdout_bytes > 0 and
               is_list(helper_env) do
-    HelperRequestTransport.with_secure_request_file(
+    HelperProcess.run(
       "orchard-tokenizer-request",
+      executable_path,
       request_json,
-      fn request_path ->
-        port =
-          Port.open(
-            {:spawn_executable, ~c"/bin/sh"},
-            [
-              :binary,
-              :exit_status,
-              :use_stdio,
-              {:args,
-               [
-                 "-c",
-                 ~s(exec "$1" < "$2"),
-                 "orchard-tokenizer-port",
-                 executable_path,
-                 request_path
-               ]}
-            ] ++ port_env_options(helper_env)
-          )
-
-        HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes)
-      end
+      timeout_ms,
+      max_stdout_bytes,
+      helper_env
     )
     |> map_request_transport_failure()
-  rescue
-    ArgumentError ->
-      {:error, :unavailable}
   end
 
   defp map_request_transport_failure({:error, {:request_transport_failed, _reason}}),
     do: {:error, :unavailable}
 
   defp map_request_transport_failure(result), do: result
-
-  defp port_env_options([]), do: []
-
-  defp port_env_options(helper_env) do
-    env =
-      Enum.map(helper_env, fn {key, value} ->
-        {String.to_charlist(key), String.to_charlist(value)}
-      end)
-
-    [{:env, env}]
-  end
 
   defp decode_response(response_json) when is_binary(response_json) do
     case Jason.decode(response_json) do

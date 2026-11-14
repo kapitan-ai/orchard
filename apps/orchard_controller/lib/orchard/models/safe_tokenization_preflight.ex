@@ -1,9 +1,9 @@
 defmodule Orchard.Models.SafeTokenizationPreflight do
   @moduledoc """
-  Runs bundle-build/import-time safe-tokenization compatibility preflight.
+  Runs safe-tokenization and tool-capability preflight for bundle and request preparation.
   """
 
-  alias Orchard.Tokenizer.{HelperOutputCollector, HelperRequestTransport}
+  alias Orchard.Tokenizer.HelperProcess
 
   @contract_version 3
   @default_timeout_ms 60_000
@@ -361,41 +361,13 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   defp run_helper(executable_path, request_json, timeout_ms)
        when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
               timeout_ms > 0 do
-    HelperRequestTransport.with_secure_request_file(
+    HelperProcess.run(
       "orchard-tokenizer-preflight",
+      executable_path,
       request_json,
-      fn request_path ->
-        case open_helper_port(executable_path, request_path) do
-          {:ok, port} ->
-            HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes())
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-      end
+      timeout_ms,
+      max_stdout_bytes()
     )
-  end
-
-  defp open_helper_port(executable_path, request_path) do
-    {:ok,
-     Port.open(
-       {:spawn_executable, ~c"/bin/sh"},
-       [
-         :binary,
-         :exit_status,
-         :use_stdio,
-         {:args,
-          [
-            "-c",
-            ~s(exec "$1" < "$2"),
-            "orchard-tokenizer-preflight",
-            executable_path,
-            request_path
-          ]}
-       ]
-     )}
-  rescue
-    _error in [ArgumentError] -> {:error, :unavailable}
   end
 
   defp decode_response(response_json) when is_binary(response_json) do

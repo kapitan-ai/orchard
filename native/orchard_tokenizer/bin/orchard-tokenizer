@@ -21,8 +21,7 @@ for uv_candidate in \
     "/usr/local/bin/uv" \
     "${HOME:-}/.local/bin/uv"; do
     if [ -n "$uv_candidate" ] && [ -x "$uv_candidate" ]; then
-        cd "$PACKAGE_DIR"
-        exec "$uv_candidate" run orchard-tokenizer "$@"
+        exec "$uv_candidate" run --project "$PACKAGE_DIR" orchard-tokenizer "$@"
     fi
 done
 
