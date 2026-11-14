@@ -44,6 +44,12 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     def get_cert(der), do: der
   end
 
+  defmodule RuntimeTLSEndpoint do
+    use GRPC.Endpoint
+
+    run(Orchard.Node.RuntimeServer)
+  end
+
   defmodule Manager do
     def inspect_worker_recovery(model, version) do
       send(
@@ -380,7 +386,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
   test "SPEC §12.2 combined gRPC mode keeps the ordinary inference listener credential", %{
     material: material
   } do
-    {identity_root, _credential} = registered_identity!(material)
+    {identity_root, credential} = registered_identity!(material)
     {:ok, identity} = RuntimeTLS.load_registered_identity(identity_root)
     runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
@@ -401,6 +407,15 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     opts = NodeSupervisor.grpc_server_opts()
     assert opts[:endpoint] == NodeEndpoint
     assert opts[:adapter_opts][:cred]
+
+    start_supervised!({GRPC.Server.Supervisor, Keyword.put(opts, :endpoint, RuntimeTLSEndpoint)})
+    assert_tls13_only!(opts[:port], credential)
+
+    {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{opts[:port]}", cred: credential)
+    on_exit(fn -> GRPC.Stub.disconnect(channel) end)
+
+    assert {:ok, %Orchard.Cluster.V1.StatusResponse{}} =
+             NodeRuntimeService.Stub.get_status(channel, %StatusRequest{}, timeout: 2_000)
   end
 
   test "SPEC §12.2 BEAM mode starts a recovery-only pinned TLS listener", %{material: material} do
@@ -430,6 +445,8 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
 
     assert [_server] =
              DynamicSupervisor.which_children(:sys.get_state(listener).server_supervisor)
+
+    assert_tls13_only!(opts[:port], credential)
 
     {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{opts[:port]}", cred: credential)
     on_exit(fn -> GRPC.Stub.disconnect(channel) end)
@@ -954,6 +971,27 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       )
 
     {root, credential}
+  end
+
+  # SPEC.md §10.6: probe the actual listeners, not just their option builders.
+  defp assert_tls13_only!(port, credential) do
+    options = credential.ssl ++ [active: false, alpn_advertised_protocols: ["h2"]]
+
+    assert {:error, {:tls_alert, {:protocol_version, _}}} =
+             :ssl.connect(
+               ~c"127.0.0.1",
+               port,
+               Keyword.put(options, :versions, [:"tlsv1.2"]),
+               2_000
+             )
+
+    assert {:ok, socket} = :ssl.connect(~c"127.0.0.1", port, options, 2_000)
+
+    try do
+      assert {:ok, [protocol: :"tlsv1.3"]} = :ssl.connection_information(socket, [:protocol])
+    after
+      :ssl.close(socket)
+    end
   end
 
   defp write_private!(path, content) do
