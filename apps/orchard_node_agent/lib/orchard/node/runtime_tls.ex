@@ -97,6 +97,7 @@ defmodule Orchard.Node.RuntimeTLS do
         certfile: identity.certfile,
         keyfile: identity.keyfile,
         cacertfile: identity.cacertfile,
+        versions: [:"tlsv1.3"],
         verify: :verify_peer,
         fail_if_no_peer_cert: true,
         verify_fun: PeerVerifier.new(identity.controller_uri_san)
