@@ -961,7 +961,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
           certfile: identity.controller_certfile,
           keyfile: controller_key,
           cacertfile: identity.cacertfile,
-          versions: [:"tlsv1.3"],
           verify: :verify_peer,
           server_name_indication: :disable,
           verify_fun:
