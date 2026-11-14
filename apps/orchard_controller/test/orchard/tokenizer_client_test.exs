@@ -165,10 +165,20 @@ defmodule Orchard.Tokenizer.ClientTest do
 
     tokenize_with_probe(executable)
 
-    [secret, pythonpath, index_url, database_url | _rest] =
-      String.split(File.read!(probe_file), "\n")
+    [secret, pythonpath, index_url, database_url, _cwd, _home, _mode, _entries, _python | env] =
+      String.split(File.read!(probe_file), "\n", trim: true)
 
     assert [secret, pythonpath, index_url, database_url] == List.duplicate("unset", 4)
+
+    environment = Map.new(env, &(String.split(&1, "=", parts: 2) |> List.to_tuple()))
+
+    allowed =
+      MapSet.new(
+        ~w(PATH HOME UV_PYTHON UV_NO_MANAGED_PYTHON ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT PWD SHLVL _)
+      )
+
+    assert MapSet.subset?(MapSet.new(Map.keys(environment)), allowed)
+    assert String.split(environment["PATH"], ":") |> Enum.take(2) == ["/usr/bin", "/bin"]
   end
 
   test "SPEC 3.5 renderer starts in an empty private working directory and cleans it up" do
@@ -198,14 +208,13 @@ defmodule Orchard.Tokenizer.ClientTest do
     previous_path = System.get_env("PATH")
     previous_python = System.get_env("UV_PYTHON")
 
-    for name <- ["python3", "python7.8"] do
+    for name <- ["python3", "python7.8", "uv", "env"] do
       path = Path.join(tools, name)
       File.write!(path, "#!/bin/sh\nexit 99\n")
       File.chmod!(path, 0o755)
     end
 
     System.put_env("PATH", tools <> ":" <> previous_path)
-    System.put_env("UV_PYTHON", "7.8.9")
 
     on_exit(fn ->
       System.put_env("PATH", previous_path)
@@ -219,10 +228,13 @@ defmodule Orchard.Tokenizer.ClientTest do
       File.rm_rf!(tools)
     end)
 
-    tokenize_with_probe(executable)
+    for version <- ["7.8.9", "7.8", "cpython@7.8"] do
+      System.put_env("UV_PYTHON", version)
+      tokenize_with_probe(executable)
 
-    assert File.read!(probe_file) |> String.split("\n") |> Enum.at(8) ==
-             Path.join(tools, "python7.8")
+      assert File.read!(probe_file) |> String.split("\n") |> Enum.at(8) ==
+               Path.join(tools, "python7.8")
+    end
   end
 
   test "port mode render_and_count request stays on contract v2" do
@@ -2729,66 +2741,87 @@ defmodule Orchard.Tokenizer.ClientTest do
 
   test "port mode returns timeout when the executable does not finish in time" do
     slow_executable = write_sleeping_executable!()
+    tmp_root = unique_tmp_root!("orchard-tokenizer-timeout")
 
     on_exit(fn ->
       File.rm(slow_executable)
+      File.rm_rf!(tmp_root)
     end)
 
-    with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: slow_executable], fn ->
-      assert {:error, :timeout} =
-               Client.tokenize(canonical_request(),
-                 manifest: huggingface_manifest(),
-                 bundle_root: huggingface_fixture_root(),
-                 timeout_ms: 25
-               )
+    with_system_tmpdir(tmp_root, fn ->
+      with_inference_overrides(
+        [tokenizer_mode: :port, tokenizer_executable: slow_executable],
+        fn ->
+          assert {:error, :timeout} =
+                   Client.tokenize(canonical_request(),
+                     manifest: huggingface_manifest(),
+                     bundle_root: huggingface_fixture_root(),
+                     timeout_ms: 25
+                   )
+        end
+      )
     end)
+
+    assert File.ls!(tmp_root) == []
   end
 
   test "port mode helper timeout is an absolute deadline" do
     dribbling_executable = write_dribbling_runtime_stdout_executable!()
+    tmp_root = unique_tmp_root!("orchard-tokenizer-deadline")
 
     on_exit(fn ->
       File.rm(dribbling_executable)
+      File.rm_rf!(tmp_root)
     end)
 
-    with_inference_overrides(
-      [tokenizer_mode: :port, tokenizer_executable: dribbling_executable],
-      fn ->
-        {elapsed_us, result} =
-          :timer.tc(fn ->
-            Client.tokenize(canonical_request(),
-              manifest: huggingface_manifest(),
-              bundle_root: huggingface_fixture_root(),
-              bundle_sha256: trusted_bundle_sha256(),
-              timeout_ms: 200
-            )
-          end)
+    with_system_tmpdir(tmp_root, fn ->
+      with_inference_overrides(
+        [tokenizer_mode: :port, tokenizer_executable: dribbling_executable],
+        fn ->
+          {elapsed_us, result} =
+            :timer.tc(fn ->
+              Client.tokenize(canonical_request(),
+                manifest: huggingface_manifest(),
+                bundle_root: huggingface_fixture_root(),
+                bundle_sha256: trusted_bundle_sha256(),
+                timeout_ms: 200
+              )
+            end)
 
-        assert {:error, :timeout} = result
-        assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 800
-      end
-    )
+          assert {:error, :timeout} = result
+          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 800
+        end
+      )
+    end)
+
+    assert File.ls!(tmp_root) == []
   end
 
   test "port mode helper stdout is cumulatively capped" do
     oversized_executable = write_oversized_runtime_stdout_executable!()
+    tmp_root = unique_tmp_root!("orchard-tokenizer-stdout-cap")
 
     on_exit(fn ->
       File.rm(oversized_executable)
+      File.rm_rf!(tmp_root)
     end)
 
-    with_inference_overrides(
-      [tokenizer_mode: :port, tokenizer_executable: oversized_executable],
-      fn ->
-        assert {:error, {:stdout_too_large, 64}} =
-                 Client.tokenize(canonical_request(),
-                   manifest: huggingface_manifest(),
-                   bundle_root: huggingface_fixture_root(),
-                   bundle_sha256: trusted_bundle_sha256(),
-                   max_stdout_bytes: 64
-                 )
-      end
-    )
+    with_system_tmpdir(tmp_root, fn ->
+      with_inference_overrides(
+        [tokenizer_mode: :port, tokenizer_executable: oversized_executable],
+        fn ->
+          assert {:error, {:stdout_too_large, 64}} =
+                   Client.tokenize(canonical_request(),
+                     manifest: huggingface_manifest(),
+                     bundle_root: huggingface_fixture_root(),
+                     bundle_sha256: trusted_bundle_sha256(),
+                     max_stdout_bytes: 64
+                   )
+        end
+      )
+    end)
+
+    assert File.ls!(tmp_root) == []
   end
 
   test "port mode returns missing_assets when manifest tokenizer metadata is incomplete" do
@@ -3320,6 +3353,9 @@ defmodule Orchard.Tokenizer.ClientTest do
         }
       })
 
+    File.write!(probe_file, "")
+    File.chmod!(probe_file, 0o600)
+
     File.write!(script_path, """
     #!/bin/sh
     set -eu
@@ -3329,6 +3365,7 @@ defmodule Orchard.Tokenizer.ClientTest do
     printf '%s\\n' "${ORCHARD_RENDERER_TEST_SECRET-unset}" "${PYTHONPATH-unset}" \\
       "${UV_INDEX_URL-unset}" "${DATABASE_URL-unset}" "$(pwd -P)" "$(cd "$HOME" && pwd -P)" \\
       "$mode" "$entries" "${UV_PYTHON-unset}" > "#{probe_file}"
+    env >> "#{probe_file}"
     printf '%s\\n' '#{response}'
     """)
 

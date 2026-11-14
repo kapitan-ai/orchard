@@ -1,28 +1,30 @@
 ## ADDED Requirements
 
-### Requirement: Request-time template process boundary
+### Requirement: Template process boundary
 
 Under SPEC.md §3.5, chat templates SHALL be treated as untrusted executable input.
-The request-time Controller renderer SHALL execute out of process with a minimal
-explicit environment, no inherited credentials and an initially empty private
-working directory. The Jinja sandbox MUST NOT be the only boundary.
+The Controller's request-time and preflight renderers SHALL execute out of process
+with a minimal explicit environment, no inherited environment credentials and an
+initially empty private working directory. The Jinja sandbox MUST NOT be the only
+boundary.
 
 #### Scenario: Controller environment contains credentials
-- **WHEN** the Controller renders with a secret or Python/uv override in its environment
-- **THEN** the request-time helper cannot observe that inherited variable
+- **WHEN** the Controller renders or preflights with a secret or Python/uv override in its environment
+- **THEN** the helper environment contains only the explicit allow-list and no inherited environment credentials
 - **AND** Controller-derived rendering flags still reach the helper
 
 #### Scenario: Renderer launch and cleanup
-- **WHEN** the request-time helper starts
+- **WHEN** the request-time or preflight helper starts
 - **THEN** its cwd is an empty owner-only directory rather than the Controller cwd
-- **AND** that directory is cleaned up after collection, including timeout/output failure
+- **AND** the Controller attempts removal of the private transport tree after collection, including timeout/output failure
+- **AND** this best-effort cleanup does not guarantee that a still-running helper or its descendants cannot recreate files
 - **AND** the existing timeout and cumulative stdout cap remain in force
 
 ### Requirement: Validation is not a safety review
 
 Under SPEC.md §§3.5 and 6.4, import validation and qualification SHALL NOT be
-represented as a template safety review. OS sandbox network/write denial is
-planned follow-up work, not a guarantee of this change.
+represented as a template safety review. The process/environment boundary does
+not deny same-user filesystem or network access; see ADR 0045.
 
 #### Scenario: Validated or qualified bundle
 - **WHEN** a bundle passes import validation or qualification

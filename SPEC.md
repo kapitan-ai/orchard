@@ -635,16 +635,17 @@ The controller SHALL perform **exact prompt rendering and exact token counting b
 
 Chat templates SHALL be treated as untrusted executable input. The Jinja sandbox
 is defence in depth and MUST NOT be the only boundary. The Controller's
-request-time renderer SHALL run out of process with a minimal explicitly
-allow-listed environment, no inherited credentials, and an initially empty
-private working directory rather than the Controller's working directory.
+request-time and preflight renderers SHALL run out of process with a minimal
+explicitly allow-listed environment, no inherited environment credentials, and
+an initially empty private working directory rather than the Controller's cwd.
 Import validation and qualification are not a template safety review and SHALL
 NOT change this trust classification; digest binding proves identity, not safety.
 
-The current process/environment boundary does not deny filesystem or network
-access under the Controller's OS user. OS sandbox network/write denial is planned
-follow-up work, not a guarantee of this contract revision; see ADR 0045.
-Import/preflight render launches are outside this request-time boundary.
+This boundary covers `Orchard.Tokenizer.Client` and
+`Orchard.Models.SafeTokenizationPreflight`, including tool-capability renders
+during `ModelRenderAssets` request preparation, bundle build/import validation,
+and manifest reparsing by `ResidentMemoryBackfill`. It does not deny filesystem
+or network access under the Controller's OS user; see ADR 0045.
 
 Implementation requirement:
 
@@ -2112,7 +2113,7 @@ State meanings:
 
 ### 6.4 Model bundle format
 
-Chat-template trust and the request-time renderer boundary are governed by §3.5.
+Chat-template trust and the renderer process boundary are governed by §3.5.
 Neither bundle import validation nor manual qualification is a template safety
 review or a reason to treat template code as trusted.
 

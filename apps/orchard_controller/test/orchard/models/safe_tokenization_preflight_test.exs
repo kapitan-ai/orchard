@@ -1,7 +1,7 @@
 defmodule Orchard.Models.SafeTokenizationPreflightTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Models.SafeTokenizationPreflight
+  alias Orchard.Models.{Model, ModelRenderAssets, SafeTokenizationPreflight}
 
   setup do
     tmp_dir =
@@ -9,10 +9,103 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
       |> Path.join("safe_tokenization_preflight_test_#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(tmp_dir)
+    File.chmod!(tmp_dir, 0o700)
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
     %{tmp_dir: tmp_dir}
+  end
+
+  test "SPEC 3.5 request preparation isolates tool-capability renders", %{tmp_dir: tmp_dir} do
+    bundle = Path.join(tmp_dir, "bundle")
+    File.cp_r!(Path.expand("../../fixtures/bundles/test-model-bundle", __DIR__), bundle)
+    config = ~s({"tool_parser_type":"qwen2"})
+    template = "{{ messages }}"
+    digest = fn bytes -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower) end
+    File.write!(Path.join(bundle, "tokenizer_config.json"), config)
+    File.write!(Path.join(bundle, "chat_template.jinja"), template)
+    manifest_path = Path.join(bundle, "manifest.json")
+
+    manifest =
+      manifest_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.put("capabilities", ["chat", "tool_calling"])
+      |> put_in(["chat_template", "sha256"], digest.(template))
+
+    File.write!(manifest_path, Jason.encode!(manifest))
+
+    File.write!(
+      Path.join(bundle, "tool_capability_evidence.json"),
+      Jason.encode!(%{
+        "tool_calling" => %{
+          "source_repository" => "test-org/tiny-llm",
+          "source_revision" => "0123456789abcdef",
+          "base_model_refs" => [],
+          "tokenizer_config_sha256" => digest.(config),
+          "chat_template_sha256" => digest.(template),
+          "tool_parser_type" => "qwen2",
+          "preflight" => %{
+            "parser_recognized" => true,
+            "definition_rendered" => true,
+            "history_rendered" => true
+          },
+          "result" => "declared",
+          "runtime_qualification" => "not_established"
+        }
+      })
+    )
+
+    probe = Path.join(tmp_dir, "launch.txt")
+
+    helper =
+      write_executable!(tmp_dir, "preparation-probe", """
+      #!/bin/sh
+      set -eu
+      cat >/dev/null
+      mode=$(stat -c '%a' . 2>/dev/null || stat -f '%Lp' .)
+      entries=$(find . ! -name . -prune | wc -l | tr -d ' ')
+      printf '%s\\n' "${ORCHARD_RENDERER_TEST_SECRET-unset}" "$(pwd -P)" "$(cd "$HOME" && pwd -P)" \\
+        "$mode" "$entries" > "#{probe}"
+      env > "#{probe}.env"
+      printf '%s\\n' '{"contract_version":3,"ok":true,"result":{"parser_recognized":true,"definition_rendered":true,"history_rendered":true}}'
+      """)
+
+    previous_secret = System.get_env("ORCHARD_RENDERER_TEST_SECRET")
+    System.put_env("ORCHARD_RENDERER_TEST_SECRET", "preparation-sentinel-secret")
+
+    on_exit(fn ->
+      if previous_secret,
+        do: System.put_env("ORCHARD_RENDERER_TEST_SECRET", previous_secret),
+        else: System.delete_env("ORCHARD_RENDERER_TEST_SECRET")
+    end)
+
+    with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: helper], fn ->
+      model = %Model{artifact_uri: bundle, artifact_sha256: String.duplicate("a", 64)}
+      assert {:ok, opts} = ModelRenderAssets.load(model)
+      assert "tool_calling" in opts[:manifest].capabilities
+    end)
+
+    [secret, cwd, home, mode, entries | _rest] = String.split(File.read!(probe), "\n")
+    assert {secret, Path.basename(cwd)} == {"unset", "work"}
+    assert Path.basename(Path.dirname(cwd)) =~ "orchard-tokenizer-preflight-"
+    assert Path.expand(home) == cwd
+    assert mode == "700"
+    assert entries == "0"
+    refute File.exists?(cwd)
+
+    keys =
+      (probe <> ".env")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> MapSet.new(&(String.split(&1, "=", parts: 2) |> hd()))
+
+    allowed =
+      MapSet.new(
+        ~w(PATH HOME UV_PYTHON UV_NO_MANAGED_PYTHON ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT PWD SHLVL _)
+      )
+
+    assert MapSet.subset?(keys, allowed)
   end
 
   test "compatible verdict returns compatible tuple", %{tmp_dir: tmp_dir} do
@@ -661,7 +754,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
     set -eu
     transport_dir=""
 
-    for candidate in "${TMPDIR:-/tmp}"/orchard-tokenizer-preflight-*; do
+    for candidate in "#{dir}"/orchard-tokenizer-preflight-*; do
       if [ -d "$candidate" ]; then
         transport_dir="$candidate"
         break
@@ -701,7 +794,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
     set -eu
     transport_dir=""
 
-    for candidate in "${TMPDIR:-/tmp}"/orchard-tokenizer-preflight-*; do
+    for candidate in "#{dir}"/orchard-tokenizer-preflight-*; do
       if [ -d "$candidate" ]; then
         transport_dir="$candidate"
         break

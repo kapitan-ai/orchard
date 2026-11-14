@@ -5,10 +5,11 @@
 
 ## 2. Implementation and verification
 
-- [x] 2.1 Scrub the request-time environment and use an empty private cwd.
+- [x] 2.1 Scrub rendering and preflight environments and use an empty private cwd.
 - [x] 2.2 Preserve cwd through the uv fallback and inventory other render sites.
-- [x] 2.3 Prove secret/cwd regressions fail before and pass after on Linux and Darwin.
+- [x] 2.3 Prove Client and ModelRenderAssets secret/cwd regressions fail before and pass after on Linux and Darwin.
 - [x] 2.4 Run full Elixir and tokenizer native workflows and pinned template smoke.
+- [x] 2.5 Assert the environment key set, system-tool precedence, Python selectors and timeout/stdout cleanup; document best-effort cleanup and fallback costs.
 
 ## 3. Handoff
 
