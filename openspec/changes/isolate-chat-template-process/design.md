@@ -15,6 +15,8 @@ Client and SafeTokenizationPreflight. Start `/usr/bin/env -i` before the shell/h
 so new ambient environment entries cannot leak through an enumeration race. Also
 remove inherited entries through the Port environment option, protecting the
 launcher's own loader from ambient runtime overrides.
+These layers back each other up and are tested together, not independently:
+`env -i` covers the enumeration race, while the Port clear protects the env binary's loader.
 
 The explicit environment contains a constructed PATH (`/usr/bin:/bin` before the
 resolved uv executable directory), HOME pointing at the empty working directory,

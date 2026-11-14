@@ -1,4 +1,4 @@
-# ADR 0045: Untrusted chat templates and the request-time process boundary
+# ADR 0045: Controller template-renderer process boundary
 
 ## Status
 
@@ -84,8 +84,9 @@ success, timeout and stdout-cap helpers, not adversarial process containment.
 
 OS network/write denial is planned follow-up work with separate platform deny-path
 qualification, not a binding guarantee delivered by this change. Comprehensive
-CPU/memory limits, stronger termination/reaping, every-render-site containment,
-a read-only filesystem and child-process prohibition are not delivered here.
+CPU/memory limits, stronger termination/reaping, OS containment at every render
+site (including CLI/dev harnesses), a read-only filesystem and child-process
+prohibition are not delivered here.
 The Jinja sandbox remains defence in depth, not the only boundary. No new
 service, VM, model-admission gate or support claim is introduced.
 
