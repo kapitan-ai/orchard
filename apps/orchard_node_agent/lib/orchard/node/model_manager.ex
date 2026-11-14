@@ -206,7 +206,23 @@ defmodule Orchard.Node.ModelManager do
 
   @spec start_request(ExecuteInferenceRequest.t()) :: :ok | {:error, term()}
   def start_request(%ExecuteInferenceRequest{} = request) do
-    GenServer.call(__MODULE__, {:start_request, request})
+    case GenServer.call(__MODULE__, {:start_request, request}) do
+      {:error, :request_not_prepared} ->
+        request_id = request.request_id
+
+        # The manager sends this terminal before dropping a cancelled reservation,
+        # so it precedes the start reply in the subscriber's mailbox.
+        receive do
+          {:node_runtime_event, ^request_id,
+           %Orchard.InferenceEvent{event: %Orchard.InferenceEvent.Failed{code: "cancelled"}}} ->
+            {:error, :cancelled}
+        after
+          0 -> {:error, :request_not_prepared}
+        end
+
+      result ->
+        result
+    end
   end
 
   @spec cancel_request(String.t(), String.t() | nil) :: Ack.t()
@@ -491,6 +507,12 @@ defmodule Orchard.Node.ModelManager do
         {:reply, %Ack{ok: true, message: "cancel accepted"}, state}
 
       {:ok, %{phase: :prepared} = active_request} ->
+        send(
+          active_request.subscriber,
+          {:node_runtime_event, request_id,
+           Orchard.InferenceEvent.failed("cancelled", "request cancelled", false)}
+        )
+
         next_state = remove_request_from_state(state, request_id, active_request)
         {:reply, %Ack{ok: true, message: "cancel accepted"}, next_state}
 

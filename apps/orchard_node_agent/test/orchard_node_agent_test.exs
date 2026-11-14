@@ -3327,11 +3327,13 @@ defmodule OrchardNodeAgentTest do
 
       request = execute_inference_request("req-r3-prepared-cancel")
 
+      assert {:error, :request_not_prepared} = NodeStatus.start_request(request)
       assert :ok = NodeStatus.prepare_request(request, self())
 
       assert %{ok: true, message: "cancel accepted"} =
                NodeStatus.cancel_request(request.request_id, request.controller_session_id)
 
+      assert {:error, :cancelled} = NodeStatus.start_request(request)
       assert {:error, :request_not_prepared} = NodeStatus.start_request(request)
       # A rejected start alone does not prove that the worker never launched generation.
       assert generation_refs_for_request_ids([request.request_id]) == %{}
@@ -3575,6 +3577,46 @@ defmodule OrchardNodeAgentTest do
 
       assert_receive {:runtime_endpoint_done, ^stream_ref2, :ok}, 1_000
       wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+    end)
+  end
+
+  test "SPEC.md §5.10 BEAM cancellation after Accepted emits exactly one cancelled terminal", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request = beam_execute_request("req-beam-prepared-cancel", bundle)
+      stream_ref = make_ref()
+
+      assert {:ok, stream_pid} =
+               NodeRuntimeEndpoint.execute_inference(request, self(), stream_ref)
+
+      monitor = Process.monitor(stream_pid)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-prepared-cancel",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
+                     1_000
+
+      assert :ok =
+               NodeRuntimeEndpoint.cancel_inference(%Operation.CancelRequest{
+                 request_id: request.request_id,
+                 controller_session_id: request.controller_session_id
+               })
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-prepared-cancel",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Failed{code: "cancelled", retryable: false}
+                      }},
+                     1_000
+
+      assert_receive {:runtime_endpoint_done, ^stream_ref, :ok}, 1_000
+      assert_receive {:DOWN, ^monitor, :process, ^stream_pid, :normal}, 1_000
+      refute_received {:runtime_endpoint_event, ^stream_ref, _, _}
+      refute_received {:runtime_endpoint_done, ^stream_ref, _}
+      assert generation_refs_for_request_ids([request.request_id]) == %{}
+      assert %StatusResponse{active_request_count: 0} = NodeStatus.current()
     end)
   end
 

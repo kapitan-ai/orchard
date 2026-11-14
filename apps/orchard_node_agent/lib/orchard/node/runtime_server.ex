@@ -24,6 +24,7 @@ defmodule Orchard.Node.RuntimeServer do
 
   @worker_recovery_reason_atoms ReasonCodes.worker_recovery_reason_atoms()
   @known_failure_reasons MapSet.new([
+                           :cancelled,
                            :model_busy,
                            :model_not_loaded,
                            :request_already_active,
@@ -145,6 +146,8 @@ defmodule Orchard.Node.RuntimeServer do
   defp normalize_failure_reason(:request_not_prepared),
     do: {"request_not_prepared", "request is not prepared"}
 
+  defp normalize_failure_reason(:cancelled), do: {"cancelled", "request cancelled"}
+
   defp normalize_failure_reason(:worker_unavailable),
     do: {"worker_unavailable", "worker process became unavailable"}
 
@@ -171,6 +174,7 @@ defmodule Orchard.Node.RuntimeServer do
     |> String.replace(~r/[^a-z0-9_]+/, "_")
     |> then(fn value ->
       if value in [
+           "cancelled",
            "model_busy",
            "model_not_loaded",
            "request_already_active",

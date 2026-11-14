@@ -164,6 +164,7 @@ defmodule Orchard.Node.RuntimeEndpoint do
   defp failure_message("model_not_loaded"), do: "model is not loaded"
   defp failure_message("request_already_active"), do: "request is already active"
   defp failure_message("request_not_prepared"), do: "request is not prepared"
+  defp failure_message("cancelled"), do: "request cancelled"
   defp failure_message("worker_unavailable"), do: "worker process became unavailable"
 
   defp failure_message(_code), do: "runtime request failed"
