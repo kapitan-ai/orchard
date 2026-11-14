@@ -147,6 +147,84 @@ defmodule Orchard.Tokenizer.ClientTest do
     assert File.read!(probe_file) =~ "ok"
   end
 
+  test "SPEC 3.5 renderer does not inherit Controller secrets or runtime overrides" do
+    {executable, probe_file} = write_launch_probe_executable!()
+    variables = ~w(ORCHARD_RENDERER_TEST_SECRET PYTHONPATH UV_INDEX_URL DATABASE_URL)
+    previous = Map.new(variables, &{&1, System.get_env(&1)})
+    Enum.each(variables, &System.put_env(&1, "controller-sentinel-secret"))
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+
+      File.rm(executable)
+      File.rm(probe_file)
+    end)
+
+    tokenize_with_probe(executable)
+
+    [secret, pythonpath, index_url, database_url | _rest] =
+      String.split(File.read!(probe_file), "\n")
+
+    assert [secret, pythonpath, index_url, database_url] == List.duplicate("unset", 4)
+  end
+
+  test "SPEC 3.5 renderer starts in an empty private working directory and cleans it up" do
+    {executable, probe_file} = write_launch_probe_executable!()
+
+    on_exit(fn ->
+      File.rm(executable)
+      File.rm(probe_file)
+    end)
+
+    tokenize_with_probe(executable)
+
+    [_secret, _pythonpath, _index_url, _database_url, cwd, home, mode, entries | _rest] =
+      String.split(File.read!(probe_file), "\n")
+
+    assert Path.basename(cwd) == "work"
+    assert Path.basename(Path.dirname(cwd)) =~ "orchard-tokenizer-request-"
+    assert cwd == home
+    assert mode == "700"
+    assert entries == "0"
+    refute File.exists?(cwd)
+  end
+
+  test "SPEC 3.5 renderer resolves the configured Python version instead of generic python3" do
+    {executable, probe_file} = write_launch_probe_executable!()
+    tools = unique_tmp_root!("orchard-renderer-python")
+    previous_path = System.get_env("PATH")
+    previous_python = System.get_env("UV_PYTHON")
+
+    for name <- ["python3", "python7.8"] do
+      path = Path.join(tools, name)
+      File.write!(path, "#!/bin/sh\nexit 99\n")
+      File.chmod!(path, 0o755)
+    end
+
+    System.put_env("PATH", tools <> ":" <> previous_path)
+    System.put_env("UV_PYTHON", "7.8.9")
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+
+      if previous_python,
+        do: System.put_env("UV_PYTHON", previous_python),
+        else: System.delete_env("UV_PYTHON")
+
+      File.rm(executable)
+      File.rm(probe_file)
+      File.rm_rf!(tools)
+    end)
+
+    tokenize_with_probe(executable)
+
+    assert File.read!(probe_file) |> String.split("\n") |> Enum.at(8) ==
+             Path.join(tools, "python7.8")
+  end
+
   test "port mode render_and_count request stays on contract v2" do
     {capture_executable, capture_file} = write_capture_request_executable!()
 
@@ -3209,18 +3287,61 @@ defmodule Orchard.Tokenizer.ClientTest do
         "orchard-tokenizer-runtime-transport-#{System.unique_integer([:positive])}.sh"
       )
 
-    File.write!(script_path, runtime_transport_asserting_script(probe_file, response))
+    File.write!(script_path, runtime_transport_asserting_script(tmp_root, probe_file, response))
     File.chmod!(script_path, 0o755)
 
     {script_path, probe_file}
   end
 
-  defp runtime_transport_asserting_script(probe_file, response) do
+  defp tokenize_with_probe(executable) do
+    with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+      assert {:ok, %{rendered_prompt: "probe ok", input_token_count: 1}} =
+               Client.tokenize(canonical_request(),
+                 manifest: huggingface_manifest(),
+                 bundle_root: huggingface_fixture_root(),
+                 bundle_sha256: trusted_bundle_sha256()
+               )
+    end)
+  end
+
+  defp write_launch_probe_executable! do
+    script_path =
+      Path.join(System.tmp_dir!(), "orchard-launch-#{System.unique_integer([:positive])}")
+
+    probe_file = script_path <> ".txt"
+
+    response =
+      Jason.encode!(%{
+        contract_version: 2,
+        ok: true,
+        result: %{
+          rendered_prompt: "probe ok",
+          input_token_count: 1
+        }
+      })
+
+    File.write!(script_path, """
+    #!/bin/sh
+    set -eu
+    cat >/dev/null
+    mode=$(stat -c '%a' . 2>/dev/null || stat -f '%Lp' .)
+    entries=$(find . ! -name . -prune | wc -l | tr -d ' ')
+    printf '%s\\n' "${ORCHARD_RENDERER_TEST_SECRET-unset}" "${PYTHONPATH-unset}" \\
+      "${UV_INDEX_URL-unset}" "${DATABASE_URL-unset}" "$(pwd -P)" "$(cd "$HOME" && pwd -P)" \\
+      "$mode" "$entries" "${UV_PYTHON-unset}" > "#{probe_file}"
+    printf '%s\\n' '#{response}'
+    """)
+
+    File.chmod!(script_path, 0o755)
+    {script_path, probe_file}
+  end
+
+  defp runtime_transport_asserting_script(tmp_root, probe_file, response) do
     """
     #!/bin/sh
     set -eu
 
-    tmp_root=${TMPDIR:-/tmp}
+    tmp_root="#{tmp_root}"
     transport_dirs=$(find "$tmp_root" -maxdepth 1 -type d -name 'orchard-tokenizer-request-*')
     transport_count=$(printf '%s\n' "$transport_dirs" | sed '/^$/d' | wc -l | tr -d ' ')
 

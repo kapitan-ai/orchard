@@ -886,25 +886,38 @@ defmodule Orchard.Tokenizer.Client do
       "orchard-tokenizer-request",
       request_json,
       fn request_path ->
-        port =
-          Port.open(
-            {:spawn_executable, ~c"/bin/sh"},
-            [
-              :binary,
-              :exit_status,
-              :use_stdio,
-              {:args,
-               [
-                 "-c",
-                 ~s(exec "$1" < "$2"),
-                 "orchard-tokenizer-port",
-                 executable_path,
-                 request_path
-               ]}
-            ] ++ port_env_options(helper_env)
-          )
+        work_dir = Path.join(Path.dirname(request_path), "work")
 
-        HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes)
+        with :ok <- File.mkdir(work_dir),
+             :ok <- File.chmod(work_dir, 0o700) do
+          port =
+            Port.open(
+              {:spawn_executable, ~c"/usr/bin/env"},
+              [
+                :binary,
+                :exit_status,
+                :use_stdio,
+                {:cd, work_dir},
+                {:env,
+                 Enum.map(System.get_env(), fn {key, _value} -> {to_charlist(key), false} end)},
+                {:args,
+                 ["-i"] ++
+                   renderer_environment(work_dir, helper_env) ++
+                   [
+                     "/bin/sh",
+                     "-c",
+                     ~s(exec "$1" < "$2"),
+                     "orchard-tokenizer-port",
+                     executable_path,
+                     request_path
+                   ]}
+              ]
+            )
+
+          HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes)
+        else
+          {:error, _reason} -> {:error, :unavailable}
+        end
       end
     )
     |> map_request_transport_failure()
@@ -918,15 +931,32 @@ defmodule Orchard.Tokenizer.Client do
 
   defp map_request_transport_failure(result), do: result
 
-  defp port_env_options([]), do: []
+  defp renderer_environment(work_dir, helper_env) do
+    uv_dir =
+      case System.find_executable("uv") do
+        nil -> []
+        path -> [Path.dirname(path)]
+      end
 
-  defp port_env_options(helper_env) do
-    env =
-      Enum.map(helper_env, fn {key, value} ->
-        {String.to_charlist(key), String.to_charlist(value)}
-      end)
+    python_name =
+      case Version.parse(System.get_env("UV_PYTHON", "")) do
+        {:ok, %Version{major: major, minor: minor}} -> "python#{major}.#{minor}"
+        :error -> "python3"
+      end
 
-    [{:env, env}]
+    python =
+      case System.find_executable(python_name) do
+        nil -> []
+        path -> [{"UV_PYTHON", path}]
+      end
+
+    [
+      {"PATH", Enum.join(uv_dir ++ ["/usr/bin", "/bin"], ":")},
+      {"HOME", work_dir},
+      {"UV_NO_MANAGED_PYTHON", "1"}
+    ]
+    |> Kernel.++(python ++ helper_env)
+    |> Enum.map(fn {key, value} -> key <> "=" <> value end)
   end
 
   defp decode_response(response_json) when is_binary(response_json) do
