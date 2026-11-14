@@ -210,8 +210,8 @@ defmodule Orchard.Node.ModelManager do
       {:error, :request_not_prepared} ->
         request_id = request.request_id
 
-        # The manager sends this terminal before dropping a cancelled reservation,
-        # so it precedes the start reply in the subscriber's mailbox.
+        # Callers must be the prepared subscriber. The manager sends cancellation
+        # before the start reply, so that terminal is already in this mailbox.
         receive do
           {:node_runtime_event, ^request_id,
            %Orchard.InferenceEvent{event: %Orchard.InferenceEvent.Failed{code: "cancelled"}}} ->
@@ -509,8 +509,7 @@ defmodule Orchard.Node.ModelManager do
       {:ok, %{phase: :prepared} = active_request} ->
         send(
           active_request.subscriber,
-          {:node_runtime_event, request_id,
-           Orchard.InferenceEvent.failed("cancelled", "request cancelled", false)}
+          {:node_runtime_event, request_id, request_failed_event(:cancelled)}
         )
 
         next_state = remove_request_from_state(state, request_id, active_request)
@@ -2945,6 +2944,10 @@ defmodule Orchard.Node.ModelManager do
 
   defp cleanup_reason_for_worker_exit(:runtime_worker_unavailable), do: :worker_unavailable
   defp cleanup_reason_for_worker_exit(_reason), do: :worker_down
+
+  defp request_failed_event(:cancelled) do
+    Orchard.InferenceEvent.failed("cancelled", "request cancelled", false)
+  end
 
   defp request_failed_event(:worker_down) do
     Orchard.InferenceEvent.failed("worker_down", "worker process exited unexpectedly", false)
