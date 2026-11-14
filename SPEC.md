@@ -644,8 +644,12 @@ NOT change this trust classification; digest binding proves identity, not safety
 This boundary covers `Orchard.Tokenizer.Client` and
 `Orchard.Models.SafeTokenizationPreflight`, including tool-capability renders
 during `ModelRenderAssets` request preparation, bundle build/import validation,
-and manifest reparsing by `ResidentMemoryBackfill`. It does not deny filesystem
-or network access under the Controller's OS user; see ADR 0045.
+and manifest reparsing by `ResidentMemoryBackfill`. This boundary limits what
+the helper inherits; it is not containment. The helper runs as the Controller's
+OS user, so template code that escapes the Jinja sandbox can still read that
+user's files and process state, including the Controller's own environment,
+write outside its working directory, start programs and use the network. This
+contract revision provides no OS-level containment; see ADR 0045.
 
 Implementation requirement:
 

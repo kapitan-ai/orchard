@@ -18,5 +18,7 @@ working directory, exposing credentials if the Jinja sandbox is bypassed.
 This is separate from `harden-chat-template-globals`. It changes the Controller's
 rendering and preflight launches, the tokenizer wrapper and tests. OS network/write
 denial, broader resource limits and OS containment at every render site (including
-CLI/dev harnesses) are follow-up work, not delivered guarantees. No public API,
-model support claim or qualification gate changes.
+CLI/dev harnesses) are follow-up work, not delivered guarantees. The boundary
+limits inheritance only: template code that escapes the Jinja sandbox can still
+read same-user files and process state, including the Controller's environment.
+No public API, model support claim or qualification gate changes.
