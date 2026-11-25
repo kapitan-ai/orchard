@@ -81,6 +81,35 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     run(MidStreamUnavailableWorkerService)
   end
 
+  defmodule MidStreamTransportDropWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    # Kills the HTTP/2 connection process after one delta, which closes the
+    # socket mid-stream the same way a killed worker process does.
+    def generate(%ExecuteInferenceRequest{}, stream) do
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{event: {:output_text_delta, %ProtoOutputTextDelta{delta: "partial"}}}
+      )
+
+      Process.sleep(100)
+      {:dictionary, dictionary} = Process.info(stream.payload.pid, :dictionary)
+      [connection | _ancestors] = Keyword.fetch!(dictionary, :"$ancestors")
+      Process.exit(connection, :kill)
+    end
+  end
+
+  defmodule MidStreamTransportDropEndpoint do
+    use GRPC.Endpoint
+
+    run(MidStreamTransportDropWorkerService)
+  end
+
   defmodule FailingWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
@@ -997,6 +1026,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     with_worker_runtime_server(MidStreamUnavailableEndpoint, fn channel ->
       state = adapter_stream_state(channel)
       request = execute_request("req-mid-stream-unavailable")
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %OutputTextDelta{delta: "partial"}}
+                     },
+                     1_000
+
+      assert_receive {:runtime_adapter_done, ^generation_ref, :worker_unavailable}, 1_000
+      refute_receive {:runtime_adapter_event, ^generation_ref, _event}, 100
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
+  test "start_generation sends runtime_adapter_done when the worker transport drops mid-stream" do
+    with_worker_runtime_server(MidStreamTransportDropEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      request = execute_request("req-mid-stream-transport-drop")
 
       {:ok, generation_ref, adapter_state} =
         WorkerRuntimeAdapter.start_generation(state, request, owner: self())
